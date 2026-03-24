@@ -20,14 +20,6 @@ IPv4_REGEX="((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[0
 
 DEFAULT_LOWEST_METRIC=256
 
-mwan3_push_update()
-{
-	# helper function to build an update string to pass on to
-	# IPTR or IPS RESTORE. Modifies the 'update' variable in
-	# the local scope.
-	update="$update"$'\n'"$*";
-}
-
 mwan3_update_dev_to_table()
 {
 	local _tid
@@ -108,131 +100,87 @@ mwan3_get_iface_id()
 	export "$1=$_tmp"
 }
 
-mwan3_set_custom_ipset_v4()
+mwan3_set_custom_set()
 {
-	local custom_network_v4
+	local custom_network family_flag IP table_arg
 
-	for custom_network_v4 in $($IP4 route list table "$1" | awk '{print $1}' | grep -E "$IPv4_REGEX"); do
-		LOG notice "Adding network $custom_network_v4 from table $1 to mwan3_custom_v4 ipset"
-		mwan3_push_update -! add mwan3_custom_ipv4 "$custom_network_v4"
+	table_arg="$1"
+
+	for custom_network in $($IP4 route list table "$table_arg" | awk '{print $1}' | grep -E "$IPv4_REGEX"); do
+		LOG notice "Adding network $custom_network from table $table_arg to mwan3_custom_v4 set"
+		mwan3_nft_push "add element inet fw4 mwan3_custom_v4 { $custom_network }"
+	done
+
+	[ $NO_IPV6 -eq 0 ] || return
+	for custom_network in $($IP6 route list table "$table_arg" | awk '{print $1}' | grep -E "$IPv6_REGEX"); do
+		LOG notice "Adding network $custom_network from table $table_arg to mwan3_custom_v6 set"
+		mwan3_nft_push "add element inet fw4 mwan3_custom_v6 { $custom_network }"
 	done
 }
 
-mwan3_set_custom_ipset_v6()
+mwan3_set_custom_sets()
 {
-	local custom_network_v6
+	mwan3_nft_batch_start
+	mwan3_nft_push "flush set inet fw4 mwan3_custom_v4"
+	[ $NO_IPV6 -eq 0 ] && mwan3_nft_push "flush set inet fw4 mwan3_custom_v6"
 
-	for custom_network_v6 in $($IP6 route list table "$1" | awk '{print $1}' | grep -E "$IPv6_REGEX"); do
-		LOG notice "Adding network $custom_network_v6 from table $1 to mwan3_custom_v6 ipset"
-		mwan3_push_update -! add mwan3_custom_ipv6 "$custom_network_v6"
-	done
+	config_list_foreach "globals" "rt_table_lookup" mwan3_set_custom_set
+
+	mwan3_nft_batch_commit
 }
-
-mwan3_set_custom_ipset()
-{
-	local update=""
-
-	mwan3_push_update -! create mwan3_custom_ipv4 hash:net
-	mwan3_push_update flush mwan3_custom_ipv4
-	config_list_foreach "globals" "rt_table_lookup" mwan3_set_custom_ipset_v4
-
-	if [ $NO_IPV6 -eq 0 ]; then
-		mwan3_push_update -! create mwan3_custom_ipv6 hash:net family inet6
-		mwan3_push_update flush mwan3_custom_ipv6
-		config_list_foreach "globals" "rt_table_lookup" mwan3_set_custom_ipset_v6
-	fi
-
-	echo "$update" > "${MWAN3_STATUS_IPTABLES_LOG_DIR}/ipset-set_custom_ipset.dump"
-	error=$(echo "$update" | $IPS restore 2>&1) || LOG error "set_custom_ipset: $error"
-}
-
 
 mwan3_set_connected_ipv4()
 {
-	local connected_network_v4 error
-	local candidate_list cidr_list
-	local update=""
+	local connected_network_v4
 
-	mwan3_push_update -! create mwan3_connected_ipv4 hash:net
-	mwan3_push_update flush mwan3_connected_ipv4
+	mwan3_nft_batch_start
+	mwan3_nft_push "flush set inet fw4 mwan3_connected_v4"
 
-	candidate_list=""
-	cidr_list=""
-	route_lists()
-	{
-		$IP4 route | awk '{print $1}'
-		$IP4 route list table 0 | awk '{print $2}'
-	}
-	for connected_network_v4 in $(route_lists | grep -E "$IPv4_REGEX"); do
-		if [ -z "${connected_network_v4##*/*}" ]; then
-			cidr_list="$cidr_list $connected_network_v4"
-		else
-			candidate_list="$candidate_list $connected_network_v4"
-		fi
+	# Add CIDR routes from the main routing table. Skip host routes — they
+	# are either within a CIDR already (local/broadcast from table 0) or are
+	# remote destinations that should NOT bypass mwan3.
+	for connected_network_v4 in $($IP4 route | awk '{print $1}' | grep -E "$IPv4_REGEX/" | sort -u); do
+		mwan3_nft_push "add element inet fw4 mwan3_connected_v4 { $connected_network_v4 }"
 	done
 
-	for connected_network_v4 in $cidr_list; do
-		mwan3_push_update -! add mwan3_connected_ipv4 "$connected_network_v4"
-	done
-	for connected_network_v4 in $candidate_list; do
-		mwan3_push_update -! add mwan3_connected_ipv4 "$connected_network_v4"
-	done
+	mwan3_nft_push "add element inet fw4 mwan3_connected_v4 { 224.0.0.0/3 }"
 
-	mwan3_push_update add mwan3_connected_ipv4 224.0.0.0/3
-
-	echo "$update" > "${MWAN3_STATUS_IPTABLES_LOG_DIR}/ipset-set_connected_ipv4.dump"
-	error=$(echo "$update" | $IPS restore 2>&1) || LOG error "set_connected_ipv4: $error"
+	mwan3_nft_batch_commit
 }
 
 mwan3_set_connected_ipv6()
 {
-	local connected_network_v6 error
-	local update=""
+	local connected_network_v6
+	local elements
+
 	[ $NO_IPV6 -eq 0 ] || return
 
-	mwan3_push_update -! create mwan3_connected_ipv6 hash:net family inet6
-	mwan3_push_update flush mwan3_connected_ipv6
-
-	for connected_network_v6 in $($IP6 route | awk '{print $1}' | grep -E "$IPv6_REGEX"); do
-		mwan3_push_update -! add mwan3_connected_ipv6 "$connected_network_v6"
+	elements=""
+	for connected_network_v6 in $($IP6 route | awk '{print $1}' | grep -E "$IPv6_REGEX" | sort -u); do
+		[ -n "$elements" ] && elements="$elements, "
+		elements="$elements$connected_network_v6"
 	done
 
-	echo "$update" > "${MWAN3_STATUS_IPTABLES_LOG_DIR}/ipset-set_connected_ipv6.dump"
-	error=$(echo "$update" | $IPS restore 2>&1) || LOG error "set_connected_ipv6: $error"
+	[ -z "$elements" ] && return
+
+	mwan3_nft_batch_start
+	mwan3_nft_push "flush set inet fw4 mwan3_connected_v6"
+	mwan3_nft_push "add element inet fw4 mwan3_connected_v6 { $elements }"
+	mwan3_nft_batch_commit
 }
 
-mwan3_set_connected_ipset()
+mwan3_set_connected_sets()
 {
-	local error
-	local update=""
-
-	mwan3_push_update -! create mwan3_connected_ipv4 hash:net
-	mwan3_push_update flush mwan3_connected_ipv4
-
-	if [ $NO_IPV6 -eq 0 ]; then
-		mwan3_push_update -! create mwan3_connected_ipv6 hash:net family inet6
-		mwan3_push_update flush mwan3_connected_ipv6
-	fi
-
-	echo "$update" > "${MWAN3_STATUS_IPTABLES_LOG_DIR}/ipset-set_connected_ipset.dump"
-	error=$(echo "$update" | $IPS restore 2>&1) || LOG error "set_connected_ipset: $error"
+	mwan3_set_connected_ipv4
+	mwan3_set_connected_ipv6
 }
 
-mwan3_set_dynamic_ipset()
+mwan3_set_dynamic_sets()
 {
-	local error
-	local update=""
-
-	mwan3_push_update -! create mwan3_dynamic_ipv4 list:set
-	mwan3_push_update flush mwan3_dynamic_ipv4
-
-	if [ $NO_IPV6 -eq 0 ]; then
-		mwan3_push_update -! create mwan3_dynamic_ipv6 hash:net family inet6
-		mwan3_push_update flush mwan3_dynamic_ipv6
-	fi
-
-	echo "$update" > "${MWAN3_STATUS_IPTABLES_LOG_DIR}/ipset-set_dynamic_ipset.dump"
-	error=$(echo "$update" | $IPS restore 2>&1) || LOG error "set_dynamic_ipset: $error"
+	mwan3_nft_batch_start
+	mwan3_nft_push "flush set inet fw4 mwan3_dynamic_v4"
+	[ $NO_IPV6 -eq 0 ] && mwan3_nft_push "flush set inet fw4 mwan3_dynamic_v6"
+	mwan3_nft_batch_commit
 }
 
 mwan3_set_general_rules()
@@ -253,197 +201,196 @@ mwan3_set_general_rules()
 	done
 }
 
-mwan3_set_general_iptables()
+mwan3_set_general_nft()
 {
-	local IPT current update error family
+	local chain_exists
 
-	for IPT in "$IPT4" "$IPT6"; do
-		[ "$IPT" = "$IPT6" ] && [ $NO_IPV6 -ne 0 ] && continue
-		current="$($IPT -S)"$'\n'
-		update="*mangle"
-		if [ -n "${current##*-N mwan3_ifaces_in*}" ]; then
-			mwan3_push_update -N mwan3_ifaces_in
-		fi
+	# Check if rules are already populated
+	chain_exists=$($NFT list chain inet fw4 mwan3_prerouting 2>/dev/null | grep -c "meta mark")
+	[ "$chain_exists" -gt 0 ] && return
 
-		if [ "$IPT" = "$IPT6" ]; then
-			family="ipv6"
-		else
-			family="ipv4"
-		fi
+	mwan3_nft_batch_start
 
-		for chain in custom connected dynamic; do
-			echo "${current}" | grep -q "\-N mwan3_${chain}_${family}$"
-			local ret="$?"
-			if [ "$ret" = 1 ]; then
-				mwan3_push_update -N mwan3_${chain}_${family}
-				mwan3_push_update -A mwan3_${chain}_${family} \
-					-m set --match-set mwan3_${chain}_${family} dst \
-					-j MARK --set-xmark $MMX_DEFAULT/$MMX_MASK
-			fi
-		done
+	# Populate mwan3_connected chain
+	mwan3_nft_push "flush chain inet fw4 mwan3_connected"
+	mwan3_nft_push "add rule inet fw4 mwan3_connected ip daddr @mwan3_connected_v4 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
+	[ $NO_IPV6 -eq 0 ] && \
+		mwan3_nft_push "add rule inet fw4 mwan3_connected ip6 daddr @mwan3_connected_v6 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
 
-		if [ -n "${current##*-N mwan3_rules*}" ]; then
-			mwan3_push_update -N mwan3_rules
-		fi
+	# Populate mwan3_custom chain
+	mwan3_nft_push "flush chain inet fw4 mwan3_custom"
+	mwan3_nft_push "add rule inet fw4 mwan3_custom ip daddr @mwan3_custom_v4 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
+	[ $NO_IPV6 -eq 0 ] && \
+		mwan3_nft_push "add rule inet fw4 mwan3_custom ip6 daddr @mwan3_custom_v6 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
 
-		if [ -n "${current##*-N mwan3_hook*}" ]; then
-			mwan3_push_update -N mwan3_hook
-			# do not mangle ipv6 ra service
-			if [ "$IPT" = "$IPT6" ]; then
-				mwan3_push_update -A mwan3_hook \
-						  -p ipv6-icmp \
-						  -m icmp6 --icmpv6-type 133 \
-						  -j RETURN
-				mwan3_push_update -A mwan3_hook \
-						  -p ipv6-icmp \
-						  -m icmp6 --icmpv6-type 134 \
-						  -j RETURN
-				mwan3_push_update -A mwan3_hook \
-						  -p ipv6-icmp \
-						  -m icmp6 --icmpv6-type 135 \
-						  -j RETURN
-				mwan3_push_update -A mwan3_hook \
-						  -p ipv6-icmp \
-						  -m icmp6 --icmpv6-type 136 \
-						  -j RETURN
-				mwan3_push_update -A mwan3_hook \
-						  -p ipv6-icmp \
-						  -m icmp6 --icmpv6-type 137 \
-						  -j RETURN
+	# Populate mwan3_dynamic chain
+	mwan3_nft_push "flush chain inet fw4 mwan3_dynamic"
+	mwan3_nft_push "add rule inet fw4 mwan3_dynamic ip daddr @mwan3_dynamic_v4 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
+	[ $NO_IPV6 -eq 0 ] && \
+		mwan3_nft_push "add rule inet fw4 mwan3_dynamic ip6 daddr @mwan3_dynamic_v6 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
 
-			fi
-			mwan3_push_update -A mwan3_hook \
-					  -m mark --mark 0x0/$MMX_MASK \
-					  -j CONNMARK --restore-mark --nfmask "$MMX_MASK" --ctmask "$MMX_MASK"
-			mwan3_push_update -A mwan3_hook \
-					  -m mark --mark 0x0/$MMX_MASK \
-					  -j mwan3_ifaces_in
+	# Populate mwan3_prerouting hook chain
+	mwan3_nft_push "flush chain inet fw4 mwan3_prerouting"
+	# IPv6 RA bypass
+	mwan3_nft_push "add rule inet fw4 mwan3_prerouting icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, nd-redirect } accept"
+	# Restore mark from conntrack
+	# Kernel doesn't support compound "meta mark | ct mark" in one expression,
+	# so we use ct mark directly. Since we only restore when meta mark mwan3 bits
+	# are 0, and ct mark was saved from meta mark, this is equivalent.
+	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 meta mark set ct mark & $MMX_MASK"
+	# Jump to interface classification
+	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_ifaces_in"
+	# Check custom/connected/dynamic destinations
+	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_custom"
+	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_connected"
+	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_dynamic"
+	# User rules
+	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_rules"
+	# Save mark to conntrack
+	# Kernel doesn't support compound "ct mark & X | meta mark & Y", so we
+	# save the full meta mark. mwan3 owns its mask bits exclusively.
+	mwan3_nft_push "add rule inet fw4 mwan3_prerouting ct mark set meta mark"
+	# Post-rules: check custom/connected/dynamic for non-default marks
+	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_custom"
+	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_connected"
+	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_dynamic"
 
-			for chain in custom connected dynamic; do
-				mwan3_push_update -A mwan3_hook \
-					-m mark --mark 0x0/$MMX_MASK \
-					-j mwan3_${chain}_${family}
-			done
+	# Populate mwan3_output hook chain
+	mwan3_nft_push "flush chain inet fw4 mwan3_output"
+	# Restore mark from conntrack (see prerouting comment above)
+	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 meta mark set ct mark & $MMX_MASK"
+	# Jump to interface classification
+	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_ifaces_in"
+	# Check custom/connected/dynamic destinations
+	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_custom"
+	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_connected"
+	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_dynamic"
+	# User rules
+	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_rules"
+	# Save mark to conntrack (see prerouting comment above)
+	mwan3_nft_push "add rule inet fw4 mwan3_output ct mark set meta mark"
+	# Post-rules: check custom/connected/dynamic for non-default marks
+	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_custom"
+	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_connected"
+	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_dynamic"
 
-			mwan3_push_update -A mwan3_hook \
-					  -m mark --mark 0x0/$MMX_MASK \
-					  -j mwan3_rules
-			mwan3_push_update -A mwan3_hook \
-					  -j CONNMARK --save-mark --nfmask "$MMX_MASK" --ctmask "$MMX_MASK"
-
-			for chain in custom connected dynamic; do
-				mwan3_push_update -A mwan3_hook \
-					-m mark ! --mark $MMX_DEFAULT/$MMX_MASK \
-					-j mwan3_${chain}_${family}
-			done
-		fi
-
-		if [ -n "${current##*-A PREROUTING -j mwan3_hook*}" ]; then
-			mwan3_push_update -A PREROUTING -j mwan3_hook
-		fi
-		if [ -n "${current##*-A OUTPUT -j mwan3_hook*}" ]; then
-			mwan3_push_update -A OUTPUT -j mwan3_hook
-		fi
-		mwan3_push_update COMMIT
-		mwan3_push_update ""
-
-		echo "$update" > "${MWAN3_STATUS_IPTABLES_LOG_DIR}/iptables-set_general_iptables-${family}.dump"
-		if [ "$IPT" = "$IPT4" ]; then
-			error=$(echo "$update" | $IPT4R 2>&1) || LOG error "set_general_iptables (${family}): $error"
-		else
-			error=$(echo "$update" | $IPT6R 2>&1) || LOG error "set_general_iptables (${family}): $error"
-		fi
-	done
+	mwan3_nft_batch_commit
 }
 
-mwan3_create_iface_iptables()
+mwan3_create_iface_nft()
 {
-	local id family IPT IPTR current update error
+	local id family iface_mark device
 
+	iface_mark=""
 	config_get family "$1" family ipv4
 	mwan3_get_iface_id id "$1"
 
 	[ -n "$id" ] || return 0
 
-	if [ "$family" = "ipv4" ]; then
-		IPT="$IPT4"
-		IPTR="$IPT4R"
-	elif [ "$family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
-		IPT="$IPT6"
-		IPTR="$IPT6R"
-	else
+	if [ "$family" = "ipv6" ] && [ $NO_IPV6 -ne 0 ]; then
 		return
 	fi
 
-	current="$($IPT -S)"$'\n'
-	update="*mangle"
-	if [ -n "${current##*-N mwan3_ifaces_in*}" ]; then
-		mwan3_push_update -N mwan3_ifaces_in
-	fi
+	device="$2"
+	iface_mark=$(mwan3_id2mask id MMX_MASK)
 
-	if [ -n "${current##*-N mwan3_iface_in_$1$'\n'*}" ]; then
-		mwan3_push_update -N "mwan3_iface_in_$1"
+	# Check if chain already exists, if so flush it; otherwise create it
+	if $NFT list chain inet fw4 "mwan3_iface_in_$1" &>/dev/null; then
+		mwan3_nft_exec flush chain inet fw4 "mwan3_iface_in_$1"
 	else
-		mwan3_push_update -F "mwan3_iface_in_$1"
+		mwan3_nft_exec add chain inet fw4 "mwan3_iface_in_$1"
 	fi
 
-	for chain in custom connected dynamic; do
-		mwan3_push_update -A "mwan3_iface_in_$1" \
-			-i "$2" \
-			-m set --match-set mwan3_${chain}_${family} src \
-			-m mark --mark "0x0/$MMX_MASK" \
-			-m comment --comment "default" \
-			-j MARK --set-xmark "$MMX_DEFAULT/$MMX_MASK"
-	done
-	mwan3_push_update -A "mwan3_iface_in_$1" \
-			  -i "$2" \
-			  -m mark --mark "0x0/$MMX_MASK" \
-			  -m comment --comment "$1" \
-			  -j MARK --set-xmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK"
+	mwan3_nft_batch_start
 
-	if [ -n "${current##*-A mwan3_ifaces_in -m mark --mark 0x0/$MMX_MASK -j mwan3_iface_in_${1}$'\n'*}" ]; then
-		mwan3_push_update -A mwan3_ifaces_in \
-				  -m mark --mark 0x0/$MMX_MASK \
-				  -j "mwan3_iface_in_$1"
-		LOG debug "create_iface_iptables: mwan3_iface_in_$1 not in iptables, adding"
+	# For packets from connected/custom/dynamic sources, mark as default
+	if [ "$family" = "ipv4" ]; then
+		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv4 ip saddr @mwan3_connected_v4 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
+		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv4 ip saddr @mwan3_custom_v4 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
+		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv4 ip saddr @mwan3_dynamic_v4 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
+	elif [ "$family" = "ipv6" ]; then
+		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv6 ip6 saddr @mwan3_connected_v6 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
+		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv6 ip6 saddr @mwan3_custom_v6 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
+		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv6 ip6 saddr @mwan3_dynamic_v6 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
+	fi
+
+	# Mark with interface-specific mark
+	mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $iface_mark $MMX_MASK)"
+
+	mwan3_nft_batch_commit
+
+	# Add jump rule from mwan3_ifaces_in if not already present
+	if ! $NFT list chain inet fw4 mwan3_ifaces_in 2>/dev/null | grep -q "jump mwan3_iface_in_$1"; then
+		mwan3_nft_exec add rule inet fw4 mwan3_ifaces_in meta mark \& "$MMX_MASK" == 0 jump "mwan3_iface_in_$1"
+		LOG debug "create_iface_nft: mwan3_iface_in_$1 added to mwan3_ifaces_in"
 	else
-		LOG debug "create_iface_iptables: mwan3_iface_in_$1 already in iptables, skip"
+		LOG debug "create_iface_nft: mwan3_iface_in_$1 already in mwan3_ifaces_in, skip"
 	fi
-
-	mwan3_push_update COMMIT
-	mwan3_push_update ""
-
-	echo "$update" > "${MWAN3_STATUS_IPTABLES_LOG_DIR}/iptables-create_iface_iptables-${1}.dump"
-	error=$(echo "$update" | $IPTR 2>&1) || LOG error "create_iface_iptables (${1}): $error"
 }
 
-mwan3_delete_iface_iptables()
+mwan3_rebuild_iface_nft()
 {
-	local IPT update
+	local interface="$1"
+	local true_iface l3_device up enabled family status_json
+
+	config_get_bool enabled "$interface" enabled 0
+	[ "$enabled" -eq 1 ] || return
+
+	config_get family "$interface" family ipv4
+	[ "$family" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && return
+
+	mwan3_get_true_iface true_iface "$interface"
+	status_json=$(ubus -S call "network.interface.$true_iface" status 2>/dev/null)
+	[ -n "$status_json" ] || return
+
+	json_load "$status_json"
+	json_get_vars up l3_device
+	[ "$up" = "1" ] && [ -n "$l3_device" ] || return
+
+	mwan3_create_iface_nft "$interface" "$l3_device"
+}
+
+mwan3_delete_iface_nft()
+{
+	local family handle
+
 	config_get family "$1" family ipv4
 
-	if [ "$family" = "ipv4" ]; then
-		IPT="$IPT4"
+	if [ "$family" = "ipv6" ] && [ $NO_IPV6 -ne 0 ]; then
+		return
 	fi
 
-	if [ "$family" = "ipv6" ]; then
-		[ $NO_IPV6 -ne 0 ] && return
-		IPT="$IPT6"
-	fi
+	# Remove jump rule from mwan3_ifaces_in
+	handle=$($NFT -a list chain inet fw4 mwan3_ifaces_in 2>/dev/null | \
+		grep "jump mwan3_iface_in_$1" | sed -n 's/.*# handle \([0-9]*\)/\1/p')
+	[ -n "$handle" ] && mwan3_nft_exec delete rule inet fw4 mwan3_ifaces_in handle "$handle"
 
-	update="*mangle"
+	# Delete the interface chain
+	$NFT list chain inet fw4 "mwan3_iface_in_$1" &>/dev/null && {
+		mwan3_nft_exec flush chain inet fw4 "mwan3_iface_in_$1"
+		mwan3_nft_exec delete chain inet fw4 "mwan3_iface_in_$1"
+	}
+}
 
-	mwan3_push_update -D mwan3_ifaces_in \
-		-m mark --mark 0x0/$MMX_MASK \
-		-j "mwan3_iface_in_$1" &> /dev/null
-	mwan3_push_update -F "mwan3_iface_in_$1" &> /dev/null
-	mwan3_push_update -X "mwan3_iface_in_$1" &> /dev/null
+mwan3_delete_iface_map_entries()
+{
+	local id iface_mark mapname entry
 
-	mwan3_push_update COMMIT
-	mwan3_push_update ""
+	mwan3_get_iface_id id "$1"
+	[ -n "$id" ] || return 0
 
-	echo "$update" > "${MWAN3_STATUS_IPTABLES_LOG_DIR}/iptables-delete_iface_iptables-${1}.dump"
-	error=$(echo "$update" | $IPTR 2>&1) || LOG error "delete_iface_iptables (${1}): $error"
+	iface_mark=$(mwan3_id2mask id MMX_MASK)
+
+	# Iterate through all sticky maps and remove entries matching this interface's mark
+	for mapname in $($NFT list maps inet fw4 2>/dev/null | grep "map mwan3_sticky_" | awk '{print $2}'); do
+		$NFT list map inet fw4 "$mapname" 2>/dev/null | \
+			grep -oE '[0-9a-f.:]+\s*:\s*'"$(printf '0x%08x' $((iface_mark)))" | \
+			while read -r entry; do
+				local addr="${entry%%:*}"
+				addr=$(echo "$addr" | sed 's/[[:space:]]//g')
+				[ -n "$addr" ] && $NFT delete element inet fw4 "$mapname" "{ $addr }" 2>/dev/null
+			done
+	done
 }
 
 mwan3_extra_tables_routes()
@@ -554,26 +501,9 @@ mwan3_delete_iface_rules()
 	done
 }
 
-mwan3_delete_iface_ipset_entries()
-{
-	local id setname entry
-
-	mwan3_get_iface_id id "$1"
-
-	[ -n "$id" ] || return 0
-
-	for setname in $(ipset -n list | grep ^mwan3_rule_); do
-		for entry in $(ipset list "$setname" | grep "$(mwan3_id2mask id MMX_MASK | awk '{ printf "0x%08x", $1; }')" | cut -d ' ' -f 1); do
-			$IPS del "$setname" $entry ||
-				LOG notice "failed to delete $entry from $setname"
-		done
-	done
-}
-
-
 mwan3_set_policy()
 {
-	local id iface family metric probability weight device is_lowest is_offline IPT IPTR total_weight current update error
+	local id iface family metric weight device is_lowest is_offline
 
 	is_lowest=0
 	config_get iface "$1" interface
@@ -593,16 +523,6 @@ mwan3_set_policy()
 
 	config_get family "$iface" family ipv4
 
-	if [ "$family" = "ipv4" ]; then
-		IPT="$IPT4"
-		IPTR="$IPT4R"
-	elif [ "$family" = "ipv6" ]; then
-		IPT="$IPT6"
-		IPTR="$IPT6R"
-	fi
-	current="$($IPT -S)"$'\n'
-	update="*mangle"
-
 	if [ "$family" = "ipv4" ] && [ $is_offline -eq 0 ]; then
 		if [ "$metric" -lt "$lowest_metric_v4" ]; then
 			is_lowest=1
@@ -610,7 +530,6 @@ mwan3_set_policy()
 			lowest_metric_v4=$metric
 		elif [ "$metric" -eq "$lowest_metric_v4" ]; then
 			total_weight_v4=$((total_weight_v4+weight))
-			total_weight=$total_weight_v4
 		else
 			return
 		fi
@@ -621,56 +540,33 @@ mwan3_set_policy()
 			lowest_metric_v6=$metric
 		elif [ "$metric" -eq "$lowest_metric_v6" ]; then
 			total_weight_v6=$((total_weight_v6+weight))
-			total_weight=$total_weight_v6
 		else
 			return
 		fi
 	fi
+
 	if [ $is_lowest -eq 1 ]; then
-		mwan3_push_update -F "mwan3_policy_$policy"
-		mwan3_push_update -A "mwan3_policy_$policy" \
-				  -m mark --mark 0x0/$MMX_MASK \
-				  -m comment --comment \"$iface $weight $weight\" \
-				  -j MARK --set-xmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK"
-	elif [ $is_offline -eq 0 ]; then
-		probability=$((weight*1000/total_weight))
-		if [ "$probability" -lt 10 ]; then
-			probability="0.00$probability"
-		elif [ $probability -lt 100 ]; then
-			probability="0.0$probability"
-		elif [ $probability -lt 1000 ]; then
-			probability="0.$probability"
-		else
-			probability="1"
-		fi
-
-		mwan3_push_update -I "mwan3_policy_$policy" \
-				  -m mark --mark 0x0/$MMX_MASK \
-				  -m statistic \
-				  --mode random \
-				  --probability "$probability" \
-				  -m comment --comment \"$iface $weight $total_weight\" \
-				  -j MARK --set-xmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK"
-	elif [ -n "$device" ]; then
-		echo "$current" | grep -q "^-A mwan3_policy_$policy.*--comment .* [0-9]* [0-9]*" ||
-			mwan3_push_update -I "mwan3_policy_$policy" \
-					  -o "$device" \
-					  -m mark --mark 0x0/$MMX_MASK \
-					  -m comment --comment \"out $iface $device\" \
-					  -j MARK --set-xmark $MMX_DEFAULT/$MMX_MASK
+		# New lowest metric: reset the member list
+		policy_members=""
 	fi
-	mwan3_push_update COMMIT
-	mwan3_push_update ""
 
-	echo "$update" > "${MWAN3_STATUS_IPTABLES_LOG_DIR}/iptables-set_policy-${1}.dump"
-	error=$(echo "$update" | $IPTR 2>&1) || LOG error "set_policy ($1): $error"
+	if [ $is_offline -eq 0 ]; then
+		# Accumulate members: "iface_name:id:weight" tuples
+		policy_members="$policy_members $iface:$id:$weight"
+	elif [ -n "$device" ]; then
+		# Offline interface with device: record for fallback out-device rule
+		policy_offline_devices="$policy_offline_devices $iface:$device"
+	fi
 }
 
-mwan3_create_policies_iptables()
+mwan3_create_policies_nft()
 {
-	local last_resort lowest_metric_v4 lowest_metric_v6 total_weight_v4 total_weight_v6 policy IPT current update error
+	local last_resort lowest_metric_v4 lowest_metric_v6 total_weight_v4 total_weight_v6
+	local policy policy_members policy_offline_devices
 
 	policy="$1"
+	policy_members=""
+	policy_offline_devices=""
 
 	config_get last_resort "$1" last_resort unreachable
 
@@ -678,113 +574,166 @@ mwan3_create_policies_iptables()
 		LOG warn "Policy $1 exceeds max of 15 chars. Not setting policy" && return 0
 	fi
 
-	for IPT in "$IPT4" "$IPT6"; do
-		[ "$IPT" = "$IPT6" ] && [ $NO_IPV6 -ne 0 ] && continue
-		current="$($IPT -S)"$'\n'
-		update="*mangle"
-		if [ -n "${current##*-N mwan3_policy_$1$'\n'*}" ]; then
-			mwan3_push_update -N "mwan3_policy_$1"
-		fi
+	# Create chain if it doesn't exist
+	$NFT list chain inet fw4 "mwan3_policy_$1" &>/dev/null || \
+		mwan3_nft_exec add chain inet fw4 "mwan3_policy_$1"
 
-		mwan3_push_update -F "mwan3_policy_$1"
-
-		case "$last_resort" in
-			blackhole)
-				mwan3_push_update -A "mwan3_policy_$1" \
-						  -m mark --mark 0x0/$MMX_MASK \
-						  -m comment --comment "blackhole" \
-						  -j MARK --set-xmark $MMX_BLACKHOLE/$MMX_MASK
-				;;
-			default)
-				mwan3_push_update -A "mwan3_policy_$1" \
-						  -m mark --mark 0x0/$MMX_MASK \
-						  -m comment --comment "default" \
-						  -j MARK --set-xmark $MMX_DEFAULT/$MMX_MASK
-				;;
-			*)
-				mwan3_push_update -A "mwan3_policy_$1" \
-						  -m mark --mark 0x0/$MMX_MASK \
-						  -m comment --comment "unreachable" \
-						  -j MARK --set-xmark $MMX_UNREACHABLE/$MMX_MASK
-				;;
-		esac
-		mwan3_push_update COMMIT
-		mwan3_push_update ""
-
-		echo "$update" > "${MWAN3_STATUS_IPTABLES_LOG_DIR}/iptables-create_policies_iptables-${1}.dump"
-		if [ "$IPT" = "$IPT4" ]; then
-			error=$(echo "$update" | $IPT4R 2>&1) || LOG error "create_policies_iptables ($1): $error"
-		else
-			error=$(echo "$update" | $IPT6R 2>&1) || LOG error "create_policies_iptables ($1): $error"
-		fi
-	done
+	mwan3_nft_exec flush chain inet fw4 "mwan3_policy_$1"
 
 	lowest_metric_v4=$DEFAULT_LOWEST_METRIC
 	total_weight_v4=0
-
 	lowest_metric_v6=$DEFAULT_LOWEST_METRIC
 	total_weight_v6=0
 
 	config_list_foreach "$1" use_member mwan3_set_policy
-}
 
-mwan3_set_policies_iptables()
-{
-	config_foreach mwan3_create_policies_iptables policy
-}
+	# Now build the policy chain rules from accumulated members
+	local member iface id weight mark total_weight running map_entries
 
-mwan3_set_sticky_iptables()
-{
-	local interface="${1}"
-	local rule="${2}"
-	local ipv="${3}"
-	local policy="${4}"
-
-	local id iface
-	for iface in $(echo "$current" | grep "^-A $policy" | cut -s -d'"' -f2 | awk '{print $1}'); do
-		if [ "$iface" = "$interface" ]; then
-
-			mwan3_get_iface_id id "$iface"
-
-			[ -n "$id" ] || return 0
-			if [ -z "${current##*-N mwan3_iface_in_${iface}$'\n'*}" ]; then
-				mwan3_push_update -I "mwan3_rule_$rule" \
-						  -m mark --mark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK" \
-						  -m set ! --match-set "mwan3_rule_${ipv}_${rule}" src,src \
-						  -j MARK --set-xmark "0x0/$MMX_MASK"
-				mwan3_push_update -I "mwan3_rule_$rule" \
-						  -m mark --mark "0/$MMX_MASK" \
-						  -j MARK --set-xmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK"
-			fi
-		fi
+	# Count and build numgen map entries
+	total_weight=0
+	for member in $policy_members; do
+		weight="${member##*:}"
+		total_weight=$((total_weight + weight))
 	done
+
+	if [ "$total_weight" -gt 0 ]; then
+		if [ "$total_weight" -eq "$(echo "$policy_members" | awk -F: '{print $NF}')" ] && \
+		   [ "$(echo "$policy_members" | wc -w)" -eq 1 ]; then
+			# Single member: direct mark set, no numgen needed
+			member=$(echo "$policy_members" | tr -d ' ')
+			id="${member#*:}"
+			id="${id%%:*}"
+			mark=$(mwan3_id2mask id MMX_MASK)
+			mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
+				meta mark \& "$MMX_MASK" == 0 \
+				"$(mwan3_nft_mark_expr $mark $MMX_MASK)"
+		else
+			# Multiple members: use numgen for load balancing
+			running=0
+			map_entries=""
+			for member in $policy_members; do
+				iface="${member%%:*}"
+				id="${member#*:}"
+				id="${id%%:*}"
+				weight="${member##*:}"
+				mark=$(mwan3_id2mask id MMX_MASK)
+				local end=$((running + weight - 1))
+				if [ -n "$map_entries" ]; then
+					map_entries="$map_entries, "
+				fi
+				map_entries="${map_entries}${running}-${end} : $mark"
+				running=$((end + 1))
+			done
+			mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
+				meta mark \& "$MMX_MASK" == 0 \
+				meta mark set "numgen inc mod $total_weight map { $map_entries }"
+		fi
+	fi
+
+	# Add offline device fallback rules
+	local dev_entry offline_iface offline_device
+	# Only add if no online members
+	if [ "$total_weight" -eq 0 ]; then
+		for dev_entry in $policy_offline_devices; do
+			offline_iface="${dev_entry%%:*}"
+			offline_device="${dev_entry#*:}"
+			mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
+				oifname "$offline_device" meta mark \& "$MMX_MASK" == 0 \
+				"$(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
+		done
+	fi
+
+	# Add last resort rule
+	case "$last_resort" in
+		blackhole)
+			mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
+				meta mark \& "$MMX_MASK" == 0 \
+				"$(mwan3_nft_mark_expr $MMX_BLACKHOLE $MMX_MASK)"
+			;;
+		default)
+			mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
+				meta mark \& "$MMX_MASK" == 0 \
+				"$(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
+			;;
+		*)
+			mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
+				meta mark \& "$MMX_MASK" == 0 \
+				"$(mwan3_nft_mark_expr $MMX_UNREACHABLE $MMX_MASK)"
+			;;
+	esac
 }
 
-mwan3_set_sticky_ipset()
+mwan3_set_policies_nft()
+{
+	config_foreach mwan3_create_policies_nft policy
+}
+
+mwan3_set_sticky_nft()
+{
+	local interface="$1"
+	local rule="$2"
+	local ipv="$3"
+	local policy="$4"
+
+	local id iface mark
+
+	# Check which interfaces are in the policy chain (by examining policy_members)
+	for iface in $($NFT list chain inet fw4 "mwan3_policy_$policy" 2>/dev/null | \
+			grep "numgen\|meta mark set" | grep -oE '0x[0-9a-f]+' | sort -u); do
+		# This is complex; for sticky we need to check if the interface is online
+		:
+	done
+
+	# For each online interface in the policy, add sticky restore rules
+	mwan3_get_iface_id id "$interface"
+	[ -n "$id" ] || return 0
+	mark=$(mwan3_id2mask id MMX_MASK)
+
+	# Check that interface chain exists (meaning interface is up)
+	$NFT list chain inet fw4 "mwan3_iface_in_${interface}" &>/dev/null || return 0
+
+	local sticky_map_name
+	if [ "$ipv" = "ipv4" ]; then
+		sticky_map_name="mwan3_sticky_v4_${rule}"
+	else
+		sticky_map_name="mwan3_sticky_v6_${rule}"
+	fi
+
+	# Insert rules at beginning of rule chain:
+	# If mark matches this interface AND source NOT in sticky map -> clear mark (force re-evaluation)
+	# If mark is 0 AND source in sticky map for this interface -> set mark
+	# (These are inserted in reverse order since we use 'insert' to prepend)
+
+	# Insert: if mark is zero, try to restore from sticky map
+	mwan3_nft_push "insert rule inet fw4 mwan3_rule_$rule meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $mark $MMX_MASK)"
+	# Insert before that: if mark matches this iface and src not in sticky, clear mark
+	if [ "$ipv" = "ipv4" ]; then
+		mwan3_nft_push "insert rule inet fw4 mwan3_rule_$rule meta mark & $MMX_MASK == $mark ip saddr != @$sticky_map_name $(mwan3_nft_mark_expr 0 $MMX_MASK)"
+	else
+		mwan3_nft_push "insert rule inet fw4 mwan3_rule_$rule meta mark & $MMX_MASK == $mark ip6 saddr != @$sticky_map_name $(mwan3_nft_mark_expr 0 $MMX_MASK)"
+	fi
+}
+
+mwan3_set_sticky_map()
 {
 	local rule="$1"
-	local mmx="$2"
-	local timeout="$3"
+	local timeout="$2"
 
-	local error
-	local update=""
+	$NFT list map inet fw4 "mwan3_sticky_v4_${rule}" &>/dev/null || \
+		mwan3_nft_exec add map inet fw4 "mwan3_sticky_v4_${rule}" \
+			"{ type ipv4_addr : mark ; flags dynamic,timeout ; timeout ${timeout}s ; }"
 
-	mwan3_push_update -! create "mwan3_rule_ipv4_$rule" \
-		hash:ip,mark markmask "$mmx" \
-		timeout "$timeout"
-
-	[ $NO_IPV6 -eq 0 ] &&
-		mwan3_push_update -! create "mwan3_rule_ipv6_$rule" \
-			hash:ip,mark markmask "$mmx" \
-			timeout "$timeout" family inet6
-
-	echo "$update" > "${MWAN3_STATUS_IPTABLES_LOG_DIR}/ipset-set_sticky_ipset-${rule}.dump"
-	error=$(echo "$update" | $IPS restore 2>&1) || LOG error "set_sticky_ipset (${rule}): $error"
+	[ $NO_IPV6 -eq 0 ] && {
+		$NFT list map inet fw4 "mwan3_sticky_v6_${rule}" &>/dev/null || \
+			mwan3_nft_exec add map inet fw4 "mwan3_sticky_v6_${rule}" \
+				"{ type ipv6_addr : mark ; flags dynamic,timeout ; timeout ${timeout}s ; }"
+	}
 }
 
-mwan3_set_user_iptables_rule()
+mwan3_set_user_nft_rule()
 {
-	local ipset family proto policy src_ip src_port src_iface src_dev
+	local ipset_name family proto policy src_ip src_port src_iface src_dev
 	local sticky dest_ip dest_port use_policy timeout policy
 	local global_logging rule_logging loglevel rule_policy rule ipv
 
@@ -793,7 +742,7 @@ mwan3_set_user_iptables_rule()
 	rule_policy=0
 	config_get sticky "$1" sticky 0
 	config_get timeout "$1" timeout 600
-	config_get ipset "$1" ipset
+	config_get ipset_name "$1" ipset
 	config_get proto "$1" proto all
 	config_get src_ip "$1" src_ip
 	config_get src_iface "$1" src_iface
@@ -813,6 +762,10 @@ mwan3_set_user_iptables_rule()
 	for ipaddr in "$src_ip" "$dest_ip"; do
 		if [ -n "$ipaddr" ] && { { [ "$ipv" = "ipv4" ] && echo "$ipaddr" | grep -qE "$IPv6_REGEX"; } ||
 						 { [ "$ipv" = "ipv6" ] && echo "$ipaddr" | grep -qE $IPv4_REGEX; } }; then
+			if [ "$family" = "any" ]; then
+				# family "ipv4 and ipv6": silently skip the non-matching pass
+				return
+			fi
 			LOG warn "invalid $ipv address $ipaddr specified for rule $rule"
 			return
 		fi
@@ -828,7 +781,7 @@ mwan3_set_user_iptables_rule()
 
 	[ -z "$dest_ip" ] && unset dest_ip
 	[ -z "$src_ip" ] && unset src_ip
-	[ -z "$ipset" ] && unset ipset
+	[ -z "$ipset_name" ] && unset ipset_name
 	[ -z "$src_port" ] && unset src_port
 	[ -z "$dest_port" ] && unset dest_port
 	if [ "$proto" != 'tcp' ] && [ "$proto" != 'udp' ]; then
@@ -847,82 +800,136 @@ mwan3_set_user_iptables_rule()
 		LOG warn "Rule $1 exceeds max of 15 chars. Not setting rule" && return 0
 	fi
 
-	if [ -n "$ipset" ]; then
-		ipset="-m set --match-set $ipset dst"
-	fi
-
 	if [ -z "$use_policy" ]; then
 		return
 	fi
 
-	if [ "$use_policy" = "default" ]; then
-		policy="MARK --set-xmark $MMX_DEFAULT/$MMX_MASK"
-	elif [ "$use_policy" = "unreachable" ]; then
-		policy="MARK --set-xmark $MMX_UNREACHABLE/$MMX_MASK"
-	elif [ "$use_policy" = "blackhole" ]; then
-		policy="MARK --set-xmark $MMX_BLACKHOLE/$MMX_MASK"
-	else
-		rule_policy=1
-		policy="mwan3_policy_$use_policy"
-		if [ "$sticky" -eq 1 ]; then
-			mwan3_set_sticky_ipset "$rule" "$MMX_MASK" "$timeout"
+	# Build nft match expression
+	local nft_match=""
+
+	# Protocol
+	if [ "$proto" != "all" ]; then
+		nft_match="$nft_match meta l4proto $proto"
+	fi
+
+	# Source IP
+	if [ -n "$src_ip" ]; then
+		if [ "$ipv" = "ipv4" ]; then
+			nft_match="$nft_match ip saddr $src_ip"
+		else
+			nft_match="$nft_match ip6 saddr $src_ip"
 		fi
 	fi
 
-	if [ $rule_policy -eq 1 ] && [ -n "${current##*-N $policy$'\n'*}" ]; then
-		mwan3_push_update -N "$policy"
+	# Source interface
+	if [ -n "$src_dev" ]; then
+		nft_match="$nft_match iifname \"$src_dev\""
+	fi
+
+	# Destination IP
+	if [ -n "$dest_ip" ]; then
+		if [ "$ipv" = "ipv4" ]; then
+			nft_match="$nft_match ip daddr $dest_ip"
+		else
+			nft_match="$nft_match ip6 daddr $dest_ip"
+		fi
+	fi
+
+	# ipset/nft set match
+	if [ -n "$ipset_name" ]; then
+		# Pre-create the set if it doesn't exist yet (e.g. dnsmasq nftset
+		# hasn't started). nft -f batch fails atomically if any referenced
+		# set is missing, which would kill ALL user rules.
+		if ! $NFT list set inet fw4 "$ipset_name" &>/dev/null; then
+			LOG notice "Creating missing nft set '$ipset_name' for rule $rule"
+			if [ "$ipv" = "ipv4" ]; then
+				mwan3_nft_push "add set inet fw4 $ipset_name { type ipv4_addr; flags interval; auto-merge; }"
+			else
+				mwan3_nft_push "add set inet fw4 $ipset_name { type ipv6_addr; flags interval; auto-merge; }"
+			fi
+		fi
+		if [ "$ipv" = "ipv4" ]; then
+			nft_match="$nft_match ip daddr @$ipset_name"
+		else
+			nft_match="$nft_match ip6 daddr @$ipset_name"
+		fi
+	fi
+
+	# Source port
+	if [ -n "$src_port" ]; then
+		# Convert comma-separated ports to nft syntax
+		local nft_src_port
+		nft_src_port=$(echo "$src_port" | sed 's/,/, /g')
+		nft_match="$nft_match th sport { $nft_src_port }"
+	fi
+
+	# Destination port
+	if [ -n "$dest_port" ]; then
+		local nft_dest_port
+		nft_dest_port=$(echo "$dest_port" | sed 's/,/, /g')
+		nft_match="$nft_match th dport { $nft_dest_port }"
+	fi
+
+	local policy_action
+	if [ "$use_policy" = "default" ]; then
+		policy_action="$(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
+	elif [ "$use_policy" = "unreachable" ]; then
+		policy_action="$(mwan3_nft_mark_expr $MMX_UNREACHABLE $MMX_MASK)"
+	elif [ "$use_policy" = "blackhole" ]; then
+		policy_action="$(mwan3_nft_mark_expr $MMX_BLACKHOLE $MMX_MASK)"
+	else
+		rule_policy=1
+		policy_action="jump mwan3_policy_$use_policy"
+
+		if [ "$sticky" -eq 1 ]; then
+			mwan3_set_sticky_map "$rule" "$timeout"
+		fi
+	fi
+
+	# Create policy chain if it doesn't exist
+	if [ $rule_policy -eq 1 ]; then
+		$NFT list chain inet fw4 "mwan3_policy_$use_policy" &>/dev/null || \
+			mwan3_nft_push "add chain inet fw4 mwan3_policy_$use_policy"
 	fi
 
 	if [ $rule_policy -eq 1 ] && [ "$sticky" -eq 1 ]; then
-		if [ -n "${current##*-N mwan3_rule_$1$'\n'*}" ]; then
-			mwan3_push_update -N "mwan3_rule_$1"
+		# Create sticky rule chain
+		$NFT list chain inet fw4 "mwan3_rule_$1" &>/dev/null || \
+			mwan3_nft_push "add chain inet fw4 mwan3_rule_$1"
+		mwan3_nft_push "flush chain inet fw4 mwan3_rule_$1"
+
+		# Restore mark from sticky map (regular map lookup, not vmap which requires verdicts)
+		if [ "$ipv" = "ipv4" ]; then
+			mwan3_nft_push "add rule inet fw4 mwan3_rule_$1 meta mark set ip saddr map @mwan3_sticky_v4_${rule}"
+		else
+			mwan3_nft_push "add rule inet fw4 mwan3_rule_$1 meta mark set ip6 saddr map @mwan3_sticky_v6_${rule}"
 		fi
 
-		mwan3_push_update -F "mwan3_rule_$1"
-		config_foreach mwan3_set_sticky_iptables interface "$rule" "$ipv" "$policy"
+		# Fall through to policy for new flows (mark still 0 means no sticky entry)
+		mwan3_nft_push "add rule inet fw4 mwan3_rule_$1 meta mark & $MMX_MASK == 0 jump mwan3_policy_$use_policy"
 
+		# After policy marks, update sticky map
+		if [ "$ipv" = "ipv4" ]; then
+			mwan3_nft_push "add rule inet fw4 mwan3_rule_$1 meta mark & $MMX_MASK != 0 update @mwan3_sticky_v4_${rule} { ip saddr timeout ${timeout}s : meta mark & $MMX_MASK }"
+		else
+			mwan3_nft_push "add rule inet fw4 mwan3_rule_$1 meta mark & $MMX_MASK != 0 update @mwan3_sticky_v6_${rule} { ip6 saddr timeout ${timeout}s : meta mark & $MMX_MASK }"
+		fi
 
-		mwan3_push_update -A "mwan3_rule_$1" \
-				  -m mark --mark 0/$MMX_MASK \
-				  -j "$policy"
-		mwan3_push_update -A "mwan3_rule_$1" \
-				  -m mark ! --mark 0xfc00/0xfc00 \
-				  -j SET --del-set "mwan3_rule_${ipv}_${rule}" src,src
-		mwan3_push_update -A "mwan3_rule_$1" \
-				  -m mark ! --mark 0xfc00/0xfc00 \
-				  -j SET --add-set "mwan3_rule_${ipv}_${rule}" src,src
-		policy="mwan3_rule_$1"
+		policy_action="jump mwan3_rule_$1"
 	fi
+
+	# Add logging rule if enabled
 	if [ "$global_logging" = "1" ] && [ "$rule_logging" = "1" ]; then
-		mwan3_push_update -A mwan3_rules \
-				  -p "$proto" \
-				  ${src_ip:+-s} $src_ip \
-				  ${src_dev:+-i} $src_dev \
-				  ${dest_ip:+-d} $dest_ip \
-				  $ipset \
-				  ${src_port:+-m} ${src_port:+multiport} ${src_port:+--sports} $src_port \
-				  ${dest_port:+-m} ${dest_port:+multiport} ${dest_port:+--dports} $dest_port \
-				  -m mark --mark 0/$MMX_MASK \
-				  -m comment --comment "$1" \
-				  -j LOG --log-level "$loglevel" --log-prefix "MWAN3($1)"
+		mwan3_nft_push "add rule inet fw4 mwan3_rules $nft_match meta mark & $MMX_MASK == 0 log prefix \"MWAN3($1)\" level $loglevel"
 	fi
 
-	mwan3_push_update -A mwan3_rules \
-			  -p "$proto" \
-			  ${src_ip:+-s} $src_ip \
-			  ${src_dev:+-i} $src_dev \
-			  ${dest_ip:+-d} $dest_ip \
-			  $ipset \
-			  ${src_port:+-m} ${src_port:+multiport} ${src_port:+--sports} $src_port \
-			  ${dest_port:+-m} ${dest_port:+multiport} ${dest_port:+--dports} $dest_port \
-			  -m mark --mark 0/$MMX_MASK \
-			  -j $policy
-
+	# Add the actual rule
+	mwan3_nft_push "add rule inet fw4 mwan3_rules $nft_match meta mark & $MMX_MASK == 0 $policy_action"
 }
 
 mwan3_set_user_iface_rules()
 {
-	local current iface update family error device is_src_iface
+	local iface device is_src_iface
 	iface=$1
 	device=$2
 
@@ -931,16 +938,8 @@ mwan3_set_user_iface_rules()
 		return
 	fi
 
-	config_get family "$iface" family ipv4
-
-	if [ "$family" = "ipv4" ]; then
-		IPT="$IPT4"
-		IPTR="$IPT4R"
-	elif [ "$family" = "ipv6" ]; then
-		IPT="$IPT6"
-		IPTR="$IPT6R"
-	fi
-	$IPT -S | grep -q "^-A mwan3_rules.*-i $device" && return
+	# Check if rules already reference this device
+	$NFT list chain inet fw4 mwan3_rules 2>/dev/null | grep -q "iifname \"$device\"" && return
 
 	is_src_iface=0
 
@@ -956,38 +955,18 @@ mwan3_set_user_iface_rules()
 
 mwan3_set_user_rules()
 {
-	local IPT IPTR ipv
-	local current update error
+	local ipv
+
+	mwan3_nft_batch_start
+
+	mwan3_nft_push "flush chain inet fw4 mwan3_rules"
 
 	for ipv in ipv4 ipv6; do
-		if [ "$ipv" = "ipv4" ]; then
-			IPT="$IPT4"
-			IPTR="$IPT4R"
-		elif [ "$ipv" = "ipv6" ]; then
-			IPT="$IPT6"
-			IPTR="$IPT6R"
-		fi
 		[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && continue
-		update="*mangle"
-		current="$($IPT -S)"$'\n'
-
-
-		if [ -n "${current##*-N mwan3_rules*}" ]; then
-			mwan3_push_update -N "mwan3_rules"
-		fi
-
-		mwan3_push_update -F mwan3_rules
-
-		config_foreach mwan3_set_user_iptables_rule rule "$ipv"
-
-		mwan3_push_update COMMIT
-		mwan3_push_update ""
-
-		echo "$update" > "${MWAN3_STATUS_IPTABLES_LOG_DIR}/iptables-set_user_rules-${ipv}.dump"
-		error=$(echo "$update" | $IPTR 2>&1) || LOG error "set_user_rules (${ipv}): $error"
+		config_foreach mwan3_set_user_nft_rule rule "$ipv"
 	done
 
-
+	mwan3_nft_batch_commit
 }
 
 mwan3_interface_hotplug_shutdown()
@@ -1005,7 +984,7 @@ mwan3_interface_hotplug_shutdown()
 		env -i ACTION=ifdown \
 			INTERFACE=$interface \
 			DEVICE=$device \
-			sh /etc/hotplug.d/iface/15-mwan3
+			sh /etc/hotplug.d/iface/25-mwan3
 	else
 		[ "$status" = "online" ] && {
 			env -i MWAN3_SHUTDOWN="1" \
@@ -1051,7 +1030,7 @@ mwan3_ifup()
 	{
 		env -i MWAN3_STARTUP=$caller ACTION=ifup \
 		    INTERFACE=$interface DEVICE=$l3_device \
-		    sh /etc/hotplug.d/iface/15-mwan3
+		    sh /etc/hotplug.d/iface/25-mwan3
 	}
 
 	if [ "$up" != "1" ] || [ -z "$l3_device" ]; then
@@ -1083,7 +1062,7 @@ mwan3_get_iface_hotplug_state() {
 
 mwan3_report_iface_status()
 {
-	local device result tracking IP IPT
+	local device result tracking IP
 	local status online uptime result
 
 	mwan3_get_iface_id id "$1"
@@ -1093,12 +1072,10 @@ mwan3_report_iface_status()
 
 	if [ "$family" = "ipv4" ]; then
 		IP="$IP4"
-		IPT="$IPT4"
 	fi
 
 	if [ "$family" = "ipv6" ]; then
 		IP="$IP6"
-		IPT="$IPT6"
 	fi
 
 	if [ -f "$MWAN3TRACK_STATUS_DIR/${1}/STATUS" ]; then
@@ -1121,7 +1098,7 @@ mwan3_report_iface_status()
 			result=$((result+2))
 		[ -n "$($IP rule | awk '$1 == "'$((id+3000)):'"')" ] ||
 			result=$((result+4))
-		[ -n "$($IPT -S mwan3_iface_in_$1 2> /dev/null)" ] ||
+		[ -n "$($NFT list chain inet fw4 mwan3_iface_in_$1 2>/dev/null)" ] ||
 			result=$((result+8))
 		[ -n "$($IP route list table $id default dev $device 2> /dev/null)" ] ||
 			result=$((result+16))
@@ -1136,72 +1113,103 @@ mwan3_report_iface_status()
 	fi
 }
 
+mwan3_mark_to_name()
+{
+	local target="$1" entry iface _id _mark
+	[ -z "$mwan3_iface_tbl" ] && mwan3_update_iface_to_table
+	for entry in $mwan3_iface_tbl; do
+		[ -z "$entry" ] && continue
+		iface="${entry%%=*}"
+		_id="${entry#*=}"
+		[ -z "$_id" ] && continue
+		_mark=$(mwan3_id2mask _id MMX_MASK)
+		# Arithmetic comparison to handle format differences (0x100 vs 0x00000100)
+		[ $((_mark)) -eq $((target)) ] && echo "$iface" && return
+	done
+	[ $((target)) -eq $((MMX_DEFAULT)) ] && echo "default" && return
+	[ $((target)) -eq $((MMX_BLACKHOLE)) ] && echo "blackhole" && return
+	[ $((target)) -eq $((MMX_UNREACHABLE)) ] && echo "unreachable" && return
+	echo "$target"
+}
+
 mwan3_report_policies()
 {
-	local ipt="$1"
-	local policy="$2"
+	local policy="$1"
+	local output iface weight total mark
 
-	local percent total_weight weight iface
+	output=$($NFT list chain inet fw4 "mwan3_policy_$policy" 2>/dev/null)
+	[ -z "$output" ] && return
 
-	total_weight=$($ipt -S "$policy" | grep -v '.*--comment "out .*" .*$' | cut -s -d'"' -f2 | head -1 | awk '{print $3}')
-
-	if [ -n "${total_weight##*[!0-9]*}" ]; then
-		for iface in $($ipt -S "$policy" | grep -v '.*--comment "out .*" .*$' | cut -s -d'"' -f2 | awk '{print $1}'); do
-			weight=$($ipt -S "$policy" | grep -v '.*--comment "out .*" .*$' | cut -s -d'"' -f2 | awk '$1 == "'$iface'"' | awk '{print $2}')
-			percent=$((weight*100/total_weight))
-			echo " $iface ($percent%)"
+	# Check if numgen is used (load balancing)
+	if echo "$output" | grep -q "numgen"; then
+		# Parse numgen map entries to extract marks and weights
+		# Format: numgen inc mod N map { 0-2 : 0xMARK1, 3-5 : 0xMARK2, ... }
+		# Note: nft may wrap the map across multiple lines
+		total=$(echo "$output" | grep -oE 'mod [0-9]+' | awk '{print $2}')
+		# Extract ranges from entire output (map may span lines)
+		echo "$output" | grep -oE '[0-9]+-[0-9]+ : 0x[0-9a-f]+' | while read -r entry; do
+			local range_start range_end mark_val
+			range_start="${entry%%-*}"
+			entry="${entry#*-}"
+			range_end="${entry%% *}"
+			mark_val="${entry##* }"
+			weight=$((range_end - range_start + 1))
+			local percent=$((weight * 100 / total))
+			echo " $(mwan3_mark_to_name "$mark_val") ($percent%)"
 		done
 	else
-		echo " $($ipt -S "$policy" | grep -v '.*--comment "out .*" .*$' | sed '/.*--comment \([^ ]*\) .*$/!d;s//\1/;q')"
+		# Single member or last resort — extract mark and resolve to name
+		local mark_line mark_val
+		mark_line=$(echo "$output" | grep "meta mark set" | head -1)
+		if [ -n "$mark_line" ]; then
+			mark_val=$(echo "$mark_line" | grep -oE '0x[0-9a-f]+' | tail -1)
+			echo " $(mwan3_mark_to_name "$mark_val")"
+		fi
 	fi
 }
 
 mwan3_report_policies_v4()
 {
-	local policy
-
-	for policy in $($IPT4 -S | awk '{print $2}' | grep mwan3_policy_ | sort -u); do
-		echo "$policy:" | sed 's/mwan3_policy_//'
-		mwan3_report_policies "$IPT4" "$policy"
-	done
+	_report_one_policy() {
+		local output
+		output=$($NFT list chain inet fw4 "mwan3_policy_$1" 2>/dev/null)
+		[ -z "$output" ] && return
+		echo "$1:"
+		mwan3_report_policies "$1"
+	}
+	config_foreach _report_one_policy policy
 }
 
 mwan3_report_policies_v6()
 {
-	local policy
-
-	for policy in $($IPT6 -S | awk '{print $2}' | grep mwan3_policy_ | sort -u); do
-		echo "$policy:" | sed 's/mwan3_policy_//'
-		mwan3_report_policies "$IPT6" "$policy"
-	done
+	# With nftables inet family, policies are shared; report same as v4
+	mwan3_report_policies_v4
 }
 
 mwan3_report_connected_v4()
 {
-	if [ -n "$($IPT4 -S mwan3_connected_ipv4 2> /dev/null)" ]; then
-		$IPS -o save list mwan3_connected_ipv4 | grep add | cut -d " " -f 3
-	fi
+	$NFT list set inet fw4 mwan3_connected_v4 2>/dev/null | \
+		sed -n '/elements/,/}/p' | grep -oE "$IPv4_REGEX(/[0-9]+)?"
 }
 
 mwan3_report_connected_v6()
 {
-	if [ -n "$($IPT6 -S mwan3_connected_ipv6 2> /dev/null)" ]; then
-		$IPS -o save list mwan3_connected_ipv6 | grep add | cut -d " " -f 3
-	fi
+	[ $NO_IPV6 -ne 0 ] && return
+	$NFT list set inet fw4 mwan3_connected_v6 2>/dev/null | \
+		sed -n '/elements/,/}/p' | grep -oE "$IPv6_REGEX(/[0-9]+)?"
 }
 
 mwan3_report_rules_v4()
 {
-	if [ -n "$($IPT4 -S mwan3_rules 2> /dev/null)" ]; then
-		$IPT4 -L mwan3_rules -n -v 2> /dev/null | tail -n+3 | sed 's/mark.*//' | sed 's/mwan3_policy_/- /' | sed 's/mwan3_rule_/S /'
-	fi
+	$NFT list chain inet fw4 mwan3_rules 2>/dev/null | \
+		grep -v "^[[:space:]]*$\|^table \|^[[:space:]]*chain \|^[[:space:]]*type \|^[[:space:]]*policy \|{$\|^[[:space:]]*}$" | \
+		sed 's/^[[:space:]]*/ /; s/jump mwan3_policy_/- /; s/jump mwan3_rule_/S /'
 }
 
 mwan3_report_rules_v6()
 {
-	if [ -n "$($IPT6 -S mwan3_rules 2> /dev/null)" ]; then
-		$IPT6 -L mwan3_rules -n -v 2> /dev/null | tail -n+3 | sed 's/mark.*//' | sed 's/mwan3_policy_/- /' | sed 's/mwan3_rule_/S /'
-	fi
+	# With nftables inet family, rules are shared; report same as v4
+	mwan3_report_rules_v4
 }
 
 mwan3_flush_conntrack()

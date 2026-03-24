@@ -3,7 +3,7 @@
 . "${IPKG_INSTROOT}/lib/functions/network.sh"
 . "${IPKG_INSTROOT}/lib/mwan3/mwan3.sh"
 
-START=19
+START=20
 USE_PROCD=1
 SCRIPTNAME="mwan3-init"
 
@@ -28,17 +28,18 @@ start_service() {
 	local enabled hotplug_pids
 
 	mwan3_init
+	mwan3_ensure_nft_framework
 	config_foreach start_tracker interface
 
 	mwan3_update_iface_to_table
-	mwan3_set_dynamic_ipset
-	mwan3_set_connected_ipset
-	mwan3_set_custom_ipset
+	mwan3_set_dynamic_sets
+	mwan3_set_connected_sets
+	mwan3_set_custom_sets
 	mwan3_set_general_rules
-	mwan3_set_general_iptables
+	mwan3_set_general_nft
 	config_foreach mwan3_ifup interface "init"
 	wait $hotplug_pids
-	mwan3_set_policies_iptables
+	mwan3_set_policies_nft
 	mwan3_set_user_rules
 
 	procd_open_instance rtmon_ipv4
@@ -46,7 +47,7 @@ start_service() {
 	procd_set_param respawn
 	procd_close_instance
 
-	if command -v ip6tables > /dev/null; then
+	if [ $NO_IPV6 -eq 0 ]; then
 		procd_open_instance rtmon_ipv6
 		procd_set_param command /usr/sbin/mwan3rtmon ipv6
 		procd_set_param respawn
@@ -55,20 +56,16 @@ start_service() {
 }
 
 stop_service() {
-	local ipset rule IP IPTR IPT family table tid
+	local chain_name IP family table tid
 
 	mwan3_init
 	config_foreach mwan3_interface_shutdown interface
 
 	for family in ipv4 ipv6; do
 		if [ "$family" = "ipv4" ]; then
-			IPT="$IPT4"
-			IPTR="$IPT4R"
 			IP="$IP4"
 		elif [ "$family" = "ipv6" ]; then
 			[ $NO_IPV6 -ne 0 ] && continue
-			IPT="$IPT6"
-			IPTR="$IPT6R"
 			IP="$IP6"
 		fi
 
@@ -80,21 +77,39 @@ stop_service() {
 		for rule in $($IP rule list | grep -E '^[1-3][0-9]{3}:' | cut -d ':' -f 1); do
 			$IP rule del pref $rule &> /dev/null
 		done
-		table="$($IPT -S)"
-		{
-			echo "*mangle";
-			[ -z "${table##*PREROUTING -j mwan3_hook*}" ] && echo "-D PREROUTING -j mwan3_hook"
-			[ -z "${table##*OUTPUT -j mwan3_hook*}" ] && echo "-D OUTPUT -j mwan3_hook"
-			echo "$table" | awk '{print "-F "$2}' | grep mwan3 | sort -u
-			echo "$table" | awk '{print "-X "$2}' | grep mwan3 | sort -u
-			echo "COMMIT"
-		} | $IPTR
 	done
 
-	# Needed for the firewall backend to release the ipsets reference
-	sleep 2
-	for ipset in $($IPS -n list | grep mwan3_); do
-		$IPS -q destroy $ipset
+	# Flush all mwan3 chains (rules removed, chains stay as skeletons)
+	for chain_name in $($NFT list chains inet fw4 2>/dev/null | grep "chain mwan3_" | awk '{print $2}'); do
+		$NFT flush chain inet fw4 "$chain_name" >/dev/null 2>&1
+	done
+
+	# Delete dynamic per-interface and per-policy chains (not the skeleton ones from 10-mwan3.nft)
+	for chain_name in $($NFT list chains inet fw4 2>/dev/null | grep "chain mwan3_" | awk '{print $2}'); do
+		case "$chain_name" in
+			mwan3_prerouting|mwan3_output|mwan3_ifaces_in|mwan3_rules|mwan3_connected|mwan3_custom|mwan3_dynamic)
+				# These are skeleton chains from the static .nft file; keep them
+				;;
+			*)
+				$NFT delete chain inet fw4 "$chain_name" >/dev/null 2>&1
+				;;
+		esac
+	done
+
+	# Final safety flush of skeleton chains (handles any transient failures above)
+	for chain_name in mwan3_prerouting mwan3_output mwan3_ifaces_in mwan3_rules mwan3_connected mwan3_custom mwan3_dynamic; do
+		$NFT flush chain inet fw4 "$chain_name" >/dev/null 2>&1
+	done
+
+	# Flush all mwan3 sets
+	for setname in $($NFT list sets inet fw4 2>/dev/null | grep "set mwan3_" | awk '{print $2}'); do
+		$NFT flush set inet fw4 "$setname" >/dev/null 2>&1
+	done
+
+	# Delete dynamic maps (sticky maps)
+	for mapname in $($NFT list maps inet fw4 2>/dev/null | grep "map mwan3_" | awk '{print $2}'); do
+		$NFT flush map inet fw4 "$mapname" >/dev/null 2>&1
+		$NFT delete map inet fw4 "$mapname" >/dev/null 2>&1
 	done
 
 	rm -rf $MWAN3_STATUS_DIR $MWAN3TRACK_STATUS_DIR

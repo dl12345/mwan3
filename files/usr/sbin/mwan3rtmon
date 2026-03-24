@@ -21,7 +21,7 @@ func_trap()
 
 mwan3_add_all_routes()
 {
-	local tid IP IPT route_line family active_tbls tid initial_state error
+	local tid IP route_line family active_tbls tid initial_state error
 	local ipv=$1
 
 	add_active_tbls()
@@ -30,7 +30,7 @@ mwan3_add_all_routes()
 		config_get family "$1" family ipv4
 		config_get initial_state "$1" initial_state "online"
 		[ "$family" != "$ipv" ] && return
-		if $IPT -S "mwan3_iface_in_$1" &> /dev/null; then
+		if $NFT list chain inet fw4 "mwan3_iface_in_$1" &> /dev/null; then
 			active_tbls="$active_tbls${tid} "
 		fi
 	}
@@ -47,10 +47,8 @@ mwan3_add_all_routes()
 	[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && return
 	if [ "$ipv" = "ipv4" ]; then
 		IP="$IP4"
-		IPT="$IPT4"
 	elif [ "$ipv" = "ipv6" ]; then
 		IP="$IP6"
-		IPT="$IPT6"
 	fi
 	tid=0
 	active_tbls=" "
@@ -75,7 +73,19 @@ mwan3_rtmon_route_handle()
 
 	if [ "$route_line" = "$1" ]; then
 		action="replace"
-		$IPS -! add mwan3_connected_${route_family} ${route_line%% *}
+		# Add CIDR networks to the connected set; skip host routes
+		# (bare IPs without a prefix length) as they are remote
+		# destinations that should NOT bypass mwan3.
+		local network="${route_line%% *}"
+		case "$network" in
+		*/*)
+			if [ "$route_family" = "ipv4" ]; then
+				$NFT add element inet fw4 mwan3_connected_v4 "{ $network }" 2>/dev/null
+			elif [ "$route_family" = "ipv6" ]; then
+				$NFT add element inet fw4 mwan3_connected_v6 "{ $network }" 2>/dev/null
+			fi
+			;;
+		esac
 	else
 		action="del"
 		mwan3_set_connected_${route_family}

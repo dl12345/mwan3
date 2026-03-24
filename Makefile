@@ -8,8 +8,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mwan3
-PKG_VERSION:=2.12.0
-PKG_RELEASE:=3
+PKG_VERSION:=3
+PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Florian Eckert <fe@dev.tdt.de>
 PKG_LICENSE:=GPL-2.0
@@ -23,11 +23,8 @@ define Package/mwan3
    SUBMENU:=Routing and Redirection
    DEPENDS:= \
      +ip \
-     +ipset \
-     +iptables \
-     +IPV6:ip6tables \
-     +iptables-mod-conntrack-extra \
-     +iptables-mod-ipopt \
+     +kmod-nft-core \
+     +nftables-json \
      +rpcd-mod-ucode \
      +jshn
    TITLE:=Multiwan hotplug script with connection tracking support
@@ -77,9 +74,9 @@ define Package/mwan3/install
 		$(1)/etc/config/
 
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/iface
-	$(INSTALL_DATA) ./files/etc/hotplug.d/iface/15-mwan3 \
+	$(INSTALL_DATA) ./files/etc/hotplug.d/iface/25-mwan3 \
 		$(1)/etc/hotplug.d/iface/
-	$(INSTALL_DATA) ./files/etc/hotplug.d/iface/16-mwan3-user \
+	$(INSTALL_DATA) ./files/etc/hotplug.d/iface/26-mwan3-user \
 		$(1)/etc/hotplug.d/iface/
 
 	$(INSTALL_DIR) $(1)/etc/init.d
@@ -90,6 +87,10 @@ define Package/mwan3/install
 	$(INSTALL_DATA) ./files/lib/mwan3/common.sh \
 		$(1)/lib/mwan3/
 	$(INSTALL_DATA) ./files/lib/mwan3/mwan3.sh \
+		$(1)/lib/mwan3/
+	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-fw-include.sh \
+		$(1)/lib/mwan3/
+	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-fw-rebuild.sh \
 		$(1)/lib/mwan3/
 
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/ucode/
@@ -110,8 +111,14 @@ define Package/mwan3/install
 
 	$(CP) $(PKG_BUILD_DIR)/libwrap_mwan3_sockopt.so.1.0 $(1)/lib/mwan3/
 
+	$(INSTALL_DIR) $(1)/usr/share/nftables.d/table-post
+	$(INSTALL_DATA) ./files/usr/share/nftables.d/table-post/10-mwan3.nft \
+		$(1)/usr/share/nftables.d/table-post/
+
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_DATA) ./files/etc/uci-defaults/mwan3-migrate-flush_conntrack \
+		$(1)/etc/uci-defaults/
+	$(INSTALL_DATA) ./files/etc/uci-defaults/mwan3-firewall-include \
 		$(1)/etc/uci-defaults/
 endef
 

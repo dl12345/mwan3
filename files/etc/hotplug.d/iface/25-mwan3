@@ -28,10 +28,30 @@ mwan3_init
 	exit 0
 }
 
-$IPT4 -S mwan3_hook &>/dev/null || {
+$NFT list chain inet fw4 mwan3_prerouting &>/dev/null || {
 	LOG warn "hotplug called on $INTERFACE before mwan3 has been set up"
 	exit 0
 }
+
+# Detect fw4 reload: chain exists but has no rules.
+# The 20-firewall hotplug triggers fw4 -q reload on ifup/ifupdate, which
+# flushes the entire table inet fw4 and recreates it from scratch. Only
+# the static skeleton from 10-mwan3.nft survives (empty chains/sets).
+# Since this script runs at position 25 (after 20-firewall), we detect
+# the empty state and rebuild all mwan3 nft rules.
+if [ "$MWAN3_STARTUP" != "init" ] && \
+   ! $NFT list chain inet fw4 mwan3_prerouting 2>/dev/null | grep -q "meta mark"; then
+	LOG notice "mwan3 rules missing (fw4 reload detected), rebuilding all nft rules"
+	mwan3_set_connected_sets
+	mwan3_set_custom_sets
+	mwan3_set_general_nft
+	config_foreach mwan3_rebuild_iface_nft interface
+	mwan3_set_policies_nft
+	mwan3_set_user_rules
+	# fw4 reload flushed all nft sets including dnsmasq-populated ones;
+	# signal dnsmasq to clear cache so next queries re-populate nft sets
+	killall -HUP dnsmasq 2>/dev/null
+fi
 
 if [ "$MWAN3_STARTUP" != "init" ] && [ "$ACTION" = "ifup" ]; then
 	mwan3_set_user_iface_rules $INTERFACE $DEVICE
@@ -56,31 +76,31 @@ LOG notice "Execute $ACTION event on interface $INTERFACE (${DEVICE:-unknown})"
 case "$ACTION" in
 	connected)
 		mwan3_set_iface_hotplug_state $INTERFACE "online"
-		mwan3_set_policies_iptables
+		mwan3_set_policies_nft
 		;;
 	ifup)
-		mwan3_create_iface_iptables $INTERFACE $DEVICE
+		mwan3_create_iface_nft $INTERFACE $DEVICE
 		mwan3_create_iface_rules $INTERFACE $DEVICE
 		mwan3_set_iface_hotplug_state $INTERFACE "$status"
 		if [ "$MWAN3_STARTUP" != "init" ]; then
 			mwan3_create_iface_route $INTERFACE $DEVICE
 			mwan3_set_general_rules
-			[ "$status" = "online" ] && mwan3_set_policies_iptables
+			[ "$status" = "online" ] && mwan3_set_policies_nft
 		fi
 		[ "$ACTION" = ifup ] && procd_running mwan3 "track_$INTERFACE" && procd_send_signal mwan3 "track_$INTERFACE" USR2
 		;;
 	disconnected)
 		mwan3_set_iface_hotplug_state $INTERFACE "offline"
-		mwan3_set_policies_iptables
+		mwan3_set_policies_nft
 		;;
 	ifdown)
 		mwan3_set_iface_hotplug_state $INTERFACE "offline"
-		mwan3_delete_iface_ipset_entries $INTERFACE
+		mwan3_delete_iface_map_entries $INTERFACE
 		mwan3_delete_iface_rules $INTERFACE
 		mwan3_delete_iface_route $INTERFACE
-		mwan3_delete_iface_iptables $INTERFACE
+		mwan3_delete_iface_nft $INTERFACE
 		procd_running mwan3 "track_$INTERFACE" && procd_send_signal mwan3 "track_$INTERFACE" USR1
-		mwan3_set_policies_iptables
+		mwan3_set_policies_nft
 	;;
 esac
 

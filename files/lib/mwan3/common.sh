@@ -5,7 +5,6 @@ IP6="ip -6"
 SCRIPTNAME="$(basename "$0")"
 
 MWAN3_STATUS_DIR="/var/run/mwan3"
-MWAN3_STATUS_IPTABLES_LOG_DIR="${MWAN3_STATUS_DIR}/iptables_log"
 MWAN3TRACK_STATUS_DIR="/var/run/mwan3track"
 
 MWAN3_INTERFACE_MAX=""
@@ -19,14 +18,13 @@ MMX_UNREACHABLE=""
 MM_UNREACHABLE=""
 MAX_SLEEP=$(((1<<31)-1))
 
-command -v ip6tables > /dev/null
+# nftables inet family handles both IPv4 and IPv6
+# Check if IPv6 is disabled in the kernel
+[ -d /proc/sys/net/ipv6 ]
 NO_IPV6=$?
 
-IPS="ipset"
-IPT4="iptables -t mangle -w"
-IPT6="ip6tables -t mangle -w"
-IPT4R="iptables-restore -T mangle -w -n"
-IPT6R="ip6tables-restore -T mangle -w -n"
+NFT="nft"
+MWAN3_NFT_BATCH="/tmp/mwan3_nft_batch.$$"
 
 LOG()
 {
@@ -36,6 +34,92 @@ LOG()
 	# should be removed
 	[ "$facility" = "debug" ] && return
 	logger -t "${SCRIPTNAME}[$$]" -p $facility "$*"
+}
+
+# Execute an nft command with error logging
+mwan3_nft_exec()
+{
+	local error
+	error=$($NFT "$@" 2>&1) || {
+		LOG error "nft $*: $error"
+		return 1
+	}
+}
+
+# Start an nft batch
+mwan3_nft_batch_start()
+{
+	echo "" > "$MWAN3_NFT_BATCH"
+}
+
+# Add a line to the nft batch
+mwan3_nft_push()
+{
+	echo "$*" >> "$MWAN3_NFT_BATCH"
+}
+
+# Commit the nft batch
+mwan3_nft_batch_commit()
+{
+	local error
+	error=$($NFT -f "$MWAN3_NFT_BATCH" 2>&1) || {
+		LOG error "nft batch: $error"
+		rm -f "$MWAN3_NFT_BATCH"
+		return 1
+	}
+	rm -f "$MWAN3_NFT_BATCH"
+}
+
+# Build an nft mark set expression
+# iptables: -j MARK --set-xmark VALUE/MASK
+# means: mark = (mark & ~MASK) | VALUE
+# nftables: meta mark set (meta mark & ~MASK) | VALUE
+# Uses & and | symbols (not 'and'/'or' keywords) to avoid parser ambiguity
+mwan3_nft_mark_expr()
+{
+	local value="$1" mask="$2"
+	local complement
+	complement=$(printf "0x%08x" $(( (~mask) & 0xFFFFFFFF )))
+	echo "meta mark set meta mark & $complement | $value"
+}
+
+# Ensure all mwan3 nftables framework objects exist with correct flags.
+# Always deletes and recreates sets to guarantee auto-merge is present.
+mwan3_ensure_nft_framework()
+{
+	local setname
+
+	# Always delete existing sets — nft 'add set' is idempotent and won't
+	# update flags (like auto-merge) on existing sets, so we must recreate.
+	# stop_service() flushes chains first, so no rules reference the sets.
+	for setname in mwan3_connected_v4 mwan3_connected_v6 \
+		       mwan3_custom_v4 mwan3_custom_v6 \
+		       mwan3_dynamic_v4 mwan3_dynamic_v6; do
+		$NFT delete set inet fw4 "$setname" >/dev/null 2>&1
+	done
+
+	mwan3_nft_batch_start
+
+	# Sets for network classification (interval + auto-merge for CIDR support)
+	mwan3_nft_push "add set inet fw4 mwan3_connected_v4 { type ipv4_addr; flags interval; auto-merge; }"
+	mwan3_nft_push "add set inet fw4 mwan3_connected_v6 { type ipv6_addr; flags interval; auto-merge; }"
+	mwan3_nft_push "add set inet fw4 mwan3_custom_v4 { type ipv4_addr; flags interval; auto-merge; }"
+	mwan3_nft_push "add set inet fw4 mwan3_custom_v6 { type ipv6_addr; flags interval; auto-merge; }"
+	mwan3_nft_push "add set inet fw4 mwan3_dynamic_v4 { type ipv4_addr; flags interval; auto-merge; }"
+	mwan3_nft_push "add set inet fw4 mwan3_dynamic_v6 { type ipv6_addr; flags interval; auto-merge; }"
+
+	# Hook chains (base chains with type/hook/priority)
+	mwan3_nft_push "add chain inet fw4 mwan3_prerouting { type filter hook prerouting priority mangle + 1; policy accept; }"
+	mwan3_nft_push "add chain inet fw4 mwan3_output { type route hook output priority mangle + 1; policy accept; }"
+
+	# Internal chains (jumped to from hook chains)
+	mwan3_nft_push "add chain inet fw4 mwan3_ifaces_in"
+	mwan3_nft_push "add chain inet fw4 mwan3_rules"
+	mwan3_nft_push "add chain inet fw4 mwan3_connected"
+	mwan3_nft_push "add chain inet fw4 mwan3_custom"
+	mwan3_nft_push "add chain inet fw4 mwan3_dynamic"
+
+	mwan3_nft_batch_commit
 }
 
 mwan3_get_true_iface()
@@ -162,7 +246,6 @@ mwan3_init()
 	config_load mwan3
 
 	[ -d $MWAN3_STATUS_DIR ] || mkdir -p $MWAN3_STATUS_DIR/iface_state
-	[ -d "$MWAN3_STATUS_IPTABLES_LOG_DIR" ] || mkdir -p "$MWAN3_STATUS_IPTABLES_LOG_DIR"
 
 	# mwan3's MARKing mask (at least 3 bits should be set)
 	if [ -e "${MWAN3_STATUS_DIR}/mmx_mask" ]; then
@@ -195,6 +278,9 @@ mwan3_init()
 	MMX_DEFAULT=$(mwan3_id2mask mmdefault MMX_MASK)
 	MMX_BLACKHOLE=$(mwan3_id2mask MM_BLACKHOLE MMX_MASK)
 	MMX_UNREACHABLE=$(mwan3_id2mask MM_UNREACHABLE MMX_MASK)
+
+	# Precompute mask complement for nft rules
+	MMX_MASK_COMPLEMENT=$(printf "0x%08x" $(( (~MMX_MASK) & 0xFFFFFFFF )))
 }
 
 # maps the 1st parameter so it only uses the bits allowed by the bitmask (2nd parameter)

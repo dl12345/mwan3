@@ -59,59 +59,130 @@ function get_mwan3track_status(iface, uci_track_ips, procd) {
 	return 'down';
 }
 
-const connected_check_cmd = {
-	'4': 'iptables -t mangle -w -S mwan3_connected_ipv4',
-	'6': 'ip6tables -t mangle -w -S mwan3_connected_ipv6',
+const nft_connected_set = {
+	'4': 'mwan3_connected_v4',
+	'6': 'mwan3_connected_v6',
 };
-const ipset_save_re = regexp('^add mwan3_connected_ipv[46] (.*)\n$');
 
 function get_connected_ips(version) {
-	const check = popen(connected_check_cmd[version], 'r');
-	check.read('all');
-	if (check.close() != 0) {
+	const setname = nft_connected_set[version];
+	const nft = popen(sprintf('nft -j list set inet fw4 %s 2>/dev/null', setname), 'r');
+	if (!nft) {
 		return [];
 	}
-	const ipset = popen(sprintf('ipset -o save list mwan3_connected_ipv%s', version), 'r');
+	const raw = nft.read('all');
+	nft.close();
+
+	if (!raw || length(raw) == 0) {
+		return [];
+	}
+
+	let data;
+	try {
+		data = json(raw);
+	} catch(e) {
+		return [];
+	}
+
 	const ips = [];
-	for (let line = ipset.read('line'); length(line); line = ipset.read('line')) {
-		const m = match(line, ipset_save_re);
-		if (length(m) == 2) {
-			push(ips, m[1]);
+	// nft JSON output: { nftables: [ { set: { elem: [ ... ] } } ] }
+	if (data?.nftables) {
+		for (let item in data.nftables) {
+			if (item?.set?.elem) {
+				for (let elem in item.set.elem) {
+					if (type(elem) == 'string') {
+						push(ips, elem);
+					} else if (type(elem) == 'object') {
+						// Handle prefix notation: { prefix: { addr: "x.x.x.x", len: N } }
+						if (elem?.prefix) {
+							push(ips, sprintf('%s/%d', elem.prefix.addr, elem.prefix.len));
+						} else if (elem?.range) {
+							push(ips, sprintf('%s-%s', elem.range[0], elem.range[1]));
+						}
+					}
+				}
+			}
 		}
 	}
-	ipset.close();
 	return ips;
 }
 
-const policies_cmd = {
-	'4': 'iptables -t mangle -w -S',
-	'6': 'ip6tables -t mangle -w -S'
-};
-const policies_re = regexp('^-A mwan3_policy_([^ ]+) .*?--comment "([^"]+)"');
-
 function get_policies(version) {
-	const ipt = popen(policies_cmd[version], 'r');
-	const policies = {};
-	for (let line = ipt.read('line'); length(line); line = ipt.read('line')) {
-		const m = match(line, policies_re);
-		if (m == null) {
-			continue;
-		}
-		const policy = m[1];
-		if (!exists(policies, policy)) {
-			policies[policy] = [];
-		}
-		const intfw = split(m[2], ' ', 3);
-		const weight = int(intfw[1]);
-		const total = int(intfw[2]);
-		if (weight >= 0 && total > 0) {
-			push(policies[policy], {
-				'interface': intfw[0],
-				'percent': weight / total * 100,
-			})
+	// List all chains in fw4 and find mwan3_policy_* chains
+	const nft = popen('nft -j list chains inet fw4 2>/dev/null', 'r');
+	if (!nft) {
+		return {};
+	}
+	const raw = nft.read('all');
+	nft.close();
+
+	if (!raw || length(raw) == 0) {
+		return {};
+	}
+
+	let data;
+	try {
+		data = json(raw);
+	} catch(e) {
+		return {};
+	}
+
+	const policy_names = [];
+	if (data?.nftables) {
+		for (let item in data.nftables) {
+			if (item?.chain?.name && match(item.chain.name, regexp('^mwan3_policy_'))) {
+				const name = substr(item.chain.name, 14); // strip "mwan3_policy_"
+				push(policy_names, name);
+			}
 		}
 	}
-	ipt.close();
+
+	const policies = {};
+	for (let pname in policy_names) {
+		const chain_nft = popen(sprintf('nft -j list chain inet fw4 mwan3_policy_%s 2>/dev/null', pname), 'r');
+		if (!chain_nft) continue;
+		const chain_raw = chain_nft.read('all');
+		chain_nft.close();
+
+		let chain_data;
+		try {
+			chain_data = json(chain_raw);
+		} catch(e) {
+			continue;
+		}
+
+		policies[pname] = [];
+
+		// Parse numgen map rules to extract weights
+		if (chain_data?.nftables) {
+			for (let item in chain_data.nftables) {
+				if (!item?.rule?.expr) continue;
+				for (let expr in item.rule.expr) {
+					// Look for numgen with vmap
+					if (expr?.mangle?.value?.map?.data?.set) {
+						const mapset = expr.mangle.value.map.data.set;
+						const mod_val = expr.mangle.value.map.key?.numgen?.mod;
+						if (mod_val && length(mapset) > 0) {
+							for (let mapping in mapset) {
+								if (type(mapping) == 'array' && length(mapping) == 2) {
+									const range = mapping[0];
+									const mark = mapping[1];
+									let weight = 1;
+									if (type(range) == 'object' && range?.range) {
+										weight = range.range[1] - range.range[0] + 1;
+									}
+									push(policies[pname], {
+										'interface': sprintf('mark_%s', mark),
+										'percent': weight / mod_val * 100,
+									});
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 	return policies;
 }
 

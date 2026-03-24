@@ -1,0 +1,68 @@
+# mwan3 nftables framework
+# Included inside 'table inet fw4 { }' by fw4 at startup.
+# Defines sets and empty skeleton chains; all rules are added
+# dynamically by mwan3 shell scripts since they depend on
+# the configurable MMX_MASK value.
+
+# Connected networks (populated by mwan3rtmon and mwan3_set_connected)
+set mwan3_connected_v4 {
+	type ipv4_addr
+	flags interval
+	auto-merge
+}
+set mwan3_connected_v6 {
+	type ipv6_addr
+	flags interval
+	auto-merge
+}
+
+# Custom routing table networks
+set mwan3_custom_v4 {
+	type ipv4_addr
+	flags interval
+	auto-merge
+}
+set mwan3_custom_v6 {
+	type ipv6_addr
+	flags interval
+	auto-merge
+}
+
+# Dynamic networks
+set mwan3_dynamic_v4 {
+	type ipv4_addr
+	flags interval
+	auto-merge
+}
+set mwan3_dynamic_v6 {
+	type ipv6_addr
+	flags interval
+	auto-merge
+}
+
+# Entry point for prerouting
+chain mwan3_prerouting {
+	type filter hook prerouting priority mangle + 1; policy accept;
+}
+
+# Entry point for locally-originated traffic
+# type route so mark changes trigger re-routing
+chain mwan3_output {
+	type route hook output priority mangle + 1; policy accept;
+}
+
+# Interface input marking (jumped to from mwan3_prerouting/mwan3_output)
+chain mwan3_ifaces_in {
+}
+
+# User-defined classification rules
+chain mwan3_rules {
+}
+
+# Connected/custom/dynamic destination matching
+chain mwan3_connected {
+}
+chain mwan3_custom {
+}
+chain mwan3_dynamic {
+}

@@ -19,9 +19,9 @@ Syntax: mwan3 [command]
 
 Available commands:
 EOF
-	command_help "start" "Load iptables rules, ip rules and ip routes"
-	command_help "stop" "Unload iptables rules, ip rules and ip routes"
-	command_help "restart" "Reload iptables rules, ip rules and ip routes"
+	command_help "start" "Load nftables rules, ip rules and ip routes"
+	command_help "stop" "Unload nftables rules, ip rules and ip routes"
+	command_help "restart" "Reload nftables rules, ip rules and ip routes"
 	command_help "ifup <iface>" "Load rules and routes for specific interface"
 	command_help "ifdown <iface>" "Unload rules and routes for specific interface"
 	command_help "interfaces" "Show interfaces status"
@@ -74,12 +74,8 @@ interfaces()
 
 policies()
 {
-	echo "Current ipv4 policies:"
+	echo "Current policies:"
 	mwan3_report_policies_v4
-	echo
-	[ $NO_IPV6 -ne 0 ] && return
-	echo "Current ipv6 policies:"
-	mwan3_report_policies_v6
 	echo
 }
 
@@ -96,12 +92,8 @@ connected()
 
 rules()
 {
-	echo "Active ipv4 user rules:"
+	echo "Active user rules:"
 	mwan3_report_rules_v4
-	echo
-	[ $NO_IPV6 -ne 0 ] && return
-	echo "Active ipv6 user rules:"
-	mwan3_report_rules_v6
 	echo
 }
 
@@ -122,13 +114,11 @@ internal()
 		. /etc/openwrt_release
 	fi
 
-	local ipt ip output
+	local ip output
 
 	if [ "$family" = "ipv6" ]; then
-		ipt="$IPT6"
 		ip="$IP6"
 	else
-		ipt="$IPT4"
 		ip="$IP4"
 	fi
 
@@ -189,9 +179,9 @@ internal()
 		echo ""
 	fi
 
-	echo "Output of \"$ipt -L -v -n\""
+	echo "Output of \"nft list table inet fw4\" (mwan3 chains)"
 	echo "$dash"
-	output="$($ipt -L -v -n)"
+	output=$($NFT list table inet fw4 2>/dev/null | grep -A 100 'chain mwan3_')
 	if [ "$output" != "" ]; then
 		echo "$output"
 	else

@@ -1,0 +1,14 @@
+#!/bin/sh
+# Register mwan3 as an fw4 script include so that mwan3 dynamic rules
+# are automatically rebuilt after any firewall reload/restart.
+
+uci -q batch <<-EOF
+	delete firewall.mwan3_reload
+	set firewall.mwan3_reload=include
+	set firewall.mwan3_reload.type=script
+	set firewall.mwan3_reload.path=/lib/mwan3/mwan3-fw-include.sh
+	set firewall.mwan3_reload.fw4_compatible=1
+	commit firewall
+EOF
+
+exit 0
