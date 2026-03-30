@@ -1230,6 +1230,20 @@ mwan3_flush_conntrack()
 	if [ -e "$CONNTRACK_FILE" ]; then
 		config_list_foreach "$interface" flush_conntrack handle_flush "$action"
 	fi
+
+	# On ifdown, selectively flush conntrack entries for this interface's mark.
+	# This forces flows that were using the failed WAN to immediately re-establish
+	# via the new policy rather than waiting for a TCP retransmit timeout.
+	# More targeted than the UCI flush_conntrack mechanism which flushes everything.
+	if [ "$action" = "ifdown" ] && [ -e "$CONNTRACK_FILE" ]; then
+		local iface_id iface_mark
+		mwan3_get_iface_id iface_id "$interface"
+		if [ -n "$iface_id" ] && command -v conntrack >/dev/null 2>&1; then
+			iface_mark=$(mwan3_id2mask "$iface_id" "$MMX_MASK")
+			conntrack -D --mark "${iface_mark}/${MMX_MASK}" 2>/dev/null
+			LOG info "Selectively flushed conntrack entries for interface '$interface' (mark ${iface_mark}/${MMX_MASK})"
+		fi
+	fi
 }
 
 mwan3_track_clean()
