@@ -1,192 +1,606 @@
-#!/bin/sh
+#!/usr/bin/env ucode
+'use strict';
 
-. /lib/functions.sh
-. /lib/functions/network.sh
-. /lib/mwan3/mwan3.sh
+import * as rtnl from "rtnl";
+import * as uloop from "uloop";
+import * as uci from "uci";
+import * as ubus from "ubus";
+import { open, readfile, popen, stat } from "fs";
 
-trap_with_arg()
-{
-	func="$1" ; shift
-	pid="$1" ; shift
-	for sig ; do
-		# shellcheck disable=SC2064
-		trap "$func $sig $pid" "$sig"
-	done
+const RTM_NEWROUTE = rtnl.const.RTM_NEWROUTE;
+const RTM_DELROUTE = rtnl.const.RTM_DELROUTE;
+const RTM_GETROUTE = rtnl.const.RTM_GETROUTE;
+const NLM_F_DUMP = rtnl.const.NLM_F_DUMP;
+const NLM_F_CREATE = rtnl.const.NLM_F_CREATE;
+const NLM_F_REPLACE = rtnl.const.NLM_F_REPLACE;
+const RT_TABLE_MAIN = rtnl.const.RT_TABLE_MAIN;
+const AF_INET = rtnl.const.AF_INET;
+const AF_INET6 = rtnl.const.AF_INET6;
+const RTNLGRP_IPV4_ROUTE = rtnl.const.RTNLGRP_IPV4_ROUTE;
+const RTNLGRP_IPV6_ROUTE = rtnl.const.RTNLGRP_IPV6_ROUTE;
+
+const MWAN3TRACK_STATUS_DIR = "/var/run/mwan3track";
+
+let family_name, family_num, rtnl_group;
+let mmx_mask, iface_max;
+let source_routing;
+let extra_tables = [];
+let dev_table_map = {};  // { device_name: table_id }
+let iface_list = [];     // [ { name, family, tid, enabled } ]
+let ubus_conn;
+
+// ---------------------------------------------------------------------------
+// Logging
+// ---------------------------------------------------------------------------
+
+function log_msg(level, msg) {
+
+	warn(`mwan3rtmon[${family_name}] ${level}: ${msg}\n`);
 }
 
-func_trap()
-{
-	kill -${1} ${2} 2>/dev/null
-}
+// ---------------------------------------------------------------------------
+// Config loading
+// ---------------------------------------------------------------------------
 
-mwan3_add_all_routes()
-{
-	local tid IP route_line family active_tbls tid initial_state error
-	local ipv=$1
+function load_config() {
 
-	add_active_tbls()
-	{
-		let tid++
-		config_get family "$1" family ipv4
-		config_get initial_state "$1" initial_state "online"
-		[ "$family" != "$ipv" ] && return
-		if $NFT list chain inet fw4 "mwan3_iface_in_$1" &> /dev/null; then
-			active_tbls="$active_tbls${tid} "
-		fi
+	let cur = uci.cursor();
+	cur.load("mwan3");
+
+	// MMX mask
+
+	mmx_mask = cur.get("mwan3", "globals", "mmx_mask") ?? "0x3F00";
+	mmx_mask = +mmx_mask;
+
+	// Count bits to get iface_max
+
+	let n = mmx_mask, bits = 0;
+	while (n > 0) {
+		n = n & (n - 1);
+		bits++;
+	}
+	iface_max = (1 << bits) - 1 - 3;
+
+	// Source routing option
+
+	source_routing = +(cur.get("mwan3", "globals", "source_routing") ?? "0");
+
+	// Extra lookup tables
+
+	extra_tables = [];
+	let rt_tables = cur.get("mwan3", "globals", "rt_table_lookup");
+	if (type(rt_tables) == "array") {
+		for (let t in rt_tables)
+			push(extra_tables, +t);
+	} else if (rt_tables != null) {
+		push(extra_tables, +rt_tables);
 	}
 
-	add_route()
-	{
-		let tid++
-		[ -n "${active_tbls##* $tid *}" ] && return
-		error=$($IP route add table $tid $route_line 2>&1) ||
-			LOG warn "failed to add $route_line to table $tid - error: $error"
-	}
+	// Build interface list with table IDs
 
-	mwan3_update_dev_to_table
-	[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && return
-	if [ "$ipv" = "ipv4" ]; then
-		IP="$IP4"
-	elif [ "$ipv" = "ipv6" ]; then
-		IP="$IP6"
-	fi
-	tid=0
-	active_tbls=" "
-	config_foreach add_active_tbls interface
-	[ "$active_tbls" = " " ] && return
-	mwan3_get_routes | while read -r route_line; do
-		mwan3_route_line_dev "tid" "$route_line" "$ipv"
-		if [ -n "$tid" ] && [ -z "${active_tbls##* $tid *}" ]; then
-			$IP route add table $tid $route_line
-		elif [ -n "${route_line##default*}" ] && [ -n "${route_line##fe80::/64*}" ]; then
-			config_foreach add_route interface
-		fi
-	done
+	iface_list = [];
+	let tid = 0;
+	cur.foreach("mwan3", "interface", function(s) {
+		tid++;
+		let ifname = s[".name"];
+		let fam = s.family ?? "ipv4";
+		let enabled = +(s.enabled ?? "0");
+		push(iface_list, {
+			name: ifname,
+			family: fam,
+			tid: tid,
+			enabled: enabled,
+		});
+	});
+
+	cur.unload("mwan3");
 }
 
-mwan3_rtmon_route_handle()
-{
-	local action route_line family tbl device line tid
+// ---------------------------------------------------------------------------
+// Device -> table ID mapping (via ubus)
+// ---------------------------------------------------------------------------
 
-	route_line=${1##"Deleted "}
-	route_family=$2
+function build_dev_table_map() {
 
-	if [ "$route_line" = "$1" ]; then
-		action="replace"
-		# Add CIDR networks to the connected set; skip host routes
-		# (bare IPs without a prefix length) as they are remote
-		# destinations that should NOT bypass mwan3.
-		local network="${route_line%% *}"
-		case "$network" in
-		*/*)
-			if [ "$route_family" = "ipv4" ]; then
-				$NFT add element inet fw4 mwan3_connected_v4 "{ $network }" 2>/dev/null
-			elif [ "$route_family" = "ipv6" ]; then
-				$NFT add element inet fw4 mwan3_connected_v6 "{ $network }" 2>/dev/null
-			fi
-			;;
-		esac
+	dev_table_map = {};
+
+	if (!ubus_conn)
+		return;
+
+	for (let iface in iface_list) {
+		if (!iface.enabled)
+			continue;
+		if (iface.family != family_name)
+			continue;
+
+		let status = ubus_conn.call("network.interface." + iface.name, "status");
+		if (!status || !status.l3_device)
+			continue;
+
+		dev_table_map[status.l3_device] = iface.tid;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Check if an mwan3 interface chain exists in nft (indicates active)
+// ---------------------------------------------------------------------------
+
+function is_iface_nft_active(ifname) {
+
+	let p = popen("nft list chain inet fw4 mwan3_iface_in_" + ifname + " 2>/dev/null");
+	if (!p)
+		return false;
+	let out = p.read("all");
+	p.close();
+	return (out != null && length(out) > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Check mwan3track status for an interface
+// ---------------------------------------------------------------------------
+
+function get_track_status(ifname) {
+
+	let cur = uci.cursor();
+	cur.load("mwan3");
+	let ips = cur.get("mwan3", ifname, "track_ip");
+	cur.unload("mwan3");
+
+	if (ips == null || (type(ips) == "array" && length(ips) == 0))
+		return "disabled";
+
+	let pid = trim(readfile(MWAN3TRACK_STATUS_DIR + "/" + ifname + "/PID") ?? "");
+	if (pid == "")
+		return "down";
+
+	let cmdline = readfile("/proc/" + pid + "/cmdline");
+	if (cmdline == null)
+		return "down";
+
+	let started = trim(readfile(MWAN3TRACK_STATUS_DIR + "/" + ifname + "/STARTED") ?? "");
+	if (started == "1")
+		return "active";
+	else if (started == "0")
+		return "paused";
+
+	return "down";
+}
+
+// ---------------------------------------------------------------------------
+// nft helpers
+// ---------------------------------------------------------------------------
+
+function nft_exec(cmd) {
+
+	let p = popen("nft " + cmd + " 2>&1");
+	if (!p)
+		return false;
+	let out = p.read("all");
+	let rc = p.close();
+	if (rc != 0) {
+		log_msg("warn", "nft failed: nft " + cmd + " - " + (out ?? ""));
+		return false;
+	}
+	return true;
+}
+
+function nft_batch(cmds) {
+
+	let tmpfile = "/tmp/mwan3rtmon_nft_batch";
+	let f = open(tmpfile, "w");
+	if (!f) {
+		log_msg("warn", "cannot open nft batch file");
+		return false;
+	}
+	for (let cmd in cmds)
+		f.write(cmd + "\n");
+	f.close();
+
+	let p = popen("nft -f " + tmpfile + " 2>&1");
+	if (!p)
+		return false;
+	let out = p.read("all");
+	let rc = p.close();
+	if (rc != 0) {
+		log_msg("warn", "nft batch failed: " + (out ?? ""));
+		return false;
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Route helpers
+// ---------------------------------------------------------------------------
+
+// Build a route object for adding to a per-interface table.
+// Copies only the relevant fields, sets the target table.
+// Strips src if source_routing is disabled.
+
+function build_route_for_table(route, tid) {
+
+	let r = {
+		family: route.family,
+		table: tid,
+	};
+
+	if (route.dst != null)
+		r.dst = route.dst;
+
+	if (route.gateway != null)
+		r.gateway = route.gateway;
+
+	if (route.oif != null)
+		r.oif = route.oif;
+
+	if (route.prefsrc != null)
+		r.prefsrc = route.prefsrc;
+
+	if (route.priority != null)
+		r.priority = route.priority;
+
+	if (route.scope != null)
+		r.scope = route.scope;
+
+	if (route.type != null)
+		r.type = route.type;
+
+	if (route.tos != null && route.tos != 0)
+		r.tos = route.tos;
+
+	if (route.metrics != null)
+		r.metrics = route.metrics;
+
+	// Strip src (source-based routing prefix) unless source_routing is enabled
+
+	if (source_routing && route.src != null)
+		r.src = route.src;
+
+	return r;
+}
+
+// Check if a route is a CIDR (has a prefix length < max for address family)
+
+function is_cidr_route(route) {
+
+	let dst = route.dst;
+	if (dst == null)
+		return false;
+
+	let slash = index(dst, "/");
+	if (slash < 0)
+		return false;
+
+	let prefix_len = +substr(dst, slash + 1);
+	if (family_num == AF_INET)
+		return (prefix_len < 32);
 	else
-		action="del"
-		mwan3_set_connected_${route_family}
-	fi
-
-	if [ -z "${route_line##*linkdown*}" ]; then
-		LOG debug "attempting to add link on down interface - $route_line"
-	fi
-
-	if [ "$route_family" = "ipv4" ]; then
-		IP="$IP4"
-	elif [ "$route_family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
-		IP="$IP6"
-	else
-		LOG warn "route update called with invalid family - $route_family"
-		return
-	fi
-	route_line=$(echo "$route_line" | sed -ne "$MWAN3_ROUTE_LINE_EXP")
-
-	if [ "$action" = "del" ]; then
-		if mwan3_get_routes | grep -qxF "$route_line"; then
-			LOG debug "deleted but route still exists - $route_line"
-			return
-		fi
-	fi
-
-	handle_route() {
-		local error
-		local iface=$1
-		tbl=$($IP route list table $tid 2>/dev/null)$'\n'
-
-		local status
-		mwan3_get_mwan3track_status status $iface
-
-		if [ -n "$iface" ] && [ "$status" != "active" ]; then
-			LOG debug "interface $iface is disabled - skipping '$route_line'";
-			return
-		fi
-
-		# check that action needs to be performed. May not need to take action if we
-		# got a delete event, but table was already flushed
-		if [ $action = "del" ] && [ -n "${tbl##*$route_line$'\n'*}" ]; then
-			LOG debug "skipping already deleted route table $tid - skipping '$route_line'"
-			return
-		fi
-
-		network_get_device device "$iface"
-		LOG debug "adjusting route $device: '$IP route $action table $tid $route_line'"
-		error=$($IP route "$action" table $tid $route_line 2>&1)||
-			LOG warn "failed: '$IP route $action table $tid $route_line' - error: $error"
-	}
-	handle_route_cb(){
-		local iface=$1
-		let tid++
-		config_get family "$iface" family ipv4
-		[ "$family" != "$route_family" ] && return
-		handle_route "$iface"
-	}
-
-	mwan3_update_dev_to_table
-	mwan3_route_line_dev "tid" "$route_line" "$route_family"
-
-	if [ -n "$tid" ]; then
-		handle_route
-	elif [ -n "${route_line##default*}" ] && [ -n "${route_line##fe80::/64*}" ]; then
-		config_foreach handle_route_cb interface
-	fi
+		return (prefix_len < 128);
 }
 
-main()
-{
-	local IP family
+// Check if a route is a default route
 
-	mwan3_init
+function is_default_route(route) {
 
-	family=$1
-	[ -z $family ] && family=ipv4
-	if [ "$family" = "ipv6" ]; then
-		if [ $NO_IPV6 -ne 0 ]; then
-			LOG warn "mwan3rtmon started for ipv6, but ipv6 not enabled on system"
-			exit 1
-		fi
-		IP="$IP6"
-	else
-		IP="$IP4"
-	fi
-	sh -c "echo \$\$; exec $IP monitor route" | {
-		read -r monitor_pid
-		trap_with_arg func_trap "$monitor_pid" SIGINT SIGTERM SIGKILL
-		KILL -SIGSTOP $$
-		while IFS='' read -r line; do
-			[ -z "${line##*table*}" ] && continue
-			LOG debug "handling route update $family '$line'"
-			mwan3_rtmon_route_handle "$line" "$family"
-		done
-	} &
-	child=$!
-	trap_with_arg func_trap "$child" SIGINT SIGTERM SIGKILL
-	mwan3_set_connected_${family}
-	mwan3_add_all_routes ${family}
-	kill -SIGCONT $child
-	wait $child
+	return (route.dst == null ||
+	        route.dst == "0.0.0.0/0" ||
+	        route.dst == "::/0");
 }
-main "$@"
+
+// Check if route is fe80::/64 (link-local)
+
+function is_linklocal_route(route) {
+
+	return (route.dst != null && match(route.dst, /^fe80::\//) != null);
+}
+
+// Get all routes from main table (and extra lookup tables) via netlink
+
+function get_all_routes() {
+
+	let routes = rtnl.request(RTM_GETROUTE, NLM_F_DUMP,
+		{ family: family_num }) ?? [];
+
+	// Filter to main table
+
+	let result = filter(routes, (r) => r.table == RT_TABLE_MAIN);
+
+	// Also get routes from extra lookup tables
+
+	if (length(extra_tables) > 0) {
+		for (let r in routes) {
+			for (let extra_tid in extra_tables) {
+				if (r.table == extra_tid) {
+					push(result, r);
+					break;
+				}
+			}
+		}
+	}
+
+	return result;
+}
+
+// Check if a route still exists in the main table (for delete event verification)
+
+function route_still_exists(route) {
+
+	let routes = rtnl.request(RTM_GETROUTE, NLM_F_DUMP,
+		{ family: family_num }) ?? [];
+
+	for (let r in routes) {
+		if (r.table != RT_TABLE_MAIN)
+			continue;
+		if (r.dst == route.dst && r.oif == route.oif &&
+		    r.gateway == route.gateway && r.priority == route.priority)
+			return true;
+	}
+	return false;
+}
+
+// ---------------------------------------------------------------------------
+// Populate connected set (nft)
+// ---------------------------------------------------------------------------
+
+function populate_connected_set() {
+
+	let routes = get_all_routes();
+	let setname = (family_num == AF_INET)
+		? "mwan3_connected_v4" : "mwan3_connected_v6";
+
+	let cmds = [ "flush set inet fw4 " + setname ];
+
+	let elements = [];
+	for (let route in routes) {
+		if (is_cidr_route(route))
+			push(elements, route.dst);
+	}
+
+	// Add multicast range for IPv4
+
+	if (family_num == AF_INET)
+		push(elements, "224.0.0.0/3");
+
+	if (length(elements) > 0)
+		push(cmds, "add element inet fw4 " + setname +
+			" { " + join(", ", elements) + " }");
+
+	nft_batch(cmds);
+}
+
+// ---------------------------------------------------------------------------
+// Populate per-interface routing tables
+// ---------------------------------------------------------------------------
+
+function populate_iface_routes() {
+
+	build_dev_table_map();
+
+	let routes = get_all_routes();
+
+	// Determine which interface table IDs are active
+
+	let active_tids = {};
+	for (let iface in iface_list) {
+		if (iface.family != family_name)
+			continue;
+		if (is_iface_nft_active(iface.name))
+			active_tids[iface.tid] = iface.name;
+	}
+
+	if (length(keys(active_tids)) == 0)
+		return;
+
+	for (let route in routes) {
+		let dev = route.oif;
+		let target_tid = (dev != null) ? dev_table_map[dev] : null;
+
+		if (target_tid != null) {
+
+			// Route has a device that maps to a specific interface table
+
+			if (active_tids["" + target_tid] != null) {
+				let r = build_route_for_table(route, target_tid);
+				rtnl.request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, r);
+			}
+		} else if (!is_default_route(route) && !is_linklocal_route(route)) {
+			// Broadcast to all active interface tables
+			for (let tid_str in keys(active_tids)) {
+				let r = build_route_for_table(route, +tid_str);
+				rtnl.request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, r);
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Handle route events
+// ---------------------------------------------------------------------------
+
+function handle_route_event(event) {
+
+	let cmd = event.cmd;
+	let route = event.msg;
+
+	// Only handle main table routes
+
+	if (route.table != RT_TABLE_MAIN)
+		return;
+
+	let is_new = (cmd == RTM_NEWROUTE);
+
+	log_msg("debug", (is_new ? "new" : "del") + " route: dst=" +
+		(route.dst ?? "default") + " dev=" + (route.oif ?? "none") +
+		" gw=" + (route.gateway ?? "none"));
+
+	// -- Update connected set --
+
+	let setname = (family_num == AF_INET)
+		? "mwan3_connected_v4" : "mwan3_connected_v6";
+
+	if (is_new) {
+		if (is_cidr_route(route))
+			nft_exec('add element inet fw4 ' + setname +
+				' { ' + route.dst + ' }');
+	} else {
+
+		// On delete, rebuild entire connected set (same as shell version)
+
+		populate_connected_set();
+	}
+
+	// -- Update per-interface routing tables --
+
+	build_dev_table_map();
+
+	// For delete events, verify the route is actually gone (ECMP case)
+
+	if (!is_new && route_still_exists(route)) {
+		log_msg("debug", "deleted but route still exists: " +
+			(route.dst ?? "default"));
+		return;
+	}
+
+	// Active interface tables for this family
+
+	let active_tids = {};
+	for (let iface in iface_list) {
+		if (iface.family != family_name)
+			continue;
+		if (is_iface_nft_active(iface.name))
+			active_tids[iface.tid] = iface.name;
+	}
+
+	let dev = route.oif;
+	let target_tid = (dev != null) ? dev_table_map[dev] : null;
+
+	if (target_tid != null) {
+
+		// Device-matched route: add to specific interface table
+		// (no track status check, matching shell behavior)
+
+		if (active_tids["" + target_tid] == null)
+			return;
+
+		let r = build_route_for_table(route, target_tid);
+		if (is_new) {
+			rtnl.request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, r);
+			let err = rtnl.error();
+			if (err)
+				log_msg("warn", "failed to add route to table " +
+					target_tid + ": " + err);
+		} else {
+			rtnl.request(RTM_DELROUTE, 0, r);
+		}
+	} else if (!is_default_route(route) &&
+	           !is_linklocal_route(route)) {
+
+		// Broadcast to all active interface tables
+
+		for (let tid_str in keys(active_tids)) {
+			let tid = +tid_str;
+			let ifname = active_tids[tid_str];
+
+			let status = get_track_status(ifname);
+			if (status != "active" && status != "disabled") {
+				log_msg("debug", "interface " + ifname +
+					" is " + status + " - skipping");
+				continue;
+			}
+
+			let r = build_route_for_table(route, tid);
+			if (is_new) {
+				rtnl.request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, r);
+				let err = rtnl.error();
+				if (err)
+					log_msg("warn",
+						"failed to add route to table " +
+						tid + ": " + err);
+			} else {
+				rtnl.request(RTM_DELROUTE, 0, r);
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+function main() {
+
+	// Parse args
+
+	family_name = ARGV[0] ?? "ipv4";
+
+	if (family_name == "ipv6") {
+		if (stat("/proc/sys/net/ipv6") == null) {
+			log_msg("warn",
+				"started for ipv6, but ipv6 not enabled on system");
+			exit(1);
+		}
+		family_num = AF_INET6;
+		rtnl_group = RTNLGRP_IPV6_ROUTE;
+	} else {
+		family_name = "ipv4";
+		family_num = AF_INET;
+		rtnl_group = RTNLGRP_IPV4_ROUTE;
+	}
+
+	load_config();
+
+	// Connect to ubus
+
+	ubus_conn = ubus.connect();
+	if (!ubus_conn) {
+		log_msg("warn", "failed to connect to ubus");
+		exit(1);
+	}
+
+	uloop.init();
+
+	// Populate initial state before starting listener.
+	// Events arriving during population are queued in the kernel's
+	// netlink socket buffer and will be processed once uloop.run()
+	// begins — no SIGSTOP/SIGCONT dance needed.
+
+	log_msg("debug", "populating initial connected set");
+	populate_connected_set();
+
+	log_msg("debug", "populating initial per-interface routes");
+	populate_iface_routes();
+
+	// Create netlink route listener
+
+	log_msg("debug", "creating route listener for " + family_name);
+	let route_listener = rtnl.listener(
+		handle_route_event,
+		[ RTM_NEWROUTE, RTM_DELROUTE ],
+		[ rtnl_group ]
+	);
+
+	if (!route_listener) {
+		log_msg("warn", "failed to create route listener: " +
+			rtnl.error());
+		exit(1);
+	}
+
+	// Signal handlers for clean shutdown
+
+	uloop.signal("SIGTERM", () => {
+		log_msg("debug", "received SIGTERM, exiting");
+		uloop.end();
+	});
+
+	uloop.signal("SIGINT", () => {
+		log_msg("debug", "received SIGINT, exiting");
+		uloop.end();
+	});
+
+	log_msg("debug", "entering event loop");
+	uloop.run();
+
+	route_listener.close();
+	log_msg("debug", "exiting cleanly");
+}
+
+main();

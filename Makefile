@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mwan3
-PKG_VERSION:=3
+PKG_VERSION:=3.1
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Florian Eckert <fe@dev.tdt.de>
@@ -26,8 +26,14 @@ define Package/mwan3
      +kmod-nft-core \
      +nftables-json \
      +rpcd-mod-ucode \
-     +jshn
-   TITLE:=Multiwan hotplug script with connection tracking support
+     +jshn \
+     +ucode \
+     +ucode-mod-rtnl \
+     +ucode-mod-uloop \
+     +ucode-mod-uci \
+     +ucode-mod-ubus \
+     +ucode-mod-fs
+   TITLE:=Multiwan hotplug script with connection tracking support (ucode rtmon)
    MAINTAINER:=Florian Eckert <fe@dev.tdt.de>
    PKGARCH:=all
 endef
@@ -36,6 +42,8 @@ define Package/mwan3/description
 Hotplug script which makes configuration of multiple WAN interfaces simple
 and manageable. With loadbalancing/failover support for up to 250 wan
 interfaces, connection tracking and an easy to manage traffic ruleset.
+mwan3rtmon now uses a ucode implementation leveraging ucode-mod-rtnl
+for direct netlink access instead of forking ip commands.
 endef
 
 define Package/mwan3/conffiles
