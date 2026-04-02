@@ -269,7 +269,23 @@ main() {
 	{
 		track_ips="$track_ips $1"
 	}
-	config_list_foreach "$1" track_ip mwan3_list_track_ips
+	mwan3_load_track_ips()
+	{
+		local track_gateway gw_ip
+		track_ips=""
+		config_list_foreach "$INTERFACE" track_ip mwan3_list_track_ips
+		config_get_bool track_gateway "$INTERFACE" track_gateway 0
+		if [ "$track_gateway" -eq 1 ]; then
+			gw_ip=$(cat "$MWAN3TRACK_STATUS_DIR/${INTERFACE}/GATEWAY" 2>/dev/null)
+			if [ -n "$gw_ip" ]; then
+				case " $track_ips " in
+					*" $gw_ip "*) ;;
+					*) track_ips="$track_ips $gw_ip" ;;
+				esac
+			fi
+		fi
+	}
+	mwan3_load_track_ips
 
 	local score=$((down+up))
 	local host_up_count=0
@@ -438,6 +454,8 @@ main() {
 		fi
 		if [ "${IFUP_EVENT}" -eq 1 ]; then
 			LOG debug "Register ifup event on interface ${INTERFACE} (${DEVICE})"
+			config_load mwan3
+			mwan3_load_track_ips
 			firstconnect
 			IFUP_EVENT=0
 		fi

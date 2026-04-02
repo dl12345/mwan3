@@ -79,6 +79,7 @@ case "$ACTION" in
 		mwan3_set_policies_nft
 		;;
 	ifup)
+		mwan3_update_peer_track_ip $INTERFACE
 		mwan3_create_iface_nft $INTERFACE $DEVICE
 		mwan3_create_iface_rules $INTERFACE $DEVICE
 		mwan3_set_iface_hotplug_state $INTERFACE "$status"

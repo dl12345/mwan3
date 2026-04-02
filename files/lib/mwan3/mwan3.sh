@@ -1046,6 +1046,28 @@ mwan3_ifup()
 
 }
 
+mwan3_update_peer_track_ip() {
+	local interface="$1"
+	local track_gateway peer family
+
+	config_get_bool track_gateway "$interface" track_gateway 0
+	[ "$track_gateway" -eq 1 ] || return 0
+
+	config_get family "$interface" family ipv4
+
+	# Get ptpaddress from ifstatus JSON (no-op if not p2p)
+	peer=$(ifstatus "$interface" 2>/dev/null | \
+		jsonfilter -qe "@[\"${family}-address\"][0].ptpaddress")
+
+	if [ -n "$peer" ]; then
+		mkdir -p "$MWAN3TRACK_STATUS_DIR/$interface"
+		echo "$peer" > "$MWAN3TRACK_STATUS_DIR/${interface}/GATEWAY"
+		LOG notice "track_gateway: $interface peer IP is $peer"
+	else
+		rm -f "$MWAN3TRACK_STATUS_DIR/${interface}/GATEWAY"
+	fi
+}
+
 mwan3_set_iface_hotplug_state() {
 	local iface=$1
 	local state=$2
