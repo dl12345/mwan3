@@ -1,0 +1,137 @@
+permissions:
+  contents: write
+name: Build OpenWrt Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build for ${{ matrix.version }} / ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    env:
+      REPO_APK_KEY: ${{ secrets.REPO_APK_KEY }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: openwrt-25.12
+            target: x86_64
+          - version: openwrt-25.12
+            target: aarch64_cortex-a53
+          - version: openwrt-25.12
+            target: aarch64_cortex-a76
+          - version: openwrt-25.12
+            target: aarch64_generic
+          - version: openwrt-25.12
+            target: arm_cortex-a7
+          - version: openwrt-25.12
+            target: arm_cortex-a9
+          - version: openwrt-25.12
+            target: arm_cortex-a15_neon-vfpv4
+          - version: openwrt-25.12
+            target: mips_24kc
+          - version: openwrt-25.12
+            target: mipsel_24kc
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set PKG_NAME from repo
+        run: echo "PKG_NAME=${{ github.event.repository.name }}" >> "$GITHUB_ENV"
+
+      - name: Set up mwan3nft feed structure
+        run: |
+          mkdir -p feed/${PKG_NAME}
+          rsync -av \
+            --exclude='.git' \
+            --exclude='feed' \
+            --exclude='.github' \
+            ./ feed/${PKG_NAME}/
+
+      - name: Compute ARCH
+        run: |
+          if [ "${{ matrix.version }}" = "snapshots" ]; then
+            echo "ARCH=${{ matrix.target }}-SNAPSHOT" >> "$GITHUB_ENV"
+          else
+            echo "ARCH=${{ matrix.target }}-${{ matrix.version }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build with OpenWrt SDK
+        uses: openwrt/gh-action-sdk@v8
+        env:
+          ARCH: ${{ env.ARCH }}
+          FEEDNAME: mwan3nft
+          PACKAGES: ${{ env.PKG_NAME }}
+          INDEX: 0
+          FEED_DIR: ${{ github.workspace }}/feed
+          NO_SHFMT_CHECK: 1
+          NO_REFRESH_CHECK: 1
+          PRIVATE_KEY: ${{ secrets.REPO_APK_KEY }}
+
+      - name: Rename APK with version and target
+        run: |
+          set -euo pipefail
+          PKG_VERSION=$(grep -E '^PKG_VERSION *:?=' Makefile | head -n1 | cut -d= -f2 | tr -d '[:space:]')
+          PKG_RELEASE=$(grep -E '^PKG_RELEASE *:?=' Makefile | head -n1 | cut -d= -f2 | tr -d '[:space:]')
+          for ext in ipk apk; do
+            for f in $(find bin/packages -type f -path "*/mwan3nft/*.${ext}"); do
+              dir=$(dirname "$f")
+              if [ -n "${{ matrix.suffix }}" ]; then
+                mv -v "$f" "$dir/${PKG_NAME}-${PKG_VERSION}-${PKG_RELEASE}_${{ matrix.version }}_${{ matrix.suffix }}.${ext}"
+              else
+                mv -v "$f" "$dir/${PKG_NAME}-${PKG_VERSION}-${PKG_RELEASE}_${{ matrix.version }}_${{ matrix.target }}.${ext}"
+              fi
+            done
+          done
+
+      - name: Upload artifact for ${{ matrix.target }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG_NAME }}-${{ matrix.target }}-${{ matrix.version }}
+          path: |
+            bin/packages/*/mwan3nft/${{ env.PKG_NAME }}*.ipk
+            bin/packages/*/mwan3nft/${{ env.PKG_NAME }}*.apk
+          if-no-files-found: ignore
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    name: Release ${{ github.repository }}
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Extract version and release from Makefile
+        id: version
+        run: |
+          PKG_VERSION=$(grep -E '^PKG_VERSION *:?=' Makefile | head -n1 | cut -d= -f2 | tr -d '[:space:]')
+          PKG_RELEASE=$(grep -E '^PKG_RELEASE *:?=' Makefile | head -n1 | cut -d= -f2 | tr -d '[:space:]')
+          COMBINED_VERSION="${PKG_VERSION}-${PKG_RELEASE}"
+          echo "Version: $COMBINED_VERSION"
+          echo "version=$COMBINED_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Build v${{ steps.version.outputs.version }}
+          files: |
+            ./release-assets/**/*.ipk
+            ./release-assets/**/*.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
