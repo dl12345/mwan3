@@ -20,13 +20,17 @@ const RTNLGRP_IPV4_ROUTE = rtnl.const.RTNLGRP_IPV4_ROUTE;
 const RTNLGRP_IPV6_ROUTE = rtnl.const.RTNLGRP_IPV6_ROUTE;
 
 const MWAN3TRACK_STATUS_DIR = "/var/run/mwan3track";
+const ROUTE_FIELDS = ["dst", "gateway", "oif", "prefsrc", "priority", "scope", "type", "tos", "metrics"];
+const DEBOUNCE_MS = 100;
 
 let family_name, family_num, rtnl_group;
-let mmx_mask, iface_max;
+let mmx_mask;
 let source_routing;
-let extra_tables = [];
-let dev_table_map = {};  // { device_name: table_id }
-let iface_list = [];     // [ { name, family, tid, enabled } ]
+let extra_table_set = {};   // { table_id: true } for O(1) lookup
+let dev_table_map = {};     // { device_name: table_id }
+let iface_list = [];        // [ { name, family, tid, enabled, has_tracking } ]
+let active_chains = {};     // { chain_name: true } cached from nft
+let connected_timer = null; // debounce timer for connected set rebuilds
 let ubus_conn;
 
 // ---------------------------------------------------------------------------
@@ -52,28 +56,19 @@ function load_config() {
 	mmx_mask = cur.get("mwan3", "globals", "mmx_mask") ?? "0x3F00";
 	mmx_mask = +mmx_mask;
 
-	// Count bits to get iface_max
-
-	let n = mmx_mask, bits = 0;
-	while (n > 0) {
-		n = n & (n - 1);
-		bits++;
-	}
-	iface_max = (1 << bits) - 1 - 3;
-
 	// Source routing option
 
 	source_routing = +(cur.get("mwan3", "globals", "source_routing") ?? "0");
 
 	// Extra lookup tables
 
-	extra_tables = [];
+	extra_table_set = {};
 	let rt_tables = cur.get("mwan3", "globals", "rt_table_lookup");
 	if (type(rt_tables) == "array") {
 		for (let t in rt_tables)
-			push(extra_tables, +t);
+			extra_table_set[+t] = true;
 	} else if (rt_tables != null) {
-		push(extra_tables, +rt_tables);
+		extra_table_set[+rt_tables] = true;
 	}
 
 	// Build interface list with table IDs
@@ -85,11 +80,15 @@ function load_config() {
 		let ifname = s[".name"];
 		let fam = s.family ?? "ipv4";
 		let enabled = +(s.enabled ?? "0");
+		let track_ip = s.track_ip;
+		let has_tracking = (track_ip != null &&
+			!(type(track_ip) == "array" && length(track_ip) == 0));
 		push(iface_list, {
 			name: ifname,
 			family: fam,
 			tid: tid,
 			enabled: enabled,
+			has_tracking: has_tracking,
 		});
 	});
 
@@ -107,32 +106,66 @@ function build_dev_table_map() {
 	if (!ubus_conn)
 		return;
 
+	let dump = ubus_conn.call("network.interface", "dump");
+	if (!dump || !dump.interface)
+		return;
+
+	// Build name->tid lookup for enabled interfaces in this family
+
+	let name_tid = {};
 	for (let iface in iface_list) {
-		if (!iface.enabled)
-			continue;
-		if (iface.family != family_name)
-			continue;
+		if (iface.enabled && iface.family == family_name)
+			name_tid[iface.name] = iface.tid;
+	}
 
-		let status = ubus_conn.call("network.interface." + iface.name, "status");
-		if (!status || !status.l3_device)
-			continue;
-
-		dev_table_map[status.l3_device] = iface.tid;
+	for (let intf in dump.interface) {
+		let tid = name_tid[intf.interface];
+		if (tid != null && intf.l3_device)
+			dev_table_map[intf.l3_device] = tid;
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Check if an mwan3 interface chain exists in nft (indicates active)
+// Cached nft chain existence check
 // ---------------------------------------------------------------------------
+
+function refresh_active_chains() {
+
+	active_chains = {};
+	let p = popen("nft -j list chains inet 2>/dev/null");
+	if (!p)
+		return;
+	let out = p.read("all");
+	p.close();
+	if (!out)
+		return;
+
+	let data;
+	try { data = json(out); } catch(e) { return; }
+	if (!data || !data.nftables)
+		return;
+
+	for (let item in data.nftables) {
+		if (item.chain && item.chain.table == "fw4")
+			active_chains[item.chain.name] = true;
+	}
+}
 
 function is_iface_nft_active(ifname) {
 
-	let p = popen("nft list chain inet fw4 mwan3_iface_in_" + ifname + " 2>/dev/null");
-	if (!p)
-		return false;
-	let out = p.read("all");
-	p.close();
-	return (out != null && length(out) > 0);
+	return !!active_chains["mwan3_iface_in_" + ifname];
+}
+
+function get_active_tids() {
+
+	let tids = {};
+	for (let iface in iface_list) {
+		if (iface.family != family_name)
+			continue;
+		if (is_iface_nft_active(iface.name))
+			tids[iface.tid] = iface.name;
+	}
+	return tids;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,12 +174,11 @@ function is_iface_nft_active(ifname) {
 
 function get_track_status(ifname) {
 
-	let cur = uci.cursor();
-	cur.load("mwan3");
-	let ips = cur.get("mwan3", ifname, "track_ip");
-	cur.unload("mwan3");
-
-	if (ips == null || (type(ips) == "array" && length(ips) == 0))
+	let iface = null;
+	for (let i in iface_list) {
+		if (i.name == ifname) { iface = i; break; }
+	}
+	if (!iface || !iface.has_tracking)
 		return "disabled";
 
 	let pid = trim(readfile(MWAN3TRACK_STATUS_DIR + "/" + ifname + "/PID") ?? "");
@@ -218,44 +250,37 @@ function nft_batch(cmds) {
 
 function build_route_for_table(route, tid) {
 
-	let r = {
-		family: route.family,
-		table: tid,
-	};
+	let r = { family: route.family, table: tid };
 
-	if (route.dst != null)
-		r.dst = route.dst;
+	for (let f in ROUTE_FIELDS)
+		if (route[f] != null)
+			r[f] = route[f];
 
-	if (route.gateway != null)
-		r.gateway = route.gateway;
-
-	if (route.oif != null)
-		r.oif = route.oif;
-
-	if (route.prefsrc != null)
-		r.prefsrc = route.prefsrc;
-
-	if (route.priority != null)
-		r.priority = route.priority;
-
-	if (route.scope != null)
-		r.scope = route.scope;
-
-	if (route.type != null)
-		r.type = route.type;
-
-	if (route.tos != null && route.tos != 0)
-		r.tos = route.tos;
-
-	if (route.metrics != null)
-		r.metrics = route.metrics;
+	// tos=0 is default, omit it
+	if (r.tos == 0)
+		delete r.tos;
 
 	// Strip src (source-based routing prefix) unless source_routing is enabled
-
 	if (source_routing && route.src != null)
 		r.src = route.src;
 
 	return r;
+}
+
+// Apply a route add or delete to a per-interface table
+
+function apply_route_to_table(route, tid, is_new) {
+
+	let r = build_route_for_table(route, tid);
+	if (is_new) {
+		rtnl.request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, r);
+		let err = rtnl.error();
+		if (err)
+			log_msg("warn", "failed to add route to table " +
+				tid + ": " + err);
+	} else {
+		rtnl.request(RTM_DELROUTE, 0, r);
+	}
 }
 
 // Check if a route is a CIDR (has a prefix length < max for address family)
@@ -300,21 +325,12 @@ function get_all_routes() {
 	let routes = rtnl.request(RTM_GETROUTE, NLM_F_DUMP,
 		{ family: family_num }) ?? [];
 
-	// Filter to main table
+	// Filter to main table + extra lookup tables (O(1) set lookup)
 
-	let result = filter(routes, (r) => r.table == RT_TABLE_MAIN);
-
-	// Also get routes from extra lookup tables
-
-	if (length(extra_tables) > 0) {
-		for (let r in routes) {
-			for (let extra_tid in extra_tables) {
-				if (r.table == extra_tid) {
-					push(result, r);
-					break;
-				}
-			}
-		}
+	let result = [];
+	for (let r in routes) {
+		if (r.table == RT_TABLE_MAIN || extra_table_set[r.table])
+			push(result, r);
 	}
 
 	return result;
@@ -374,18 +390,10 @@ function populate_connected_set() {
 function populate_iface_routes() {
 
 	build_dev_table_map();
+	refresh_active_chains();
 
 	let routes = get_all_routes();
-
-	// Determine which interface table IDs are active
-
-	let active_tids = {};
-	for (let iface in iface_list) {
-		if (iface.family != family_name)
-			continue;
-		if (is_iface_nft_active(iface.name))
-			active_tids[iface.tid] = iface.name;
-	}
+	let active_tids = get_active_tids();
 
 	if (length(keys(active_tids)) == 0)
 		return;
@@ -402,8 +410,11 @@ function populate_iface_routes() {
 				let r = build_route_for_table(route, target_tid);
 				rtnl.request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, r);
 			}
+
 		} else if (!is_default_route(route) && !is_linklocal_route(route)) {
+
 			// Broadcast to all active interface tables
+
 			for (let tid_str in keys(active_tids)) {
 				let r = build_route_for_table(route, +tid_str);
 				rtnl.request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, r);
@@ -442,15 +453,20 @@ function handle_route_event(event) {
 			nft_exec('add element inet fw4 ' + setname +
 				' { ' + route.dst + ' }');
 	} else {
-
-		// On delete, rebuild entire connected set (same as shell version)
-
-		populate_connected_set();
+		// Debounce: coalesce rapid deletes into one rebuild
+		if (!connected_timer)
+			connected_timer = uloop.timer(DEBOUNCE_MS, () => {
+				populate_connected_set();
+				connected_timer = null;
+			});
+		else
+			connected_timer.set(DEBOUNCE_MS);
 	}
 
 	// -- Update per-interface routing tables --
 
 	build_dev_table_map();
+	refresh_active_chains();
 
 	// For delete events, verify the route is actually gone (ECMP case)
 
@@ -460,15 +476,7 @@ function handle_route_event(event) {
 		return;
 	}
 
-	// Active interface tables for this family
-
-	let active_tids = {};
-	for (let iface in iface_list) {
-		if (iface.family != family_name)
-			continue;
-		if (is_iface_nft_active(iface.name))
-			active_tids[iface.tid] = iface.name;
-	}
+	let active_tids = get_active_tids();
 
 	let dev = route.oif;
 	let target_tid = (dev != null) ? dev_table_map[dev] : null;
@@ -481,16 +489,8 @@ function handle_route_event(event) {
 		if (active_tids["" + target_tid] == null)
 			return;
 
-		let r = build_route_for_table(route, target_tid);
-		if (is_new) {
-			rtnl.request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, r);
-			let err = rtnl.error();
-			if (err)
-				log_msg("warn", "failed to add route to table " +
-					target_tid + ": " + err);
-		} else {
-			rtnl.request(RTM_DELROUTE, 0, r);
-		}
+		apply_route_to_table(route, target_tid, is_new);
+
 	} else if (!is_default_route(route) &&
 	           !is_linklocal_route(route)) {
 
@@ -507,17 +507,7 @@ function handle_route_event(event) {
 				continue;
 			}
 
-			let r = build_route_for_table(route, tid);
-			if (is_new) {
-				rtnl.request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, r);
-				let err = rtnl.error();
-				if (err)
-					log_msg("warn",
-						"failed to add route to table " +
-						tid + ": " + err);
-			} else {
-				rtnl.request(RTM_DELROUTE, 0, r);
-			}
+			apply_route_to_table(route, tid, is_new);
 		}
 	}
 }
