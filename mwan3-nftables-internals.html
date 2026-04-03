@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mwan3 nftables Implementation &mdash; Developer Reference</title>
+<style>
+  :root {
+    --bg: #fdfdfd;
+    --fg: #1a1a1a;
+    --accent: #2563eb;
+    --accent-light: #dbeafe;
+    --code-bg: #f3f4f6;
+    --border: #d1d5db;
+    --heading: #111827;
+    --note-bg: #fffbeb;
+    --note-border: #f59e0b;
+    --warn-bg: #fef2f2;
+    --warn-border: #ef4444;
+    --chain-bg: #ecfdf5;
+    --chain-border: #10b981;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  h1 { font-size: 2rem; color: var(--heading); border-bottom: 3px solid var(--accent); padding-bottom: .5rem; margin-top: 0; }
+  h2 { font-size: 1.5rem; color: var(--heading); border-bottom: 2px solid var(--border); padding-bottom: .3rem; margin-top: 2.5rem; }
+  h3 { font-size: 1.2rem; color: var(--accent); margin-top: 2rem; }
+  h4 { font-size: 1.05rem; color: var(--heading); margin-top: 1.5rem; }
+  code {
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 0.92em;
+    background: var(--code-bg);
+    padding: 0.15em 0.35em;
+    border-radius: 3px;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.2rem;
+    overflow-x: auto;
+    font-size: 0.88em;
+    line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.93em; }
+  th, td { border: 1px solid var(--border); padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
+  th { background: var(--code-bg); font-weight: 600; }
+  tr:nth-child(even) td { background: #fafafa; }
+  .note, .warn, .chain-box {
+    border-left: 4px solid;
+    padding: 0.75rem 1rem;
+    margin: 1.2rem 0;
+    border-radius: 0 6px 6px 0;
+  }
+  .note { background: var(--note-bg); border-color: var(--note-border); }
+  .warn { background: var(--warn-bg); border-color: var(--warn-border); }
+  .chain-box { background: var(--chain-bg); border-color: var(--chain-border); }
+  .toc { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.5rem; margin: 1.5rem 0; }
+  .toc ul { margin: 0.3rem 0; padding-left: 1.5rem; }
+  .toc li { margin: 0.15rem 0; }
+  .toc a { text-decoration: none; color: var(--accent); }
+  .toc a:hover { text-decoration: underline; }
+  a { color: var(--accent); }
+  .file-path { font-weight: 600; color: var(--accent); }
+  .func-sig { font-family: monospace; font-size: 0.95em; font-weight: 600; }
+  .diagram { text-align: center; margin: 1.5rem 0; }
+  .diagram pre { display: inline-block; text-align: left; font-size: 0.82em; }
+  .tag {
+    display: inline-block;
+    font-size: 0.78em;
+    padding: 0.1em 0.5em;
+    border-radius: 3px;
+    font-weight: 600;
+    vertical-align: middle;
+  }
+  .tag-static { background: #dbeafe; color: #1e40af; }
+  .tag-dynamic { background: #fce7f3; color: #9d174d; }
+  .tag-unchanged { background: #e5e7eb; color: #374151; }
+  .tag-new { background: #dcfce7; color: #166534; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+</style>
+</head>
+<body>
+
+<h1>mwan3 nftables Implementation</h1>
+<p><strong>Developer Reference</strong> &mdash; OpenWrt 25.12+<br>
+Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
+<em>Package version: 3.1</em></p>
+
+<nav class="toc">
+<strong>Contents</strong>
+<ul>
+  <li><a href="#overview">1. Architecture Overview</a></li>
+  <li><a href="#mark-system">2. The Mark Bitmask System</a></li>
+  <li><a href="#nft-integration">3. nftables / fw4 Integration</a></li>
+  <li><a href="#packet-flow">4. Packet Flow Through Chains</a></li>
+  <li><a href="#files">5. File Reference</a>
+    <ul>
+      <li><a href="#file-nft">5.1 10-mwan3.nft</a></li>
+      <li><a href="#file-common">5.2 common.sh</a></li>
+      <li><a href="#file-mwan3sh">5.3 mwan3.sh</a></li>
+      <li><a href="#file-initd">5.4 init.d/mwan3</a></li>
+      <li><a href="#file-hotplug">5.5 25-mwan3 (hotplug)</a></li>
+      <li><a href="#file-cli">5.6 usr/sbin/mwan3 (CLI)</a></li>
+      <li><a href="#file-rtmon">5.7 mwan3rtmon</a></li>
+      <li><a href="#file-rpcd">5.8 rpcd/ucode/mwan3</a></li>
+      <li><a href="#file-makefile">5.9 Makefile</a></li>
+      <li><a href="#file-fw-include">5.10 mwan3-fw-include.sh</a></li>
+      <li><a href="#file-fw-rebuild">5.11 mwan3-fw-rebuild.sh</a></li>
+      <li><a href="#file-uci-firewall">5.12 mwan3-firewall-include (UCI defaults)</a></li>
+    </ul>
+  </li>
+  <li><a href="#functions">6. Function Reference</a>
+    <ul>
+      <li><a href="#fn-common">6.1 common.sh Functions</a></li>
+      <li><a href="#fn-sets">6.2 Set Management Functions</a></li>
+      <li><a href="#fn-general">6.3 General Rule Setup</a></li>
+      <li><a href="#fn-iface">6.4 Interface Management</a></li>
+      <li><a href="#fn-policy">6.5 Policy &amp; Load Balancing</a></li>
+      <li><a href="#fn-sticky">6.6 Sticky Routing</a></li>
+      <li><a href="#fn-userrules">6.7 User Rules</a></li>
+      <li><a href="#fn-reporting">6.8 Status Reporting</a></li>
+      <li><a href="#fn-lifecycle">6.9 Lifecycle &amp; Hotplug</a></li>
+    </ul>
+  </li>
+  <li><a href="#load-balancing">7. Load Balancing with numgen</a></li>
+  <li><a href="#sticky-detail">8. Sticky Routing Detail</a></li>
+  <li><a href="#lifecycle">9. Service Lifecycle</a></li>
+  <li><a href="#fw4-reload">10. fw4 Reload Recovery</a></li>
+  <li><a href="#unchanged">11. Unchanged Files</a></li>
+  <li><a href="#diagnostics">12. Diagnostic Commands</a></li>
+  <li><a href="#luci-app">13. luci-app-mwan3 Changes</a>
+    <ul>
+      <li><a href="#luci-rule-js">13.1 rule.js (Rule Editor UI)</a></li>
+      <li><a href="#luci-mwan3-helper">13.2 luci-mwan3 (Helper Script)</a></li>
+      <li><a href="#luci-acl">13.3 ACL Permissions</a></li>
+      <li><a href="#luci-interface-js">13.4 interface.js (Interface Settings UI)</a></li>
+    </ul>
+  </li>
+  <li><a href="#porting-notes">14. Iptables-to-nftables Porting Notes</a></li>
+  <li><a href="#enhancements">15. Enhancements</a>
+    <ul>
+      <li><a href="#enh-conntrack-flush">15.1 Selective Conntrack Flush on Interface Down</a></li>
+      <li><a href="#enh-flow-offloading">15.2 Software Flow Offloading Co-existence</a></li>
+      <li><a href="#enh-track-gateway">15.3 Automatic Gateway Tracking (track_gateway)</a></li>
+    </ul>
+  </li>
+</ul>
+</nav>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="overview">1. Architecture Overview</h2>
+
+<p>mwan3 is OpenWrt's multi-WAN policy routing framework. It classifies packets using <strong>firewall marks</strong>, then uses <code>ip rule</code> entries to route marked packets through per-interface routing tables. The nftables port replaces all iptables/ipset usage with nftables equivalents while keeping the ip rule/route management, health tracking (<code>mwan3track</code>), and socket-level mark injection (<code>libwrap_mwan3_sockopt.so</code>) completely unchanged.</p>
+
+<h3>Key Design Decisions</h3>
+<ul>
+  <li><strong>Lives inside <code>table inet fw4</code></strong> &mdash; mwan3 chains and sets are defined inside fw4's own table, not a separate table. This is how fw4 extension points (<code>table-post/*.nft</code>) work.</li>
+  <li><strong>Own-priority hook chains</strong> &mdash; <code>mwan3_prerouting</code> and <code>mwan3_output</code> are registered at <code>priority mangle + 1</code>, running after fw4's own mangle chains but before any higher-priority processing.</li>
+  <li><strong>Static skeleton + dynamic rules</strong> &mdash; A static <code>.nft</code> file defines empty sets and chains at fw4 startup. All rules are added dynamically by shell scripts since they depend on the configurable <code>MMX_MASK</code>.</li>
+  <li><strong>inet family</strong> &mdash; Chains handle both IPv4 and IPv6 in a single pass. Sets remain type-specific (separate v4/v6 sets) since nftables requires a single address type per set.</li>
+  <li><strong>Batch operations</strong> &mdash; Multi-element operations (connected set rebuild, policy chain rebuild, user rules) are batched via a temp file and committed with <code>nft -f</code> for atomicity and performance.</li>
+  <li><strong>Dual fw4 reload recovery</strong> &mdash; Since fw4 reload flushes the entire <code>table inet fw4</code>, mwan3 detects and rebuilds its dynamic rules via two complementary paths: a hotplug script (position 25, after fw4's position 20) and an fw4 script include that triggers on firewall restart. See <a href="#fw4-reload">Section 10</a>.</li>
+</ul>
+
+<h3>Component Map</h3>
+<div class="diagram">
+<pre>
+                     UCI Config (/etc/config/mwan3)
+                              |
+               +--------------+--------------+
+               |                             |
+         init.d/mwan3                   mwan3track
+        (service lifecycle)           (health probes)
+               |                             |
+    +----------+----------+          writes STATUS files
+    |          |          |          to /var/run/mwan3track/
+    v          v          v
+ common.sh  mwan3.sh  10-mwan3.nft
+ (helpers)  (engine)  (static skeleton)
+    |          |
+    v          v
+  nft tool   ip tool
+    |          |
+    v          v
+ nftables    ip rule / ip route
+ (in-kernel)  (in-kernel)
+
+ Hotplug:       25-mwan3  --calls-->  mwan3.sh functions
+ Hotplug user:  26-mwan3-user  --calls-->  /etc/mwan3.user
+ CLI:           /usr/sbin/mwan3  --calls-->  mwan3.sh functions
+ RPC:           rpcd/ucode/mwan3  --calls-->  nft -j (JSON output)
+ Rtmon:         mwan3rtmon  --uses-->   ucode-mod-rtnl (netlink) + nft
+ fw4 include:   mwan3-fw-include.sh  --forks-->  mwan3-fw-rebuild.sh
+</pre>
+</div>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="mark-system">2. The Mark Bitmask System</h2>
+
+<p>mwan3 uses a configurable bitmask (<code>MMX_MASK</code>, default <code>0x3F00</code>) within the 32-bit packet mark to encode routing decisions. The mask determines how many interfaces can be supported and which mark values are reserved.</p>
+
+<h3>Mark Layout (default 0x3F00)</h3>
+<pre>
+Bit:   31 ...... 14 13 12 11 10  9  8  7 ...... 0
+       [  unused  ] [    MMX_MASK    ] [ unused  ]
+                     0  0  1  1  1  1
+                     ^  ^  ^  ^  ^  ^
+                     |  |  +--+--+--+-- 6 bits = values 0..63
+                     |  +-- bit 13
+                     +-- bit 14
+</pre>
+
+<table>
+<tr><th>Value</th><th>Meaning</th><th>With 0x3F00</th></tr>
+<tr><td>0</td><td>Unmarked (needs classification)</td><td><code>0x0000</code></td></tr>
+<tr><td>1 .. N</td><td>Interface marks (N = max interfaces)</td><td><code>0x0100</code> .. depends on mask</td></tr>
+<tr><td>mmdefault-2</td><td>MM_BLACKHOLE</td><td>Routes to blackhole</td></tr>
+<tr><td>mmdefault-1</td><td>MM_UNREACHABLE</td><td>Routes to unreachable</td></tr>
+<tr><td>mmdefault (all bits set)</td><td>MMX_DEFAULT (= MMX_MASK)</td><td><code>0x3F00</code> = use default routing</td></tr>
+</table>
+
+<h3>Bit Spreading: <code>mwan3_id2mask()</code></h3>
+<p>Interface IDs (sequential integers 1, 2, 3...) are mapped onto the mask bits using <code>mwan3_id2mask()</code>. This "spreads" the ID's bits into only the positions where the mask has a 1-bit. For example, with mask <code>0x3F00</code>:</p>
+<pre>
+Interface 1 (binary 000001) -> 0x0100   (bit 8 set)
+Interface 2 (binary 000010) -> 0x0200   (bit 9 set)
+Interface 3 (binary 000011) -> 0x0300   (bits 8+9)
+Interface 5 (binary 000101) -> 0x0500   (bits 8+10)
+</pre>
+
+<h3>nftables Mark Manipulation</h3>
+<p>The iptables operation <code>-j MARK --set-xmark VALUE/MASK</code> means <code>mark = (mark &amp; ~MASK) | VALUE</code>. In nftables this becomes:</p>
+<pre><code>meta mark set meta mark &amp; COMPLEMENT | VALUE</code></pre>
+<p>where <code>COMPLEMENT = ~MASK &amp; 0xFFFFFFFF</code>. The helper <code>mwan3_nft_mark_expr()</code> generates this expression.</p>
+
+<div class="warn">
+<strong>Operator syntax:</strong> Always use the <code>&amp;</code> and <code>|</code> <em>symbols</em>, not the <code>and</code>/<code>or</code> keywords. The nft parser treats keywords ambiguously after expressions like <code>meta mark set ct mark</code>&mdash;it cannot tell if <code>and</code> starts a new match or a bitwise operation. Symbols are unambiguous.
+</div>
+
+<h3>Connmark Operations</h3>
+<pre>
+# Restore mark from conntrack (first packet of existing flow):
+meta mark set ct mark &amp; $MMX_MASK
+
+# Save mark to conntrack:
+ct mark set meta mark
+</pre>
+
+<div class="note">
+<strong>Why not preserve non-mwan3 bits?</strong> The ideal connmark save would be <code>ct mark set ct mark &amp; ~MASK | meta mark &amp; MASK</code> to preserve other bits. However, the kernel does not support compound two-source bitwise expressions (mixing <code>ct mark</code> and <code>meta mark</code> in one set expression fails with "Operation not supported"). Since mwan3 owns its mask bits exclusively, saving the full <code>meta mark</code> is safe and equivalent in practice.
+</div>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="nft-integration">3. nftables / fw4 Integration</h2>
+
+<p>OpenWrt's fw4 firewall includes files from <code>/usr/share/nftables.d/table-post/</code> inside its <code>table inet fw4 { }</code> block. mwan3 installs <code>10-mwan3.nft</code> there, which defines:</p>
+
+<h3>Static Objects (from 10-mwan3.nft)</h3>
+
+<table>
+<tr><th>Object</th><th>Type</th><th>Purpose</th></tr>
+<tr><td><code>mwan3_connected_v4</code></td><td>set (ipv4_addr, interval, auto-merge)</td><td>Directly connected IPv4 networks</td></tr>
+<tr><td><code>mwan3_connected_v6</code></td><td>set (ipv6_addr, interval, auto-merge)</td><td>Directly connected IPv6 networks</td></tr>
+<tr><td><code>mwan3_custom_v4</code></td><td>set (ipv4_addr, interval, auto-merge)</td><td>Networks from custom routing tables</td></tr>
+<tr><td><code>mwan3_custom_v6</code></td><td>set (ipv6_addr, interval, auto-merge)</td><td>Networks from custom routing tables</td></tr>
+<tr><td><code>mwan3_dynamic_v4</code></td><td>set (ipv4_addr, interval, auto-merge)</td><td>Dynamically managed networks</td></tr>
+<tr><td><code>mwan3_dynamic_v6</code></td><td>set (ipv6_addr, interval, auto-merge)</td><td>Dynamically managed networks</td></tr>
+<tr><td><code>mwan3_prerouting</code></td><td>chain (filter, prerouting, mangle+1)</td><td>Entry point for forwarded/incoming traffic</td></tr>
+<tr><td><code>mwan3_output</code></td><td>chain (route, output, mangle+1)</td><td>Entry point for locally-originated traffic</td></tr>
+<tr><td><code>mwan3_ifaces_in</code></td><td>chain (regular)</td><td>Dispatches to per-interface chains</td></tr>
+<tr><td><code>mwan3_rules</code></td><td>chain (regular)</td><td>User-defined classification rules</td></tr>
+<tr><td><code>mwan3_connected</code></td><td>chain (regular)</td><td>Marks traffic to connected networks as default</td></tr>
+<tr><td><code>mwan3_custom</code></td><td>chain (regular)</td><td>Marks traffic to custom-table networks as default</td></tr>
+<tr><td><code>mwan3_dynamic</code></td><td>chain (regular)</td><td>Marks traffic to dynamic networks as default</td></tr>
+</table>
+
+<div class="note">
+<strong>auto-merge flag:</strong> All sets include the <code>auto-merge</code> flag in addition to <code>interval</code>. This allows nftables to merge overlapping elements (e.g., a host address and a containing CIDR) automatically, preventing insertion failures. The <code>nft add set</code> command is idempotent for creation but does <em>not</em> update flags on existing sets&mdash;so <code>mwan3_ensure_nft_framework()</code> deletes and recreates sets at startup to guarantee the flag is present.
+</div>
+
+<h3>Dynamic Objects (created at runtime)</h3>
+
+<table>
+<tr><th>Object Pattern</th><th>Type</th><th>Created By</th></tr>
+<tr><td><code>mwan3_iface_in_&lt;name&gt;</code></td><td>chain</td><td><code>mwan3_create_iface_nft()</code></td></tr>
+<tr><td><code>mwan3_policy_&lt;name&gt;</code></td><td>chain</td><td><code>mwan3_create_policies_nft()</code></td></tr>
+<tr><td><code>mwan3_rule_&lt;name&gt;</code></td><td>chain</td><td><code>mwan3_set_user_nft_rule()</code> (sticky rules only)</td></tr>
+<tr><td><code>mwan3_sticky_v4_&lt;rule&gt;</code></td><td>map (ipv4_addr : mark)</td><td><code>mwan3_set_sticky_map()</code></td></tr>
+<tr><td><code>mwan3_sticky_v6_&lt;rule&gt;</code></td><td>map (ipv6_addr : mark)</td><td><code>mwan3_set_sticky_map()</code></td></tr>
+</table>
+
+<div class="note">
+<strong>Why <code>type route</code> for output?</strong> The output chain uses <code>type route</code> (not <code>type filter</code>) because changing a packet's mark on locally-originated traffic must trigger a routing re-lookup. This matches fw4's own <code>mangle_output</code> chain type.
+</div>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="packet-flow">4. Packet Flow Through Chains</h2>
+
+<p>The same logical flow applies to both <code>mwan3_prerouting</code> and <code>mwan3_output</code>, with one difference: prerouting includes an IPv6 RA bypass at the top.</p>
+
+<div class="diagram">
+<pre>
+Packet enters mwan3_prerouting (or mwan3_output)
+  |
+  |-- [prerouting only] ICMPv6 RA/NS/NA/redirect? --> ACCEPT (bypass)
+  |
+  |-- mark &amp; MMX_MASK == 0?
+  |     |
+  |     +-- YES: Restore mark from conntrack (ct mark &amp; MMX_MASK)
+  |     |
+  |     +-- Still mark == 0?
+  |           |
+  |           +-- jump mwan3_ifaces_in
+  |           |     Per-interface chains check source address:
+  |           |       - src in connected/custom/dynamic? -> mark = MMX_DEFAULT
+  |           |       - otherwise -> mark = interface mark
+  |           |
+  |           +-- Still mark == 0?
+  |           |     jump mwan3_custom    (dst in custom sets? -> MMX_DEFAULT)
+  |           |     jump mwan3_connected (dst in connected?   -> MMX_DEFAULT)
+  |           |     jump mwan3_dynamic   (dst in dynamic?     -> MMX_DEFAULT)
+  |           |
+  |           +-- Still mark == 0?
+  |                 jump mwan3_rules     (user classification rules)
+  |                   -> jump to policy chain / set mark directly
+  |
+  |-- Save mark to conntrack:
+  |     ct mark = meta mark
+  |
+  |-- mark &amp; MMX_MASK != MMX_DEFAULT?
+  |     (Traffic that got a specific interface mark, not "default")
+  |     Re-check against custom/connected/dynamic destinations
+  |     This allows connected-destination traffic to be overridden
+  |     back to default routing even if it was marked by user rules
+  |
+  +-- ACCEPT (policy accept; packet continues to routing decision)
+</pre>
+</div>
+
+<h3>Per-Interface Chain Detail</h3>
+<p>Each <code>mwan3_iface_in_&lt;name&gt;</code> chain:</p>
+<ol>
+  <li>Matches on <code>iifname</code> (device name) and address family</li>
+  <li>If source address is in connected/custom/dynamic sets &rarr; mark as <code>MMX_DEFAULT</code> (don't route through this WAN for local-origin traffic)</li>
+  <li>Otherwise &rarr; mark with the interface's unique mark (classify as "arrived via this WAN")</li>
+</ol>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="files">5. File Reference</h2>
+
+<!-- 5.1 -->
+<h3 id="file-nft">5.1 <span class="file-path">usr/share/nftables.d/table-post/10-mwan3.nft</span> <span class="tag tag-static">static</span></h3>
+<p>The static nftables framework file. Included inside <code>table inet fw4 { }</code> by fw4 at startup. Defines 6 named sets (all empty, with <code>flags interval</code> and <code>auto-merge</code> for CIDR support with overlapping element handling) and 7 skeleton chains (all empty). No rules are present&mdash;all rules are added dynamically by the shell scripts because they depend on the configurable <code>MMX_MASK</code> value.</p>
+<p>The <code>mwan3_prerouting</code> chain is type <code>filter</code> at priority <code>mangle + 1</code>. The <code>mwan3_output</code> chain is type <code>route</code> at the same priority.</p>
+
+<!-- 5.2 -->
+<h3 id="file-common">5.2 <span class="file-path">lib/mwan3/common.sh</span></h3>
+<p>Shared helper library sourced by all mwan3 shell scripts. Provides:</p>
+<ul>
+  <li><strong>Tool variables</strong>: <code>$IP4</code>, <code>$IP6</code>, <code>$NFT</code></li>
+  <li><strong>IPv6 detection</strong>: Checks <code>/proc/sys/net/ipv6</code> existence (instead of the old <code>command -v ip6tables</code>)</li>
+  <li><strong>nft batch helpers</strong>: <code>mwan3_nft_batch_start()</code>, <code>mwan3_nft_push()</code>, <code>mwan3_nft_batch_commit()</code></li>
+  <li><strong><code>mwan3_nft_exec()</code></strong>: Wrapper that runs <code>nft</code> commands with error logging</li>
+  <li><strong><code>mwan3_nft_mark_expr()</code></strong>: Generates nftables mark-set expressions equivalent to iptables <code>--set-xmark</code>. Outputs <code>meta mark set meta mark &amp; COMPLEMENT | VALUE</code> using <code>&amp;</code>/<code>|</code> symbols (not <code>and</code>/<code>or</code> keywords).</li>
+  <li><strong><code>mwan3_ensure_nft_framework()</code></strong>: Guarantees all mwan3 nftables objects (sets and chains) exist with correct flags. Deletes and recreates all 6 sets to ensure the <code>auto-merge</code> flag is present (since <code>nft add set</code> is idempotent but won't update flags on existing sets). Then creates all chains. Called early in <code>start_service()</code>.</li>
+  <li><strong><code>mwan3_init()</code></strong>: Loads config, computes mask constants (<code>MMX_DEFAULT</code>, <code>MMX_BLACKHOLE</code>, <code>MMX_UNREACHABLE</code>, <code>MMX_MASK_COMPLEMENT</code>)</li>
+  <li><strong><code>mwan3_id2mask()</code></strong>: Bit-spreading function that maps interface IDs onto the mask</li>
+  <li><strong><code>mwan3_count_one_bits()</code></strong>: Counts set bits in a value</li>
+  <li><strong>Utility functions</strong>: <code>LOG()</code>, <code>readfile()</code>, <code>mwan3_get_src_ip()</code>, <code>mwan3_get_true_iface()</code>, <code>mwan3_get_mwan3track_status()</code>, <code>get_uptime()</code>, <code>get_online_time()</code></li>
+</ul>
+
+<div class="note">
+<strong>Shell scoping note:</strong> Functions like <code>mwan3_id2mask</code> and <code>mwan3_count_one_bits</code> receive <em>variable names</em> as arguments (e.g., <code>mwan3_id2mask mmdefault MMX_MASK</code>) and use arithmetic expansion <code>$(($1))</code> to resolve them. This works in busybox ash (OpenWrt's default shell) because it uses dynamic scoping&mdash;local variables from the caller are visible in called functions.
+</div>
+
+<!-- 5.3 -->
+<h3 id="file-mwan3sh">5.3 <span class="file-path">lib/mwan3/mwan3.sh</span></h3>
+<p>The core engine. Contains all functions for managing nftables chains/sets/maps, ip rules, ip routes, policy creation, user rule classification, and status reporting. This is the largest file and the heart of the implementation. Sourced by init.d, hotplug, CLI, and rtmon scripts.</p>
+<p>See <a href="#functions">Section 6</a> for detailed function reference.</p>
+
+<!-- 5.4 -->
+<h3 id="file-initd">5.4 <span class="file-path">etc/init.d/mwan3</span></h3>
+<p>procd service script. Handles:</p>
+<ul>
+  <li><strong><code>start_service()</code></strong>: Initializes everything in order: ensure nft framework &rarr; sets &rarr; general rules &rarr; general nft chains &rarr; interface hotplug &rarr; policies &rarr; user rules. Starts <code>mwan3track</code> instances and <code>mwan3rtmon</code> (one per address family).</li>
+  <li><strong><code>stop_service()</code></strong>: Tears down in reverse: shuts down interfaces, flushes ip routes/rules, flushes all mwan3 nft chains, deletes dynamic chains (keeps skeleton chains from the static .nft file), flushes sets, deletes sticky maps.</li>
+  <li><strong><code>start_tracker()</code></strong>: Launches a <code>mwan3track</code> procd instance per enabled interface with track IPs.</li>
+  <li><strong><code>service_running()</code></strong>: Returns true if <code>$MWAN3_STATUS_DIR</code> exists.</li>
+</ul>
+
+<h4>Startup Sequence</h4>
+<pre>
+mwan3_init()
+  mwan3_ensure_nft_framework()            # delete/recreate sets with auto-merge, create chains
+  config_foreach start_tracker interface  # launch health probes
+  mwan3_update_iface_to_table()           # build iface->table mapping
+  mwan3_set_dynamic_sets()                # flush dynamic sets
+  mwan3_set_connected_sets()              # populate connected sets
+  mwan3_set_custom_sets()                 # populate custom sets
+  mwan3_set_general_rules()              # ip rule add (blackhole/unreachable)
+  mwan3_set_general_nft()                # populate hook chain rules
+  config_foreach mwan3_ifup interface "init"  # trigger ifup hotplug per interface
+  wait $hotplug_pids                     # wait for parallel hotplug
+  mwan3_set_policies_nft()               # create policy chains
+  mwan3_set_user_rules()                 # populate user rules chain
+  [if flow_offloading=1] flush conntrack # force flow re-establishment under new policy
+  start rtmon_ipv4 + rtmon_ipv6          # route monitor daemons (ucode)
+</pre>
+
+<!-- 5.5 -->
+<h3 id="file-hotplug">5.5 <span class="file-path">etc/hotplug.d/iface/25-mwan3</span></h3>
+<p>Handles interface state change events from netifd. Triggered on <code>ifup</code>, <code>ifdown</code>, <code>connected</code>, and <code>disconnected</code> actions. Positioned at <strong>priority 25</strong> to run after fw4's <code>20-firewall</code> hotplug script, which is critical for fw4 reload recovery.</p>
+
+<h4>Guard Checks</h4>
+<ol>
+  <li>Valid action and interface name</li>
+  <li>Not first-connect or shutdown</li>
+  <li>Device present for ifup/connected</li>
+  <li>procd lock (unless called from init)</li>
+  <li>Service is running (<code>$MWAN3_STATUS_DIR</code> exists)</li>
+  <li>nft framework is loaded (<code>nft list chain inet fw4 mwan3_prerouting</code> succeeds)</li>
+  <li>Interface is enabled in UCI</li>
+</ol>
+
+<h4>fw4 Reload Detection</h4>
+<p>Between the guard checks and the per-action processing, the hotplug script detects whether fw4 has reloaded (wiping all dynamic mwan3 rules). It checks whether <code>mwan3_prerouting</code> contains any <code>meta mark</code> rules. If the chain is empty (skeleton only), it performs a full rebuild of all nft rules, interface chains, policies, and user rules. It also signals dnsmasq (<code>killall -HUP dnsmasq</code>) to clear its cache so that subsequent DNS queries re-populate any nftset-based sets. See <a href="#fw4-reload">Section 10</a> for full details.</p>
+
+<h4>Actions</h4>
+<table>
+<tr><th>Action</th><th>Operations</th></tr>
+<tr><td><code>ifup</code></td><td>Update peer track IP (if <code>track_gateway</code> enabled), create interface nft chain, create ip rules, set hotplug state, create routes (if not init), set general rules, rebuild policies (if online and not init). Signal tracker with USR2.</td></tr>
+<tr><td><code>ifdown</code></td><td>Set offline state, selectively flush conntrack entries for this interface's fwmark, delete sticky map entries, delete ip rules, delete routes, delete interface nft chain. Signal tracker with USR1. Rebuild policies.</td></tr>
+<tr><td><code>connected</code></td><td>Set online state, rebuild policies</td></tr>
+<tr><td><code>disconnected</code></td><td>Set offline state, rebuild policies</td></tr>
+</table>
+
+<div class="note">
+<strong>ifup conditional policy rebuild:</strong> During init (<code>MWAN3_STARTUP=init</code>), the ifup action skips route creation, general rules, and policy rebuild because the init sequence handles those after all interfaces are up. During normal operation, policies are only rebuilt if the interface state is "online" (not for interfaces with <code>initial_state=offline</code>).
+</div>
+
+<!-- 5.6 -->
+<h3 id="file-cli">5.6 <span class="file-path">usr/sbin/mwan3</span> (CLI)</h3>
+<p>User-facing command-line tool. Provides <code>start</code>/<code>stop</code>/<code>restart</code>/<code>ifup</code>/<code>ifdown</code> commands plus status reporting: <code>interfaces</code>, <code>policies</code>, <code>connected</code>, <code>rules</code>, <code>status</code> (all combined), and <code>internal</code> (detailed dump).</p>
+<p>The <code>use</code> command runs an arbitrary command bound to a specific interface using <code>LD_PRELOAD</code> with <code>libwrap_mwan3_sockopt.so</code>.</p>
+<p>The <code>internal</code> command now shows <code>nft list table inet fw4</code> output (filtered for mwan3 chains) instead of the old iptables dump.</p>
+
+<!-- 5.7 -->
+<h3 id="file-rtmon">5.7 <span class="file-path">usr/sbin/mwan3rtmon</span></h3>
+<p>Route monitor daemon, reimplemented in <strong>ucode</strong>. Runs one instance per address family (ipv4/ipv6) as a procd service. Uses <code>ucode-mod-rtnl</code> for direct netlink access and <code>ucode-mod-uloop</code> for the event loop, eliminating all <code>ip</code> command fork+exec overhead from the original shell implementation.</p>
+
+<p>Key improvements over the shell version:</p>
+<ul>
+  <li><strong>Direct netlink route monitoring</strong> via <code>rtnl.listener()</code> instead of <code>ip monitor route</code> piped to a shell read loop</li>
+  <li><strong>Structured route data</strong> from netlink messages instead of text parsing with sed/awk</li>
+  <li><strong>O(1) per-event cost</strong> &mdash; the refactored handler avoids per-interface ubus calls, popen subprocesses, and UCI cursor creation on each route event. Device-to-table mapping and interface state are cached and refreshed only when needed</li>
+  <li><strong>Debounced connected set rebuild</strong> &mdash; route delete events trigger a 100ms debounce timer rather than an immediate full set rebuild, coalescing bursts of route changes (e.g., during interface flap) into a single rebuild</li>
+  <li><strong>Proper event loop</strong> via <code>uloop.run()</code> instead of a shell pipe+read loop</li>
+</ul>
+
+<p>On startup, it performs an initial synchronization: dumps the current routing table via netlink, populates the connected set, and replicates routes into active per-interface tables. It then enters the uloop event loop to process route change notifications asynchronously.</p>
+<ul>
+  <li><strong>New route</strong>: Adds CIDR networks to the connected set via <code>nft add element</code>, then replicates the route into active per-interface tables. Host routes (bare IPs without prefix length) are skipped as they are remote destinations.</li>
+  <li><strong>Deleted route</strong>: Schedules a debounced connected set rebuild, then removes the route from per-interface tables.</li>
+</ul>
+
+<!-- 5.8 -->
+<h3 id="file-rpcd">5.8 <span class="file-path">usr/share/rpcd/ucode/mwan3</span></h3>
+<p>ucode RPC service providing the <code>mwan3.status</code> ubus method. Used by LuCI for the web interface. Returns JSON data for interfaces, connected networks, and policies.</p>
+<p>Uses <code>nft -j</code> (JSON output mode) for reliable parsing instead of text scraping. Key changes from the iptables version:</p>
+<ul>
+  <li><strong>Connected IPs</strong>: Parses <code>nft -j list set inet fw4 mwan3_connected_v4/v6</code>. Handles JSON element types: plain strings, prefix objects (<code>{prefix: {addr, len}}</code>), and range objects.</li>
+  <li><strong>Policies</strong>: Enumerates chains matching <code>mwan3_policy_*</code> via <code>nft -j list chains</code>, then parses each chain's JSON looking for <code>numgen</code> map expressions to extract weight/mark information.</li>
+  <li><strong>Interfaces</strong>: Unchanged&mdash;reads status files from <code>/var/run/mwan3track/</code> and queries procd/netifd via ubus.</li>
+</ul>
+
+<!-- 5.9 -->
+<h3 id="file-makefile">5.9 <span class="file-path">Makefile</span></h3>
+<p>Package build recipe. Key changes:</p>
+<table>
+<tr><th>Old Dependency</th><th>New Dependency</th></tr>
+<tr><td><code>+ipset</code></td><td><code>+kmod-nft-core</code></td></tr>
+<tr><td><code>+iptables</code></td><td><code>+nftables-json</code></td></tr>
+<tr><td><code>+IPV6:ip6tables</code></td><td><code>+ucode</code></td></tr>
+<tr><td><code>+iptables-mod-conntrack-extra</code></td><td><code>+ucode-mod-rtnl</code></td></tr>
+<tr><td><code>+iptables-mod-ipopt</code></td><td><code>+ucode-mod-uloop</code></td></tr>
+<tr><td></td><td><code>+ucode-mod-uci</code></td></tr>
+<tr><td></td><td><code>+ucode-mod-ubus</code></td></tr>
+<tr><td></td><td><code>+ucode-mod-fs</code></td></tr>
+</table>
+<p>The ucode dependencies are required by the reimplemented <code>mwan3rtmon</code> route monitor daemon.</p>
+<p>Also installs:</p>
+<ul>
+  <li><code>10-mwan3.nft</code> to <code>$(1)/usr/share/nftables.d/table-post/</code></li>
+  <li><code>mwan3-fw-include.sh</code> and <code>mwan3-fw-rebuild.sh</code> to <code>$(1)/lib/mwan3/</code></li>
+  <li><code>mwan3-firewall-include</code> UCI defaults to <code>$(1)/etc/uci-defaults/</code></li>
+</ul>
+<p>The <code>+nftables-json</code> package provides the <code>nft</code> binary with JSON output support, needed by the rpcd ucode module.</p>
+
+<!-- 5.10 -->
+<h3 id="file-fw-include">5.10 <span class="file-path">lib/mwan3/mwan3-fw-include.sh</span> <span class="tag tag-new">new</span></h3>
+<p>fw4 script include. Registered in the firewall UCI config by the <code>mwan3-firewall-include</code> UCI defaults file. Called by fw4 during the "includes" phase of a firewall reload/restart, <em>after</em> fw4 has loaded its nftables ruleset.</p>
+<p>This script checks if mwan3 is running, and if so, forks <code>mwan3-fw-rebuild.sh</code> as a background process. The forking is necessary because fw4 overrides the <code>config()</code> function in its shell environment, blocking UCI access&mdash;the rebuild script needs a clean shell to call <code>config_load mwan3</code>.</p>
+
+<!-- 5.11 -->
+<h3 id="file-fw-rebuild">5.11 <span class="file-path">lib/mwan3/mwan3-fw-rebuild.sh</span> <span class="tag tag-new">new</span></h3>
+<p>Performs the actual mwan3 rule rebuild after fw4 reload. Called as a background process from <code>mwan3-fw-include.sh</code>. Acquires a procd lock, then:</p>
+<ol>
+  <li>Checks if rules are actually missing (chain exists but empty)</li>
+  <li>Rebuilds connected and custom sets</li>
+  <li>Repopulates hook chain rules via <code>mwan3_set_general_nft()</code></li>
+  <li>Rebuilds all interface chains via <code>mwan3_rebuild_iface_nft()</code></li>
+  <li>Rebuilds policy chains</li>
+  <li>Rebuilds user rules</li>
+  <li>Signals dnsmasq to clear its cache (<code>killall -HUP dnsmasq</code>)</li>
+</ol>
+
+<div class="note">
+<strong>Why both hotplug and fw4 include?</strong> The hotplug script (<code>25-mwan3</code>) handles recovery when fw4 reloads in response to interface events (since <code>20-firewall</code> calls <code>fw4 -q reload</code> on ifup/ifupdate). The fw4 script include handles recovery when the firewall is manually restarted via <code>/etc/init.d/firewall restart</code> or <code>fw4 reload</code> without an interface event. Together they cover all fw4 reload scenarios.
+</div>
+
+<!-- 5.12 -->
+<h3 id="file-uci-firewall">5.12 <span class="file-path">etc/uci-defaults/mwan3-firewall-include</span> <span class="tag tag-new">new</span></h3>
+<p>UCI defaults script that runs once at first boot (or package install). Registers <code>/lib/mwan3/mwan3-fw-include.sh</code> as an fw4 script include in the firewall UCI config:</p>
+<pre><code>firewall.mwan3_reload=include
+firewall.mwan3_reload.type=script
+firewall.mwan3_reload.path=/lib/mwan3/mwan3-fw-include.sh
+firewall.mwan3_reload.fw4_compatible=1</code></pre>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="functions">6. Function Reference</h2>
+
+<!-- 6.1 -->
+<h3 id="fn-common">6.1 common.sh Functions</h3>
+
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td class="func-sig">LOG facility message...</td><td>Logs to syslog. Suppresses <code>debug</code> level by default.</td></tr>
+<tr><td class="func-sig">mwan3_nft_exec args...</td><td>Runs <code>nft</code> with arguments, logs errors. Returns 1 on failure.</td></tr>
+<tr><td class="func-sig">mwan3_nft_batch_start</td><td>Creates/truncates <code>/tmp/mwan3_nft_batch</code>.</td></tr>
+<tr><td class="func-sig">mwan3_nft_push line</td><td>Appends a line to the batch file.</td></tr>
+<tr><td class="func-sig">mwan3_nft_batch_commit</td><td>Executes <code>nft -f /tmp/mwan3_nft_batch</code>, logs errors, removes temp file.</td></tr>
+<tr><td class="func-sig">mwan3_nft_mark_expr value mask</td><td>Outputs <code>meta mark set meta mark &amp; COMPLEMENT | VALUE</code>. Uses <code>&amp;</code> and <code>|</code> symbols (not keywords). Equivalent to iptables <code>--set-xmark VALUE/MASK</code>.</td></tr>
+<tr><td class="func-sig">mwan3_ensure_nft_framework</td><td>Deletes all 6 mwan3 sets (to clear stale flags), then batch-creates sets with <code>interval</code> + <code>auto-merge</code> flags and all 7 skeleton chains. Idempotent for chains (<code>add chain</code> is a no-op on existing chains). Called from <code>start_service()</code>.</td></tr>
+<tr><td class="func-sig">mwan3_init</td><td>Loads UCI config, creates status dirs, computes all mask constants (<code>MMX_MASK</code>, <code>MMX_DEFAULT</code>, <code>MMX_BLACKHOLE</code>, <code>MMX_UNREACHABLE</code>, <code>MMX_MASK_COMPLEMENT</code>, <code>MWAN3_INTERFACE_MAX</code>).</td></tr>
+<tr><td class="func-sig">mwan3_id2mask id mask</td><td>Bit-spreads <code>id</code>'s bits into positions where <code>mask</code> has 1-bits. Arguments are variable names (indirect evaluation).</td></tr>
+<tr><td class="func-sig">mwan3_count_one_bits var</td><td>Counts 1-bits in the value named by <code>var</code> (indirect evaluation). Uses <code>n&amp;(n-1)</code> trick.</td></tr>
+<tr><td class="func-sig">mwan3_get_true_iface out_var iface</td><td>Resolves virtual interface names (appends _4 or _6 suffix if that interface exists in netifd).</td></tr>
+<tr><td class="func-sig">mwan3_get_src_ip out_var iface</td><td>Gets the source IP for an interface, with fallbacks for IPv6-PD prefixes.</td></tr>
+<tr><td class="func-sig">readfile var path</td><td>Reads entire file into variable. Returns 1 if file doesn't exist.</td></tr>
+<tr><td class="func-sig">mwan3_get_mwan3track_status out_var iface</td><td>Returns tracker status: <code>disabled</code>, <code>down</code>, <code>paused</code>, or <code>active</code>.</td></tr>
+<tr><td class="func-sig">get_uptime [out_var]</td><td>Returns system uptime in seconds (integer).</td></tr>
+<tr><td class="func-sig">get_online_time out_var iface</td><td>Returns how long the interface has been online.</td></tr>
+</table>
+
+<!-- 6.2 -->
+<h3 id="fn-sets">6.2 Set Management Functions</h3>
+
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td class="func-sig">mwan3_set_connected_ipv4</td><td>Flushes and repopulates <code>mwan3_connected_v4</code> from main routing table. Adds <code>224.0.0.0/3</code> for multicast. Self-contained: starts and commits its own nft batch.</td></tr>
+<tr><td class="func-sig">mwan3_set_connected_ipv6</td><td>Same for IPv6. Skips if <code>$NO_IPV6</code>. Self-contained batch.</td></tr>
+<tr><td class="func-sig">mwan3_set_connected_sets</td><td>Calls both <code>_ipv4</code> and <code>_ipv6</code> functions.</td></tr>
+<tr><td class="func-sig">mwan3_set_custom_set table_id</td><td>Callback for <code>config_list_foreach</code>. Adds routes from the given table to custom sets. Pushes to an existing batch (does not start/commit).</td></tr>
+<tr><td class="func-sig">mwan3_set_custom_sets</td><td>Flushes and repopulates custom sets from all <code>rt_table_lookup</code> entries in globals config.</td></tr>
+<tr><td class="func-sig">mwan3_set_dynamic_sets</td><td>Flushes dynamic sets (they start empty; populated externally).</td></tr>
+</table>
+
+<div class="note">
+<strong>Why are connected functions self-contained?</strong> <code>mwan3_set_connected_ipv4/ipv6</code> each manage their own batch because they are called standalone from <code>mwan3rtmon</code> on route-delete events, not just from the combined <code>mwan3_set_connected_sets()</code>.
+</div>
+
+<!-- 6.3 -->
+<h3 id="fn-general">6.3 General Rule Setup</h3>
+
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td class="func-sig">mwan3_set_general_rules</td><td>Adds <code>ip rule</code> entries for blackhole and unreachable marks (both IPv4 and IPv6). These are ip policy rules, not nftables rules&mdash;unchanged from the iptables version.</td></tr>
+<tr><td class="func-sig">mwan3_set_general_nft</td><td>Populates all hook chain rules: connmark restore/save, jumps to ifaces_in/custom/connected/dynamic/rules chains, IPv6 RA bypass, and post-rules connected re-check. Idempotent: checks if rules already exist before adding. Uses a single batch for all operations.</td></tr>
+</table>
+
+<h4>Rules added by <code>mwan3_set_general_nft()</code></h4>
+<p>For each of connected/custom/dynamic chains, adds mark-setting rules that match against the corresponding sets and apply <code>MMX_DEFAULT</code>.</p>
+<p>For the prerouting and output hook chains, adds (in order):</p>
+<ol>
+  <li>[prerouting only] IPv6 RA bypass (accept ICMPv6 types: nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, nd-redirect)</li>
+  <li>Connmark restore: <code>meta mark set ct mark &amp; $MMX_MASK</code> (if mark is 0)</li>
+  <li>Jump to <code>mwan3_ifaces_in</code> (if still 0)</li>
+  <li>Jump to custom, connected, dynamic chains (if still 0)</li>
+  <li>Jump to <code>mwan3_rules</code> (if still 0)</li>
+  <li>Connmark save: <code>ct mark set meta mark</code> (always)</li>
+  <li>Post-rules: jump to custom/connected/dynamic again for non-default marks</li>
+</ol>
+
+<!-- 6.4 -->
+<h3 id="fn-iface">6.4 Interface Management</h3>
+
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td class="func-sig">mwan3_create_iface_nft iface device</td><td>Creates (or flushes) <code>mwan3_iface_in_&lt;iface&gt;</code> chain. Adds rules matching on <code>iifname</code> and address family: source in connected/custom/dynamic &rarr; MMX_DEFAULT; otherwise &rarr; interface mark. Adds jump from <code>mwan3_ifaces_in</code> if not already present.</td></tr>
+<tr><td class="func-sig">mwan3_rebuild_iface_nft iface</td><td>Rebuilds a single interface's nft chain if the interface is enabled, the correct family is available, and the interface is currently up (verified via ubus). Used during fw4 reload recovery to restore all interface chains. Calls <code>mwan3_create_iface_nft()</code> after resolving the L3 device from netifd.</td></tr>
+<tr><td class="func-sig">mwan3_delete_iface_nft iface</td><td>Removes the jump rule from <code>mwan3_ifaces_in</code> (by handle lookup) then flushes and deletes the interface chain.</td></tr>
+<tr><td class="func-sig">mwan3_delete_iface_map_entries iface</td><td>Iterates all <code>mwan3_sticky_*</code> maps, finds entries whose mark matches this interface, and deletes them.</td></tr>
+<tr><td class="func-sig">mwan3_create_iface_rules iface device</td><td>Adds <code>ip rule</code> entries: pref id+1000 (iif lookup), pref id+2000 (fwmark lookup), pref id+3000 (fwmark unreachable). <em>Unchanged from iptables version.</em></td></tr>
+<tr><td class="func-sig">mwan3_delete_iface_rules iface</td><td>Removes ip rules matching this interface's ID range. <em>Unchanged.</em></td></tr>
+<tr><td class="func-sig">mwan3_create_iface_route iface device</td><td>Copies routes from main table into the per-interface table. <em>Unchanged.</em></td></tr>
+<tr><td class="func-sig">mwan3_delete_iface_route iface</td><td>Flushes the per-interface routing table. <em>Unchanged.</em></td></tr>
+</table>
+
+<h4>Handle-Based Rule Deletion</h4>
+<p>nftables doesn't support deleting rules by match criteria (like iptables <code>-D chain match...</code>). Instead, <code>mwan3_delete_iface_nft()</code> uses:</p>
+<pre><code>handle=$($NFT -a list chain inet fw4 mwan3_ifaces_in | \
+    grep "jump mwan3_iface_in_$1" | sed -n 's/.*# handle \([0-9]*\)/\1/p')
+$NFT delete rule inet fw4 mwan3_ifaces_in handle "$handle"</code></pre>
+<p>The <code>-a</code> flag shows rule handles in comments, which can then be used for targeted deletion.</p>
+
+<!-- 6.5 -->
+<h3 id="fn-policy">6.5 Policy &amp; Load Balancing</h3>
+
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td class="func-sig">mwan3_set_policy member_config</td><td>Callback per policy member. Tracks lowest metric and accumulates online members as <code>iface:id:weight</code> tuples into <code>$policy_members</code>. Tracks offline devices into <code>$policy_offline_devices</code>. Uses caller's variables (dynamic scoping).</td></tr>
+<tr><td class="func-sig">mwan3_create_policies_nft policy</td><td>Creates/flushes the <code>mwan3_policy_&lt;name&gt;</code> chain. Iterates members via <code>mwan3_set_policy</code>, then builds the chain: single member gets a direct mark-set rule; multiple members get a <code>numgen</code> rule; offline devices get out-device fallback rules; last-resort rule (unreachable/blackhole/default) is appended.</td></tr>
+<tr><td class="func-sig">mwan3_set_policies_nft</td><td>Iterates all policy configs and calls <code>mwan3_create_policies_nft</code> for each.</td></tr>
+</table>
+
+<!-- 6.6 -->
+<h3 id="fn-sticky">6.6 Sticky Routing</h3>
+
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td class="func-sig">mwan3_set_sticky_map rule timeout</td><td>Creates <code>mwan3_sticky_v4_&lt;rule&gt;</code> and <code>_v6_</code> maps if they don't exist. Maps are type <code>ipv4_addr : mark</code> with <code>flags dynamic,timeout</code>.</td></tr>
+<tr><td class="func-sig">mwan3_set_sticky_nft iface rule ipv policy</td><td>(Legacy sticky approach) Inserts per-interface restore/clear rules at the beginning of a sticky rule chain. Not used in the primary sticky path (map approach is used instead).</td></tr>
+</table>
+
+<!-- 6.7 -->
+<h3 id="fn-userrules">6.7 User Rules</h3>
+
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td class="func-sig">mwan3_set_user_nft_rule rule ipv</td><td>Builds and adds a single nft rule to <code>mwan3_rules</code>. Translates UCI config options (proto, src_ip, dest_ip, src_port, dest_port, src_iface, ipset) into nft match expressions. Handles sticky routing (creates sticky map, map lookup chain). Handles logging rules. Pre-creates missing nft sets (e.g., dnsmasq nftsets that haven't started yet) to prevent batch failures.</td></tr>
+<tr><td class="func-sig">mwan3_set_user_rules</td><td>Flushes <code>mwan3_rules</code> chain, then iterates all rule configs for both ipv4 and ipv6, calling <code>mwan3_set_user_nft_rule</code> for each. Uses a single batch.</td></tr>
+<tr><td class="func-sig">mwan3_set_user_iface_rules iface device</td><td>Called on ifup to check if the rules chain needs rebuilding (if this interface is a <code>src_iface</code> in any rule).</td></tr>
+</table>
+
+<h4>UCI-to-nft Match Translation</h4>
+<table>
+<tr><th>UCI Option</th><th>nft Expression</th></tr>
+<tr><td><code>proto tcp</code></td><td><code>meta l4proto tcp</code></td></tr>
+<tr><td><code>src_ip 10.0.0.0/8</code></td><td><code>ip saddr 10.0.0.0/8</code> (or <code>ip6 saddr</code>)</td></tr>
+<tr><td><code>dest_ip 1.2.3.4</code></td><td><code>ip daddr 1.2.3.4</code></td></tr>
+<tr><td><code>src_iface lan</code></td><td><code>iifname "br-lan"</code></td></tr>
+<tr><td><code>src_port 80,443</code></td><td><code>th sport { 80, 443 }</code></td></tr>
+<tr><td><code>dest_port 8080</code></td><td><code>th dport { 8080 }</code></td></tr>
+<tr><td><code>ipset my_set</code></td><td><code>ip daddr @my_set</code></td></tr>
+<tr><td><code>use_policy balanced</code></td><td><code>jump mwan3_policy_balanced</code></td></tr>
+<tr><td><code>use_policy default</code></td><td><code>meta mark set ... | MMX_DEFAULT</code></td></tr>
+</table>
+
+<h4>Missing nft Set Pre-creation</h4>
+<p>When a user rule references an <code>ipset</code> (nft set) that doesn't exist yet (e.g., a dnsmasq <code>nftset</code> that will be created when dnsmasq starts, which is later at START=60+), the batch file would fail atomically since <code>nft -f</code> rolls back the entire batch if any referenced set is missing. To prevent this, <code>mwan3_set_user_nft_rule()</code> checks for the set's existence and pre-creates it with the appropriate type if missing.</p>
+
+<!-- 6.8 -->
+<h3 id="fn-reporting">6.8 Status Reporting</h3>
+
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td class="func-sig">mwan3_report_iface_status iface</td><td>Shows interface online/offline status with uptime. Checks ip rules, nft chain existence, and default route presence as health indicators. Uses <code>nft list chain inet fw4 mwan3_iface_in_&lt;name&gt;</code> instead of old <code>$IPT -S</code>.</td></tr>
+<tr><td class="func-sig">mwan3_report_policies policy</td><td>Parses <code>nft list chain</code> output for a policy chain. Detects <code>numgen</code> for load balancing or direct mark-set for single member.</td></tr>
+<tr><td class="func-sig">mwan3_report_policies_v4/v6</td><td>Lists all <code>mwan3_policy_*</code> chains. With inet family both are identical.</td></tr>
+<tr><td class="func-sig">mwan3_report_connected_v4/v6</td><td>Parses <code>nft list set</code> output for connected set elements.</td></tr>
+<tr><td class="func-sig">mwan3_report_rules_v4/v6</td><td>Parses <code>nft list chain inet fw4 mwan3_rules</code>.</td></tr>
+<tr><td class="func-sig">mwan3_mark_to_name mark</td><td>Resolves a numeric mark value to an interface name (or "default"/"blackhole"/"unreachable") by iterating the iface-to-table mapping and computing each interface's mark.</td></tr>
+</table>
+
+<!-- 6.9 -->
+<h3 id="fn-lifecycle">6.9 Lifecycle &amp; Hotplug</h3>
+
+<table>
+<tr><th>Function</th><th>Purpose</th></tr>
+<tr><td class="func-sig">mwan3_ifup iface caller</td><td>Resolves interface status via ubus, then triggers the 25-mwan3 hotplug script with <code>ACTION=ifup</code>. When called from init, runs in background.</td></tr>
+<tr><td class="func-sig">mwan3_interface_hotplug_shutdown iface [ifdown]</td><td>Triggers ifdown or disconnected hotplug event for an interface.</td></tr>
+<tr><td class="func-sig">mwan3_interface_shutdown iface</td><td>Calls hotplug shutdown then cleans track state files.</td></tr>
+<tr><td class="func-sig">mwan3_set_iface_hotplug_state iface state</td><td>Writes state (<code>online</code>/<code>offline</code>) to status file.</td></tr>
+<tr><td class="func-sig">mwan3_get_iface_hotplug_state iface</td><td>Reads state from status file (defaults to <code>offline</code>).</td></tr>
+<tr><td class="func-sig">mwan3_flush_conntrack iface action</td><td>Flushes conntrack if configured for this interface/action pair. On <code>ifdown</code>, also selectively flushes conntrack entries matching this interface's fwmark using the <code>conntrack</code> tool (if installed), forcing stale flows to re-establish via the updated policy immediately.</td></tr>
+<tr><td class="func-sig">mwan3_update_peer_track_ip iface</td><td>If <code>track_gateway</code> is enabled for the interface, queries <code>ifstatus</code> for the point-to-point peer address and writes it to <code>$MWAN3TRACK_STATUS_DIR/&lt;iface&gt;/GATEWAY</code>. Called from <code>start_tracker()</code> and on <code>ifup</code> hotplug events.</td></tr>
+<tr><td class="func-sig">mwan3_track_clean iface</td><td>Removes track status directory for the interface.</td></tr>
+</table>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="load-balancing">7. Load Balancing with numgen</h2>
+
+<p>The iptables version used <code>-m statistic --mode random --probability P</code> to distribute traffic. This required inserting rules in specific order and computing running probabilities. The nftables version uses <code>numgen inc mod N map { ... }</code>, which is simpler and more deterministic.</p>
+
+<h3>How numgen Works</h3>
+<p><code>numgen inc mod N</code> generates a counter that increments on each packet and wraps at N. The <code>map { range : value }</code> maps counter values to marks.</p>
+
+<pre>
+# Example: wan (weight 3) + wanb (weight 2) = mod 5
+# wan gets range 0-2 (3 values), wanb gets range 3-4 (2 values)
+
+nft add rule inet fw4 mwan3_policy_balanced \
+    meta mark &amp; 0x3f00 == 0 \
+    meta mark set numgen inc mod 5 map { 0-2 : 0x0100, 3-4 : 0x0200 }
+</pre>
+
+<div class="warn">
+<strong>Kernel limitation on compound set expressions:</strong> An earlier implementation tried <code>meta mark set meta mark &amp; COMP | numgen inc mod ...</code> to preserve non-mwan3 bits while applying the numgen result. This fails with "Operation not supported" because the kernel cannot mix two register sources (meta mark and numgen) in one set expression. The solution is to use <code>meta mark set numgen ...</code> directly; the <code>meta mark &amp; MMX_MASK == 0</code> guard condition ensures the mwan3 bits are already zero before the numgen result is applied.
+</div>
+
+<h3>Build Algorithm (in <code>mwan3_create_policies_nft</code>)</h3>
+<ol>
+  <li>Iterate policy members via <code>config_list_foreach</code></li>
+  <li>Track lowest metric per family (v4/v6 separately); only members at the lowest metric are included</li>
+  <li>Accumulate online members as <code>iface:id:weight</code> tuples</li>
+  <li>Calculate total weight = sum of all member weights</li>
+  <li>If single member: direct <code>meta mark set</code> (no numgen overhead)</li>
+  <li>If multiple members: build numgen map entries with ranges proportional to weight</li>
+  <li>Append offline device fallback rules (only if no online members)</li>
+  <li>Append last-resort rule (unreachable/blackhole/default)</li>
+</ol>
+
+<div class="note">
+<strong>Difference from iptables version:</strong> The iptables version used probabilistic matching (<code>--probability</code>) which is statistically correct over many packets but can have short-term imbalance. The nftables <code>numgen inc</code> counter gives perfectly deterministic round-robin distribution at the configured weights.
+</div>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="sticky-detail">8. Sticky Routing Detail</h2>
+
+<p>Sticky routing ensures that repeat connections from the same source IP use the same WAN interface (important for HTTPS sessions, banking sites, etc.). The iptables version used <code>ipset hash:ip,mark</code> sets. The nftables version uses <strong>maps</strong> with regular <code>map</code> lookup (not <code>vmap</code>&mdash;see note below).</p>
+
+<h3>Data Structure</h3>
+<pre>
+# Created per sticky rule:
+nft add map inet fw4 mwan3_sticky_v4_https \
+    '{ type ipv4_addr : mark; flags dynamic,timeout; timeout 600s; }'
+</pre>
+<p>This is a dynamic map that stores <code>source_ip &rarr; mark_value</code> entries, each with a configurable timeout.</p>
+
+<h3>Rule Chain Structure (for sticky rule "https")</h3>
+<pre>
+chain mwan3_rule_https {
+    # 1. Try to restore from sticky map (regular map lookup)
+    #    If source IP is in the map, the stored mark is applied
+    meta mark set ip saddr map @mwan3_sticky_v4_https
+
+    # 2. New flows (no map entry) fall through to the policy
+    meta mark &amp; 0x3f00 == 0 jump mwan3_policy_balanced
+
+    # 3. After policy selection: record the chosen mark
+    meta mark &amp; 0x3f00 != 0 update @mwan3_sticky_v4_https \
+        { ip saddr timeout 600s : meta mark &amp; 0x3f00 }
+}
+</pre>
+
+<div class="warn">
+<strong>map vs vmap:</strong> An earlier implementation used <code>vmap</code> (verdict map) for sticky lookup. This is incorrect: <code>vmap</code> expects verdict values (<code>accept</code>, <code>drop</code>, <code>jump</code>) as the mapped value, not marks. For IP&rarr;mark lookup, a regular <code>map</code> must be used: <code>meta mark set ip saddr map @mapname</code>.
+</div>
+
+<h3>Flow for a Sticky Rule</h3>
+<ol>
+  <li>Packet arrives at <code>mwan3_rules</code> chain</li>
+  <li>Matches the user rule &rarr; <code>jump mwan3_rule_https</code></li>
+  <li><strong>Returning source</strong>: map finds IP, sets mark via <code>meta mark set ip saddr map @...</code>, then the <code>meta mark &amp; MMX_MASK == 0</code> guard on the policy jump is false (mark already set), so policy is skipped. The update rule refreshes the timeout.</li>
+  <li><strong>New source</strong>: map lookup produces no match (mark stays 0), falls through to policy chain which sets a mark, then the update rule records <code>src_ip &rarr; mark</code> in the map with the configured timeout</li>
+  <li>After timeout seconds of inactivity, the map entry expires and the source gets re-evaluated</li>
+</ol>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="lifecycle">9. Service Lifecycle</h2>
+
+<h3>Start</h3>
+<div class="chain-box">
+<pre>fw4 startup
+  +--> loads 10-mwan3.nft (empty sets with auto-merge + skeleton chains)
+
+/etc/init.d/mwan3 start
+  +--> mwan3_init()                    compute masks
+  +--> mwan3_ensure_nft_framework()    delete/recreate sets, ensure chains
+  +--> start_tracker per interface     launch mwan3track
+  +--> mwan3_set_dynamic_sets()        flush dynamic sets
+  +--> mwan3_set_connected_sets()      populate from routing table
+  +--> mwan3_set_custom_sets()         populate from custom tables
+  +--> mwan3_set_general_rules()       ip rule add blackhole/unreachable
+  +--> mwan3_set_general_nft()         populate hook chain rules
+  +--> mwan3_ifup per interface        trigger hotplug (creates iface chains)
+  +--> wait for hotplug completion
+  +--> mwan3_set_policies_nft()        create policy chains
+  +--> mwan3_set_user_rules()          populate user rules chain
+  +--> [if flow_offloading=1]          flush conntrack (force flow re-establishment)
+  +--> start mwan3rtmon (ipv4)         route monitor (ucode)
+  +--> start mwan3rtmon (ipv6)         route monitor (ucode)</pre>
+</div>
+
+<h3>Interface Up (hotplug)</h3>
+<div class="chain-box">
+<pre>netifd signals ifup for $INTERFACE
+  +--> 25-mwan3 hotplug script
+       +--> [check for fw4 reload, rebuild if needed]
+       +--> mwan3_update_peer_track_ip() write gateway IP (if track_gateway)
+       +--> mwan3_create_iface_nft()    create/flush chain, add rules
+       +--> mwan3_create_iface_rules()  ip rule add (iif, fwmark)
+       +--> mwan3_set_iface_hotplug_state "online/offline"
+       +--> [if not init startup:]
+       |    +--> mwan3_create_iface_route()  copy routes to per-iface table
+       |    +--> mwan3_set_general_rules()   ensure ip rules exist
+       |    +--> [if online:] mwan3_set_policies_nft()  rebuild policy chains
+       +--> procd_send_signal track_$INTERFACE USR2</pre>
+</div>
+
+<h3>Interface Down (hotplug)</h3>
+<div class="chain-box">
+<pre>netifd signals ifdown for $INTERFACE
+  +--> 25-mwan3 hotplug script
+       +--> mwan3_set_iface_hotplug_state "offline"
+       +--> mwan3_flush_conntrack()            flush conntrack entries for this iface's fwmark
+       +--> mwan3_delete_iface_map_entries()  clean sticky maps
+       +--> mwan3_delete_iface_rules()        ip rule del
+       +--> mwan3_delete_iface_route()        ip route flush table
+       +--> mwan3_delete_iface_nft()          remove chain + jump rule
+       +--> procd_send_signal track_$INTERFACE USR1
+       +--> mwan3_set_policies_nft()          rebuild policies (failover)</pre>
+</div>
+
+<h3>Stop</h3>
+<div class="chain-box">
+<pre>/etc/init.d/mwan3 stop
+  +--> mwan3_interface_shutdown per interface   trigger ifdown hotplug
+  +--> flush ip routing tables (1..MWAN3_INTERFACE_MAX)
+  +--> delete ip rules in 1000-3999 range
+  +--> flush ALL mwan3_* chains (remove rules)
+  +--> delete dynamic chains (keep skeleton chains from .nft file)
+  +--> final safety flush of skeleton chains
+  +--> flush ALL mwan3_* sets
+  +--> delete sticky maps
+  +--> rm -rf status dirs
+
+Result: skeleton chains and empty sets remain (harmless).
+        Removed on fw4 restart or package removal.</pre>
+</div>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="fw4-reload">10. fw4 Reload Recovery</h2>
+
+<p>This section documents the mechanisms that handle fw4 reload events, which would otherwise destroy all mwan3 dynamic rules.</p>
+
+<h3>The Problem</h3>
+<p>fw4 reload (triggered by <code>/etc/init.d/firewall restart</code>, <code>fw4 reload</code>, or the <code>20-firewall</code> hotplug script on ifup/ifupdate events for interfaces in firewall zones) flushes the <strong>entire</strong> <code>table inet fw4</code> and recreates it from scratch. Only the static skeleton from <code>10-mwan3.nft</code> survives (empty chains and sets with correct types/flags), but all dynamically-added rules, interface chains, policy chains, and set contents are lost.</p>
+
+<h3>Detection Mechanism</h3>
+<p>Both recovery paths use the same detection: check if <code>mwan3_prerouting</code> contains any <code>meta mark</code> rules. If the chain exists but has no rules (empty skeleton), a fw4 reload has occurred and rebuilding is needed.</p>
+<pre><code>$NFT list chain inet fw4 mwan3_prerouting 2>/dev/null | grep -q "meta mark"</code></pre>
+
+<h3>Recovery Path 1: Hotplug Script (25-mwan3)</h3>
+<p>When fw4 reloads in response to an interface event, the <code>20-firewall</code> hotplug script runs first (at position 20), calling <code>fw4 -q reload</code>. The mwan3 hotplug script at position 25 runs immediately after and detects the empty state:</p>
+<div class="chain-box">
+<pre>Interface event (ifup/ifupdate)
+  +--> 20-firewall hotplug: fw4 -q reload (wipes everything)
+  +--> 25-mwan3 hotplug: detects empty mwan3_prerouting
+       +--> mwan3_set_connected_sets()           rebuild connected sets
+       +--> mwan3_set_custom_sets()              rebuild custom sets
+       +--> mwan3_set_general_nft()              rebuild hook chain rules
+       +--> config_foreach mwan3_rebuild_iface_nft interface
+       |    (iterates all interfaces, checks ubus for up/device, rebuilds nft chains)
+       +--> mwan3_set_policies_nft()             rebuild policy chains
+       +--> mwan3_set_user_rules()               rebuild user rules
+       +--> killall -HUP dnsmasq                 clear DNS cache to re-populate nft sets</pre>
+</div>
+
+<h3>Recovery Path 2: fw4 Script Include (mwan3-fw-include.sh)</h3>
+<p>When the firewall is manually restarted (<code>/etc/init.d/firewall restart</code>) without an interface event, there is no hotplug trigger. Instead, the fw4 script include mechanism handles recovery:</p>
+<div class="chain-box">
+<pre>Manual firewall restart
+  +--> fw4 loads nftables ruleset (including 10-mwan3.nft skeleton)
+  +--> fw4 runs script includes
+       +--> mwan3-fw-include.sh
+            +--> checks if mwan3 is running
+            +--> forks mwan3-fw-rebuild.sh as background process
+                 +--> checks if rules are actually missing
+                 +--> acquires procd lock
+                 +--> same rebuild sequence as hotplug path
+                 +--> killall -HUP dnsmasq</pre>
+</div>
+
+<div class="note">
+<strong>Why fork?</strong> The fw4 script include runs inside fw4's shell environment, which overrides the <code>config()</code> function to block UCI access. <code>mwan3-fw-rebuild.sh</code> runs as a separate process with a clean shell, allowing it to call <code>config_load mwan3</code> normally.
+</div>
+
+<h3>dnsmasq nftset Recovery</h3>
+<p>When fw4 reloads, it also destroys any nft sets populated by dnsmasq (via the <code>nftset</code> option). These sets are dynamically populated as DNS queries arrive. The rebuild process signals dnsmasq with <code>SIGHUP</code> to clear its cache, which forces fresh upstream resolution on next client queries, thereby re-populating the nft sets. User rules that reference external nft sets also pre-create them if missing (see <a href="#fn-userrules">Section 6.7</a>).</p>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="unchanged">11. Unchanged Files</h2>
+
+<table>
+<tr><th>File</th><th>Reason</th></tr>
+<tr><td><code>usr/sbin/mwan3track</code></td><td>Uses <code>libwrap_mwan3_sockopt.so</code> (socket-level SO_MARK), no firewall interaction</td></tr>
+<tr><td><code>etc/hotplug.d/iface/26-mwan3-user</code></td><td>Just calls <code>/etc/mwan3.user</code>, no firewall code</td></tr>
+<tr><td><code>etc/config/mwan3</code></td><td>UCI schema is firewall-agnostic</td></tr>
+<tr><td><code>etc/mwan3.user</code></td><td>User script template, no firewall code</td></tr>
+<tr><td><code>src/sockopt_wrap.c</code></td><td>Uses SO_MARK kernel API, works with any firewall backend</td></tr>
+<tr><td><code>etc/uci-defaults/mwan3-migrate-flush_conntrack</code></td><td>UCI migration, no firewall code</td></tr>
+</table>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="diagnostics">12. Diagnostic Commands</h2>
+
+<pre><code># List all mwan3 chains with their rules
+nft list table inet fw4 | grep -A 50 'chain mwan3_'
+
+# List specific chain
+nft list chain inet fw4 mwan3_prerouting
+nft list chain inet fw4 mwan3_ifaces_in
+nft list chain inet fw4 mwan3_policy_balanced
+
+# Check set contents
+nft list set inet fw4 mwan3_connected_v4
+nft list set inet fw4 mwan3_custom_v4
+
+# Check sticky map entries
+nft list map inet fw4 mwan3_sticky_v4_https
+
+# List all mwan3 chains (names only)
+nft list chains inet fw4 | grep mwan3_
+
+# List all mwan3 sets (names only)
+nft list sets inet fw4 | grep mwan3_
+
+# List all mwan3 maps
+nft list maps inet fw4 | grep mwan3_
+
+# Verify marks are being set (add temporary counter)
+nft add rule inet fw4 mwan3_prerouting meta mark and 0x3f00 != 0 counter
+
+# Check connmarks
+conntrack -L -o mark
+
+# Check ip rules
+ip rule list | grep -E '^[1-3][0-9]{3}:'
+
+# Check per-interface routing table (table N for interface N)
+ip route list table 1
+
+# JSON output (for scripting/debugging)
+nft -j list set inet fw4 mwan3_connected_v4
+nft -j list chain inet fw4 mwan3_policy_balanced
+
+# Check mwan3 status
+mwan3 status
+mwan3 internal
+
+# RPC query
+ubus call mwan3 status '{"section":"interfaces"}'
+ubus call mwan3 status '{"section":"connected"}'
+ubus call mwan3 status '{"section":"policies"}'
+
+# Verify fw4 include is registered
+uci show firewall.mwan3_reload
+
+# Test fw4 reload recovery
+/etc/init.d/firewall restart
+# then check: nft list chain inet fw4 mwan3_prerouting
+# should show rules within a few seconds</code></pre>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="luci-app">13. luci-app-mwan3 Changes</h2>
+
+<p>The LuCI web interface application (<code>luci-app-mwan3</code>) required changes to replace ipset references with nftables equivalents, add the new <code>track_gateway</code> option, and update help text for <code>flush_conntrack</code>. The LuCI app lives in the <code>feeds/luci</code> feed, separate from the core mwan3 package.</p>
+
+<h3>Changed Files</h3>
+<table>
+<tr><th>File</th><th>Package Path</th></tr>
+<tr><td><code>rule.js</code></td><td><code>applications/luci-app-mwan3/htdocs/luci-static/resources/view/mwan3/network/rule.js</code></td></tr>
+<tr><td><code>interface.js</code></td><td><code>applications/luci-app-mwan3/htdocs/luci-static/resources/view/mwan3/network/interface.js</code></td></tr>
+<tr><td><code>luci-mwan3</code></td><td><code>applications/luci-app-mwan3/root/usr/libexec/luci-mwan3</code></td></tr>
+<tr><td><code>luci-app-mwan3.json</code></td><td><code>applications/luci-app-mwan3/root/usr/share/rpcd/acl.d/luci-app-mwan3.json</code></td></tr>
+</table>
+
+<!-- 13.1 -->
+<h3 id="luci-rule-js">13.1 <span class="file-path">rule.js</span> &mdash; Rule Editor UI</h3>
+
+<p>The LuCI rule editor view allows users to configure mwan3 traffic classification rules. It populates a dropdown of available sets for the "ipset" UCI option (the UCI option name is unchanged for backwards compatibility).</p>
+
+<h4>Changes</h4>
+<table>
+<tr><th>Aspect</th><th>Old (iptables)</th><th>New (nftables)</th></tr>
+<tr><td>Data fetch</td><td><code>fs.exec_direct('/usr/libexec/luci-mwan3', ['ipset', 'dump'])</code></td><td><code>fs.exec_direct('/usr/libexec/luci-mwan3', ['nftset', 'dump'])</code></td></tr>
+<tr><td>Field label</td><td><code>_('IPset')</code></td><td><code>_('NFT set')</code></td></tr>
+<tr><td>Help text</td><td><code>Name of IPset rule. Requires IPset rule in /etc/dnsmasq.conf (eg "ipset=/youtube.com/youtube")</code></td><td><code>Name of nft set. Requires nftset rule in /etc/dnsmasq.conf (eg "nftset=/youtube.com/4#inet#fw4#youtube")</code></td></tr>
+<tr><td>Variable names</td><td><code>ipsets</code>, <code>ips</code></td><td><code>nftsets</code>, <code>s_name</code></td></tr>
+</table>
+
+<div class="note">
+<strong>dnsmasq nftset syntax:</strong> The dnsmasq <code>nftset</code> option uses a different format from the old <code>ipset</code> option. The format is <code>nftset=/domain/FAMILY#TABLE_FAMILY#TABLE#SET</code>. For example, <code>nftset=/youtube.com/4#inet#fw4#youtube</code> means: for <code>youtube.com</code> A records (family <code>4</code> = IPv4), add addresses to the set named <code>youtube</code> in <code>table inet fw4</code>.
+</div>
+
+<div class="note">
+<strong>UCI option name preserved:</strong> The underlying UCI option remains <code>ipset</code> (not renamed to <code>nftset</code>) to maintain backwards compatibility with existing configurations. The mwan3 shell code reads <code>config_get ipset_name "$1" ipset</code> regardless of the firewall backend. Only the UI labels and help text were updated to reflect the nftables terminology.
+</div>
+
+<!-- 13.2 -->
+<h3 id="luci-mwan3-helper">13.2 <span class="file-path">luci-mwan3</span> &mdash; Helper Script</h3>
+
+<p>The <code>/usr/libexec/luci-mwan3</code> shell script provides backend commands called by the LuCI JavaScript frontend. The <code>ipset</code> subcommand was renamed to <code>nftset</code> and the underlying implementation changed from querying ipset to querying nftables.</p>
+
+<h4>Changes</h4>
+<table>
+<tr><th>Aspect</th><th>Old (iptables)</th><th>New (nftables)</th></tr>
+<tr><td>Subcommand name</td><td><code>ipset</code></td><td><code>nftset</code></td></tr>
+<tr><td>Function name</td><td><code>ipset_dump()</code> / <code>ipset_cmd()</code></td><td><code>nftset_dump()</code> / <code>nftset_cmd()</code></td></tr>
+<tr><td>Implementation</td><td><code>ipset -n -L 2&gt;/dev/null | grep -v mwan3_ | sort -u</code></td><td><code>nft list sets inet fw4 2&gt;/dev/null | awk '/^\tset / {print $2}' | grep -v '^mwan3_' | sort -u</code></td></tr>
+<tr><td>Help text</td><td><code>dump: show all configured ipset names</code></td><td><code>dump: show all non-mwan3 nft set names in inet fw4</code></td></tr>
+</table>
+
+<p>The <code>nftset_dump()</code> function lists all sets in <code>table inet fw4</code>, extracts set names using awk (matching lines that start with a tab followed by <code>set</code>), filters out mwan3's own internal sets (prefixed with <code>mwan3_</code>), and returns the sorted unique names. This provides the dropdown list of available nft sets in the rule editor UI.</p>
+
+<p>The <code>diag</code> subcommand and its functions (<code>diag_gateway</code>, <code>diag_tracking</code>, <code>diag_rules</code>, <code>diag_routes</code>) are unchanged&mdash;they use <code>ip rule</code>/<code>ip route</code> and the <code>mwan3 use</code> command, none of which depend on the firewall backend.</p>
+
+<!-- 13.3 -->
+<h3 id="luci-acl">13.3 <span class="file-path">luci-app-mwan3.json</span> &mdash; ACL Permissions</h3>
+
+<p>The rpcd ACL file controls which commands the LuCI frontend is permitted to execute. The permission entry was updated to match the renamed subcommand:</p>
+
+<table>
+<tr><th>Old</th><th>New</th></tr>
+<tr><td><code>"/usr/libexec/luci-mwan3 ipset dump": ["exec"]</code></td><td><code>"/usr/libexec/luci-mwan3 nftset dump": ["exec"]</code></td></tr>
+</table>
+
+<p>This entry appears under the <code>luci-app-mwan3</code> ACL group in the <code>read.file</code> section. Without this change, the LuCI frontend would receive a permission denied error when trying to populate the nft set dropdown in the rule editor.</p>
+
+<!-- 13.4 -->
+<h3 id="luci-interface-js">13.4 <span class="file-path">interface.js</span> &mdash; Interface Settings UI</h3>
+
+<p>A "Track gateway" checkbox was added to the interface configuration modal, visible only when the internet protocol is set to IPv4. This exposes the <code>track_gateway</code> UCI option for automatic point-to-point peer/gateway discovery (see <a href="#enh-track-gateway">Section 15.3</a>).</p>
+
+<p>The help text for the <code>flush_conntrack</code> option was also updated to clarify that it flushes the entire global conntrack table, and that per-interface conntrack entries are now flushed automatically on ifdown (see <a href="#enh-conntrack-flush">Section 15.1</a>).</p>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="porting-notes">14. Iptables-to-nftables Porting Notes</h2>
+
+<p>Key translation patterns used in this port, useful for anyone maintaining or extending the code:</p>
+
+<table>
+<tr><th>iptables Concept</th><th>nftables Equivalent</th><th>Notes</th></tr>
+<tr><td><code>iptables -t mangle</code></td><td>Chains in <code>table inet fw4</code></td><td>No separate mangle table; use own chains at mangle priority</td></tr>
+<tr><td><code>-A PREROUTING -j chain</code></td><td>Own hook chain at <code>priority mangle + 1</code></td><td>No need to jump from fw4's chain</td></tr>
+<tr><td><code>-A OUTPUT -j chain</code></td><td>Own <code>type route</code> hook chain</td><td>Must be <code>type route</code> for mark-based rerouting</td></tr>
+<tr><td><code>iptables-restore -T mangle -n</code></td><td><code>nft -f batchfile</code></td><td>Batch file for atomic multi-command operations</td></tr>
+<tr><td><code>-N chain</code></td><td><code>nft add chain inet fw4 name</code></td><td></td></tr>
+<tr><td><code>-F chain</code></td><td><code>nft flush chain inet fw4 name</code></td><td></td></tr>
+<tr><td><code>-X chain</code></td><td><code>nft delete chain inet fw4 name</code></td><td>Must be empty first</td></tr>
+<tr><td><code>-D chain match...</code></td><td><code>nft delete rule ... handle N</code></td><td>Must look up handle with <code>nft -a</code></td></tr>
+<tr><td><code>-j MARK --set-xmark V/M</code></td><td><code>meta mark set meta mark &amp; ~M | V</code></td><td>See <code>mwan3_nft_mark_expr()</code>; use <code>&amp;</code>/<code>|</code> symbols not keywords</td></tr>
+<tr><td><code>-j CONNMARK --restore-mark --nfmask M</code></td><td><code>meta mark set ct mark &amp; MASK</code></td><td>Single-source expression; kernel doesn't support compound <code>meta mark | ct mark &amp; X</code></td></tr>
+<tr><td><code>-j CONNMARK --save-mark --nfmask M</code></td><td><code>ct mark set meta mark</code></td><td>Full overwrite; kernel doesn't support compound <code>ct mark &amp; ~M | meta mark &amp; M</code></td></tr>
+<tr><td><code>-m mark --mark V/M</code></td><td><code>meta mark &amp; M == V</code></td><td></td></tr>
+<tr><td><code>-m set --match-set S dst</code></td><td><code>ip daddr @S</code></td><td></td></tr>
+<tr><td><code>-m statistic --probability P</code></td><td><code>numgen inc mod N map { ... }</code></td><td>Deterministic round-robin instead of probabilistic</td></tr>
+<tr><td><code>-m multiport --dports P</code></td><td><code>th dport { P1, P2 }</code></td><td><code>th</code> = transport header (works for tcp/udp)</td></tr>
+<tr><td><code>-m icmp6 --icmpv6-type T</code></td><td><code>icmpv6 type { T1, T2, ... }</code></td><td></td></tr>
+<tr><td><code>-p ipv6-icmp</code></td><td><code>icmpv6 type { ... }</code></td><td>Protocol match is implicit</td></tr>
+<tr><td><code>ipset create S hash:net</code></td><td><code>set S { type ipv4_addr; flags interval; auto-merge; }</code></td><td>Defined in static .nft file; <code>auto-merge</code> handles overlapping elements</td></tr>
+<tr><td><code>ipset add S element</code></td><td><code>nft add element inet fw4 S { element }</code></td><td></td></tr>
+<tr><td><code>ipset flush S</code></td><td><code>nft flush set inet fw4 S</code></td><td></td></tr>
+<tr><td><code>ipset create S hash:ip,mark</code></td><td><code>map S { type addr : mark; flags dynamic,timeout; }</code></td><td>Maps store key&rarr;value pairs</td></tr>
+<tr><td><code>-j SET --add-set S src,src</code></td><td><code>update @S { ip saddr : meta mark &amp; M }</code></td><td></td></tr>
+<tr><td><code>-m set --match-set S src,src</code></td><td><code>meta mark set ip saddr map @S</code></td><td>Regular map lookup (not <code>vmap</code> which requires verdicts)</td></tr>
+<tr><td>Separate ipv4/ipv6 chains</td><td>Single <code>inet</code> chain + <code>meta nfproto</code></td><td>Or just <code>ip</code>/<code>ip6</code> selectors in rules</td></tr>
+</table>
+
+<div class="warn">
+<strong>Key kernel limitations to be aware of:</strong>
+<ul>
+  <li><strong>No compound two-source bitwise:</strong> Expressions like <code>meta mark set meta mark | ct mark &amp; X</code> or <code>ct mark set ct mark &amp; ~M | meta mark &amp; M</code> fail with "Operation not supported". Each set expression can only draw from one register source.</li>
+  <li><strong>No numgen in compound expressions:</strong> <code>meta mark set meta mark &amp; COMP | numgen inc mod N map { ... }</code> fails for the same reason. Use <code>meta mark set numgen ...</code> with a guard condition ensuring the target bits are already zero.</li>
+  <li><strong>vmap vs map:</strong> <code>vmap</code> expects verdict values (accept/drop/jump), not data values like marks. For IP&rarr;mark lookups, use regular <code>map</code>.</li>
+  <li><strong><code>nft add set</code> flag immutability:</strong> Creating a set is idempotent, but flags (like <code>auto-merge</code>) cannot be updated on existing sets. Must delete and recreate to change flags.</li>
+</ul>
+</div>
+
+<hr>
+
+<!-- ================================================================== -->
+<h2 id="enhancements">15. Enhancements</h2>
+
+<p>The following enhancements were made after the initial nftables port, building on the new architecture.</p>
+
+<!-- 15.1 -->
+<h3 id="enh-conntrack-flush">15.1 Selective Conntrack Flush on Interface Down</h3>
+
+<p><strong>Problem:</strong> When a WAN interface fails, mwan3track detects the failure and triggers an ifdown event. The policies are rebuilt to exclude the failed interface, but existing conntrack entries still carry the old interface's fwmark. TCP flows on the failed WAN wait for retransmit timeout (typically 15&ndash;30 seconds) before re-establishing via the updated policy. The existing UCI <code>flush_conntrack</code> mechanism flushes the <em>entire</em> global conntrack table, which is disruptive to all connections including those on healthy WANs.</p>
+
+<p><strong>Solution:</strong> On ifdown, <code>mwan3_flush_conntrack()</code> now uses the <code>conntrack</code> tool to selectively delete only the conntrack entries matching the failed interface's fwmark:</p>
+
+<pre><code>conntrack -D --mark "${iface_mark}/${MMX_MASK}"</code></pre>
+
+<p>This forces only the flows that were using the failed WAN to immediately re-establish via the updated policy, while leaving connections on healthy interfaces untouched. The feature requires the <code>conntrack-tools</code> package and falls back gracefully (no-op) if it is not installed.</p>
+
+<div class="note">
+<strong>Independent of UCI option:</strong> This selective flush always runs on ifdown when conntrack-tools is available, regardless of the UCI <code>flush_conntrack</code> setting. The UCI option continues to control the legacy behaviour of flushing the entire conntrack table on specific events.
+</div>
+
+<p><strong>Files changed:</strong> <code>lib/mwan3/mwan3.sh</code> (<code>mwan3_flush_conntrack()</code>)</p>
+
+<!-- 15.2 -->
+<h3 id="enh-flow-offloading">15.2 Software Flow Offloading Co-existence</h3>
+
+<p><strong>Problem:</strong> When fw4 software flow offloading (<code>option flow_offloading '1'</code>) is active, the kernel's flowtable caches routing decisions for established flows. These flowtable entries bypass mwan3's PREROUTING chains entirely, so when mwan3 rules/policies change (e.g., on <code>start_service</code> or reload), existing offloaded flows continue using stale routing decisions until they naturally expire.</p>
+
+<p><strong>Solution:</strong> At the end of <code>start_service()</code>, after all nft rules and policies are in place, mwan3 checks whether software flow offloading is enabled. If so, it flushes all conntrack entries by writing to <code>/proc/net/nf_conntrack</code>:</p>
+
+<pre><code>echo f > /proc/net/nf_conntrack</code></pre>
+
+<p>This destroys the flowtable entries, forcing all flows to re-enter the normal packet path where they are classified by the new mwan3 rules. The flush occurs only at service start/reload, not on every interface event.</p>
+
+<div class="note">
+<strong>Hardware offloading:</strong> This does not apply to hardware flow offloading, which uses different kernel mechanisms. Hardware offloaded flows are not affected by conntrack flushes.
+</div>
+
+<p><strong>Files changed:</strong> <code>etc/init.d/mwan3</code> (<code>start_service()</code>)</p>
+
+<!-- 15.3 -->
+<h3 id="enh-track-gateway">15.3 Automatic Gateway Tracking (<code>track_gateway</code>)</h3>
+
+<p><strong>Problem:</strong> On point-to-point links (such as PPPoE), the next-hop gateway IP changes on each connection and is not known in advance. Users must manually configure <code>track_ip</code> addresses (typically public DNS servers) for mwan3track health probes. While this works, it doesn't test the actual link peer and requires external IP addresses to be reachable.</p>
+
+<p><strong>Solution:</strong> A new per-interface UCI option <code>option track_gateway '1'</code> causes mwan3 to automatically discover the point-to-point peer/gateway IP and add it to the tracking list at runtime.</p>
+
+<h4>How It Works</h4>
+<ol>
+  <li><code>mwan3_update_peer_track_ip()</code> queries <code>ifstatus</code> for the interface's <code>ptpaddress</code> field (the point-to-point peer IP)</li>
+  <li>If found, the gateway IP is written to <code>$MWAN3TRACK_STATUS_DIR/&lt;iface&gt;/GATEWAY</code></li>
+  <li><code>mwan3track</code> reads this file as an additional tracking IP alongside any static <code>track_ip</code> entries</li>
+  <li>On interface bounce, the hotplug <code>ifup</code> action calls <code>mwan3_update_peer_track_ip()</code> again, overwriting the state file with the new peer IP</li>
+</ol>
+
+<p>The gateway IP is stored as ephemeral state rather than committed to UCI, preventing stale IP accumulation across reboots or gateway changes. An interface definition may specify only <code>track_gateway</code> and omit static tracking IPs. The option is silently ignored if no next-hop peer exists (e.g., on Ethernet WAN interfaces).</p>
+
+<div class="warn">
+<strong>IPv4 only in practice.</strong> For IPv6 point-to-point links, the peer is typically a link-local address (e.g., <code>fe80::1</code>). Pinging link-local addresses requires interface scope specification (<code>ping6 fe80::1%pppoe-wan</code>), which mwan3track's WRAP/ping mechanism does not handle. The option will be silently ignored if no peer address is found.
+</div>
+
+<h4>UCI Configuration</h4>
+<pre><code>config interface 'wan'
+    option enabled '1'
+    option track_gateway '1'
+    # track_ip entries are optional when track_gateway is used
+    # list track_ip '8.8.8.8'</code></pre>
+
+<p><strong>Files changed:</strong> <code>lib/mwan3/mwan3.sh</code> (<code>mwan3_update_peer_track_ip()</code>), <code>etc/init.d/mwan3</code> (<code>start_tracker()</code>), <code>etc/hotplug.d/iface/25-mwan3</code> (ifup action)</p>
+
+<hr>
+
+<p style="text-align:center; color:#6b7280; font-size:0.85em; margin-top:3rem;">
+mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-03
+</p>
+
+</body>
+</html>
