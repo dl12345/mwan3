@@ -291,6 +291,7 @@ main() {
 	local host_up_count=0
 	local lost=0
 	local turn=0
+	local failed_hosts=""
 
 	firstconnect
 	while true; do
@@ -381,41 +382,44 @@ main() {
 						result=$?
 					;;
 				esac
-				do_log=""
 				if [ $check_quality -eq 0 ]; then
 					if [ $result -eq 0 ]; then
 						let host_up_count++
 						update_status "$track_ip" "up"
 
-						[ $score -le $up ] && do_log="success"
+						[ $score -le $up ] && LOG info "Check ($track_method) success for target \"$track_ip\" on interface $INTERFACE ($DEVICE). Current score: $score"
 					else
 						let lost++
 						update_status "$track_ip" "down"
 
-						[ $score -gt $up ] && do_log="failed"
+						failed_hosts="${failed_hosts:+$failed_hosts }$track_ip"
 					fi
-					[ -n "$do_log" ] && LOG info "Check ($track_method) ${do_log} for target \"$track_ip\" on interface $INTERFACE ($DEVICE). Current score: $score"
-
 				else
 					if [ "$loss" -ge "$failure_loss" ] || [ "$latency" -ge "$failure_latency" ]; then
 						let lost++
 						update_status "$track_ip" "down" $latency $loss
 
-						[ $score -gt $up ] && do_log="failed"
+						failed_hosts="${failed_hosts:+$failed_hosts }$track_ip(${latency}ms/${loss}%)"
 					elif [ "$loss" -le "$recovery_loss" ] && [ "$latency" -le "$recovery_latency" ]; then
 						let host_up_count++
 						update_status "$track_ip" "up" $latency $loss
 
-						[ $score -le $up ] && do_log="success"
+						[ $score -le $up ] && LOG info "Check (${track_method}: latency=${latency}ms loss=${loss}%) success for target \"$track_ip\" on interface $INTERFACE ($DEVICE). Current score: $score"
 					else
 						echo "skipped" > $MWAN3TRACK_STATUS_DIR/$INTERFACE/TRACK_${track_ip}
 					fi
-					[ -n "$do_log" ] && LOG info "Check (${track_method}: latency=${latency}ms loss=${loss}%) ${do_log} for target \"$track_ip\" on interface $INTERFACE ($DEVICE). Current score: $score"
 				fi
 			else
 				echo "skipped" > $MWAN3TRACK_STATUS_DIR/$INTERFACE/TRACK_${track_ip}
 			fi
 		done
+
+		# Log failures only when the round actually failed (reliability not met).
+		# Per-host failures are suppressed when a later host met the threshold,
+		# since logging them would falsely imply the interface is degraded.
+		if [ $host_up_count -lt $reliability ] && [ -n "$failed_hosts" ] && [ $score -gt $up ]; then
+			LOG info "Check ($track_method) failed for target(s) \"$failed_hosts\" on interface $INTERFACE ($DEVICE). Current score: $score"
+		fi
 
 		if [ $host_up_count -lt $reliability ]; then
 			let score--
@@ -460,6 +464,7 @@ main() {
 		get_uptime > $MWAN3TRACK_STATUS_DIR/$INTERFACE/TIME
 
 		host_up_count=0
+		failed_hosts=""
 		if [ "${IFDOWN_EVENT}" -eq 0 ] && [ "${IFUP_EVENT}" -eq 0 ]; then
 			sleep "${sleep_time}" &
 			wait $!
