@@ -298,6 +298,25 @@ main() {
 			sleep $MAX_SLEEP &
 			wait $!
 		}
+		# Process any pending interface events before starting a ping round.
+		# This avoids pinging with stale DEVICE/SRC_IP after wakeup from
+		# disabled state — a USR2 signal sets IFUP_EVENT but DEVICE is not
+		# refreshed until firstconnect() runs below.
+		if [ "${IFDOWN_EVENT}" -eq 1 ]; then
+			LOG debug "Register ifdown event on interface ${INTERFACE} (${DEVICE})"
+			disconnected
+			disabled
+			IFDOWN_EVENT=0
+			continue
+		fi
+		if [ "${IFUP_EVENT}" -eq 1 ]; then
+			LOG debug "Register ifup event on interface ${INTERFACE} (${DEVICE})"
+			config_load mwan3
+			mwan3_load_track_ips
+			firstconnect
+			IFUP_EVENT=0
+			continue
+		fi
 		sleep_time=$interval
 		for track_ip in $track_ips; do
 			if [ $host_up_count -lt $reliability ]; then
