@@ -2,7 +2,7 @@
 
 **Developer Reference** — OpenWrt 25.12+
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.
-*Package version: 3.1*
+*Package version: 3.1.1*
 
 ---
 
@@ -51,6 +51,8 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.
     - [15.1 Selective Conntrack Flush on Interface Down](#151-selective-conntrack-flush-on-interface-down)
     - [15.2 Software Flow Offloading Co-existence](#152-software-flow-offloading-co-existence)
     - [15.3 Automatic Gateway Tracking (track_gateway)](#153-automatic-gateway-tracking-track_gateway)
+16. [Changelog](#changelog)
+    - [Version 3.1.1](#version-311)
 
 ---
 
@@ -1061,4 +1063,100 @@ config interface 'wan'
 
 ---
 
-*mwan3 nftables port — OpenWrt 25.12 — Updated 2026-04-03*
+*mwan3 nftables port — OpenWrt 25.12 — Updated 2026-04-05*
+
+---
+
+# Changelog
+
+## Version 3.1.1
+
+Fix mwan3track. Eliminate a number of legacy bugs and reduce spurious and incorrect log messages that make healthy interfaces appear to be unstable when they're not.
+
+### mwan3track: process interface events before ping round on wakeup
+
+When a USR2 signal (ifup) woke mwan3track from disabled state, the main loop
+resumed immediately into a ping round before the IFUP_EVENT handler at the
+bottom of the loop ran. At that point `DEVICE` was still stale (empty string
+on first start), causing `sockopt_wrap` to skip `SO_BINDTODEVICE`, the
+unbound ping to fail, and a spurious `disconnecting` state to be logged.
+
+Fixed by checking `IFDOWN_EVENT`/`IFUP_EVENT` at the **top** of the main
+loop before any pinging, and using `continue` to restart the iteration after
+`firstconnect()` has refreshed `DEVICE` and `SRC_IP`. The existing handlers
+at the bottom of the loop are retained for events that arrive during a ping
+round or the inter-round sleep.
+
+**File changed:** `usr/sbin/mwan3track`
+
+### mwan3track: suppress per-host failure logs when reliability threshold is met
+
+With multiple `track_ip` entries and `reliability` less than the total number
+of IPs, a single host failure was logged as `Check failed for target X` even
+when a subsequent host met the reliability threshold and the round succeeded.
+In practice around 95% of all logged failures were false alarms of this kind,
+making it appear the interface was degrading when it was healthy.
+
+Fixed by accumulating failed host names during the probe loop and emitting a
+single `Check failed for target(s) "..."` message after the loop, only when
+`host_up_count` is still below `reliability` (i.e. the round genuinely
+failed). Rounds that succeed via a later host produce no failure log.
+In `check_quality` mode the accumulated entry includes per-host latency and
+loss: `target(s) "1.2.3.4(999ms/10%)"`.
+
+**File changed:** `usr/sbin/mwan3track`
+
+### mwan3: sockopt_wrap: replace exit() with graceful error returns
+
+The `libwrap_mwan3_sockopt.so` LD_PRELOAD shim was calling `exit()` on
+recoverable socket errors, terminating the tracked ping process abruptly with
+no output. mwan3track received no indication of why the probe process exited
+and could not distinguish this from a genuine connectivity failure.
+
+Three cases are fixed:
+
+- **`dobind()` source IP bind failure** — can occur when `SRC_IP` becomes
+  stale after a DHCP address change that does not generate an ifup event.
+  The socket is now closed and the function returns; the subsequent
+  `sendto()`/`connect()` call fails with `EBADF`, causing the ping to exit
+  with a normal error code that mwan3track records as a ping failure.
+- **`SO_BINDTODEVICE` failure in `socket()`** — can occur if the interface
+  disappears between mwan3track reading `DEVICE` and the next ping round.
+  Returns `-1` instead of calling `exit()`.
+- **`SO_MARK` failure and over-length interface name** — both return `-1`
+  instead of calling `exit()`.
+
+`exit()` is retained in `dlerror_handle()` (unresolvable libc symbols) and
+the `inet_pton` `EAFNOSUPPORT` case, as these are genuinely unrecoverable.
+
+**File changed:** `src/sockopt_wrap.c`
+
+### mwan3track: use flock to prevent ghost processes for same interface
+
+When procd respawned mwan3track (after a crash or service restart) without
+cleanly terminating the previous instance, both processes ran concurrently for
+the same interface. The ghost instance did not receive signals from
+`procd_send_signal`, so its internal score diverged from reality. Eventually
+it crossed the disconnecting threshold and fired a spurious
+`ACTION=disconnecting` hotplug event.
+
+Fixed by acquiring an exclusive `flock` on a per-interface lock file at
+startup. The lock is held for the lifetime of the process and released
+unconditionally on exit. If another instance already holds the lock, the
+existing holder is identified via the PID file, sent `SIGTERM`, and the new
+instance blocks until the lock is released.
+
+**File changed:** `usr/sbin/mwan3track`
+
+### mwan3track: raise disconnecting threshold and log recovery
+
+The `disconnecting` state fired immediately on the first score drop (any
+single ping failure), causing spurious warnings for transient packet loss.
+
+Raised the threshold to `ceil(down/3)` failures below the maximum score
+(3 failures with the default `down=5`), so single or double transient losses
+no longer trigger the warning. An explicit notice is also logged when the
+score recovers out of the `disconnecting` state, making the transition back
+to online visible in the log.
+
+**File changed:** `usr/sbin/mwan3track`

@@ -95,7 +95,7 @@
 <h1>mwan3 nftables Implementation</h1>
 <p><strong>Developer Reference</strong> &mdash; OpenWrt 25.12+<br>
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
-<em>Package version: 3.1</em></p>
+<em>Package version: 3.1.1</em></p>
 
 <nav class="toc">
 <strong>Contents</strong>
@@ -153,6 +153,11 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
       <li><a href="#enh-conntrack-flush">15.1 Selective Conntrack Flush on Interface Down</a></li>
       <li><a href="#enh-flow-offloading">15.2 Software Flow Offloading Co-existence</a></li>
       <li><a href="#enh-track-gateway">15.3 Automatic Gateway Tracking (track_gateway)</a></li>
+    </ul>
+  </li>
+  <li><a href="#changelog">16. Changelog</a>
+    <ul>
+      <li><a href="#version-3-1-1">Version 3.1.1</a></li>
     </ul>
   </li>
 </ul>
@@ -1191,8 +1196,105 @@ uci show firewall.mwan3_reload
 <hr>
 
 <p style="text-align:center; color:#6b7280; font-size:0.85em; margin-top:3rem;">
-mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-03
+mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-05
 </p>
+
+<hr>
+
+<h1 id="changelog">Changelog</h1>
+
+<h2 id="version-3-1-1">Version 3.1.1</h2>
+
+<p>Fix mwan3track. Eliminate a number of legacy bugs and reduce spurious and incorrect log messages that make healthy interfaces appear to be unstable when they're not.</p>
+
+<h3 id="cl-events-before-ping">mwan3track: process interface events before ping round on wakeup</h3>
+
+<p>When a USR2 signal (ifup) woke mwan3track from disabled state, the main loop
+resumed immediately into a ping round before the <code>IFUP_EVENT</code> handler at the
+bottom of the loop ran. At that point <code>DEVICE</code> was still stale (empty string
+on first start), causing <code>sockopt_wrap</code> to skip <code>SO_BINDTODEVICE</code>, the
+unbound ping to fail, and a spurious <code>disconnecting</code> state to be logged.</p>
+
+<p>Fixed by checking <code>IFDOWN_EVENT</code>/<code>IFUP_EVENT</code> at the <strong>top</strong> of the main
+loop before any pinging, and using <code>continue</code> to restart the iteration after
+<code>firstconnect()</code> has refreshed <code>DEVICE</code> and <code>SRC_IP</code>. The existing handlers
+at the bottom of the loop are retained for events that arrive during a ping
+round or the inter-round sleep.</p>
+
+<p><strong>File changed:</strong> <code>usr/sbin/mwan3track</code></p>
+
+<h3 id="cl-suppress-failure-logs">mwan3track: suppress per-host failure logs when reliability threshold is met</h3>
+
+<p>With multiple <code>track_ip</code> entries and <code>reliability</code> less than the total number
+of IPs, a single host failure was logged as <code>Check failed for target X</code> even
+when a subsequent host met the reliability threshold and the round succeeded.
+In practice around 95% of all logged failures were false alarms of this kind,
+making it appear the interface was degrading when it was healthy.</p>
+
+<p>Fixed by accumulating failed host names during the probe loop and emitting a
+single <code>Check failed for target(s) "..."</code> message after the loop, only when
+<code>host_up_count</code> is still below <code>reliability</code> (i.e. the round genuinely
+failed). Rounds that succeed via a later host produce no failure log.
+In <code>check_quality</code> mode the accumulated entry includes per-host latency and
+loss: <code>target(s) "1.2.3.4(999ms/10%)"</code>.</p>
+
+<p><strong>File changed:</strong> <code>usr/sbin/mwan3track</code></p>
+
+<h3 id="cl-sockopt-wrap">mwan3: sockopt_wrap: replace exit() with graceful error returns</h3>
+
+<p>The <code>libwrap_mwan3_sockopt.so</code> LD_PRELOAD shim was calling <code>exit()</code> on
+recoverable socket errors, terminating the tracked ping process abruptly with
+no output. mwan3track received no indication of why the probe process exited
+and could not distinguish this from a genuine connectivity failure.</p>
+
+<p>Three cases are fixed:</p>
+<ul>
+  <li><strong><code>dobind()</code> source IP bind failure</strong> — can occur when <code>SRC_IP</code> becomes
+  stale after a DHCP address change that does not generate an ifup event.
+  The socket is now closed and the function returns; the subsequent
+  <code>sendto()</code>/<code>connect()</code> call fails with <code>EBADF</code>, causing the ping to exit
+  with a normal error code that mwan3track records as a ping failure.</li>
+  <li><strong><code>SO_BINDTODEVICE</code> failure in <code>socket()</code></strong> — can occur if the interface
+  disappears between mwan3track reading <code>DEVICE</code> and the next ping round.
+  Returns <code>-1</code> instead of calling <code>exit()</code>.</li>
+  <li><strong><code>SO_MARK</code> failure and over-length interface name</strong> — both return <code>-1</code>
+  instead of calling <code>exit()</code>.</li>
+</ul>
+
+<p><code>exit()</code> is retained in <code>dlerror_handle()</code> (unresolvable libc symbols) and
+the <code>inet_pton</code> <code>EAFNOSUPPORT</code> case, as these are genuinely unrecoverable.</p>
+
+<p><strong>File changed:</strong> <code>src/sockopt_wrap.c</code></p>
+
+<h3 id="cl-ghost-processes">mwan3track: use flock to prevent ghost processes for same interface</h3>
+
+<p>When procd respawned mwan3track (after a crash or service restart) without
+cleanly terminating the previous instance, both processes ran concurrently for
+the same interface. The ghost instance did not receive signals from
+<code>procd_send_signal</code>, so its internal score diverged from reality. Eventually
+it crossed the disconnecting threshold and fired a spurious
+<code>ACTION=disconnecting</code> hotplug event.</p>
+
+<p>Fixed by acquiring an exclusive <code>flock</code> on a per-interface lock file at
+startup. The lock is held for the lifetime of the process and released
+unconditionally on exit. If another instance already holds the lock, the
+existing holder is identified via the PID file, sent <code>SIGTERM</code>, and the new
+instance blocks until the lock is released.</p>
+
+<p><strong>File changed:</strong> <code>usr/sbin/mwan3track</code></p>
+
+<h3 id="cl-disconnecting-threshold">mwan3track: raise disconnecting threshold and log recovery</h3>
+
+<p>The <code>disconnecting</code> state fired immediately on the first score drop (any
+single ping failure), causing spurious warnings for transient packet loss.</p>
+
+<p>Raised the threshold to <code>ceil(down/3)</code> failures below the maximum score
+(3 failures with the default <code>down=5</code>), so single or double transient losses
+no longer trigger the warning. An explicit notice is also logged when the
+score recovers out of the <code>disconnecting</code> state, making the transition back
+to online visible in the log.</p>
+
+<p><strong>File changed:</strong> <code>usr/sbin/mwan3track</code></p>
 
 </body>
 </html>
