@@ -298,6 +298,7 @@ main() {
 	mwan3_load_track_ips
 
 	local score=$((down+up))
+	local warn_threshold=$((up + (down + 2) / 3))
 	local host_up_count=0
 	local lost=0
 	local turn=0
@@ -442,7 +443,7 @@ main() {
 				sleep_time=$failure_interval
 				disconnected
 			elif [ $score -gt $up ]; then
-				disconnecting
+				[ $score -le $warn_threshold ] && disconnecting
 				sleep_time=$failure_interval
 			fi
 		else
@@ -461,6 +462,10 @@ main() {
 				sleep_time=$recovery_interval
 				connected
 			elif [ $score -gt $up ]; then
+				if [ "$STATUS" = "disconnecting" ]; then
+					STATUS="online"
+					LOG notice "Interface $INTERFACE ($DEVICE) is online"
+				fi
 				echo "online" > $MWAN3TRACK_STATUS_DIR/$INTERFACE/STATUS
 				score=$((down+up))
 			fi
