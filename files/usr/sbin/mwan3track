@@ -226,6 +226,16 @@ main() {
 	INTERFACE=$1
 	STATUS=""
 	mkdir -p $MWAN3TRACK_STATUS_DIR/$INTERFACE
+	exec 9>"$MWAN3TRACK_STATUS_DIR/$INTERFACE/LOCK"
+	if ! flock -n 9; then
+		local old_pid
+		old_pid=$(cat $MWAN3TRACK_STATUS_DIR/$INTERFACE/PID 2>/dev/null)
+		if [ -n "$old_pid" ] && [ "$old_pid" != "$$" ] && kill -0 "$old_pid" 2>/dev/null; then
+			LOG notice "Terminating stale mwan3track instance (PID $old_pid) for interface $INTERFACE"
+			kill "$old_pid" 2>/dev/null
+		fi
+		flock 9
+	fi
 	echo $$ > $MWAN3TRACK_STATUS_DIR/$INTERFACE/PID
 	stopped
 	TRACK_OUTPUT=$MWAN3TRACK_STATUS_DIR/$INTERFACE/TRACK_OUTPUT
