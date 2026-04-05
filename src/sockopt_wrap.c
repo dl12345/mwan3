@@ -78,9 +78,14 @@ void dobind(int sockfd)
 	if (source && sockfd < 1024 && !is_bound[sockfd]) {
 		set_next_bind();
 		if (next_bind(sockfd, source, sockaddr_size)) {
-			perror("failed to bind to ip address");
+			perror("mwan3 sockopt_wrap: failed to bind to source address");
 			next_close(sockfd);
-			exit(EXIT_FAILURE);
+			/* Do not exit — let the caller's syscall fail with EBADF so
+			 * the tracked process exits with a normal error code.  This
+			 * can happen when SRC_IP becomes stale (e.g. after a DHCP
+			 * address change) and must not terminate the ping abruptly
+			 * with no log from mwan3track. */
+			return;
 		}
 		is_bound[sockfd] = 1;
 	}
@@ -190,9 +195,9 @@ int socket(int domain, int type, int protocol)
 
 	if (iface_len > 0) {
 		if (iface_len == IFNAMSIZ) {
-			fprintf(stderr,"socket: Too long iface name\n");
+			fprintf(stderr, "mwan3 sockopt_wrap: interface name too long\n");
 			fflush(stderr);
-			exit(EXIT_FAILURE);
+			return -1;
 		}
 	}
 
@@ -237,18 +242,18 @@ int socket(int domain, int type, int protocol)
 		device=if_nametoindex(socket_str);
 		if (next_setsockopt(handle, SOL_SOCKET, SO_BINDTODEVICE,
 		                    socket_str, iface_len + 1)) {
-			perror("socket: setting interface name failed with error");
+			perror("mwan3 sockopt_wrap: failed to bind to interface");
 			next_close(handle);
-			exit(EXIT_FAILURE);
+			return -1;
 		}
 	}
 
 	if (fwmark > 0) {
 		if (next_setsockopt(handle, SOL_SOCKET, SO_MARK,
 		                    &fwmark, sizeof fwmark)) {
-			perror("failed setting mark for socket");
+			perror("mwan3 sockopt_wrap: failed to set firewall mark");
 			next_close(handle);
-			exit(EXIT_FAILURE);
+			return -1;
 		}
 	}
 	return handle;
