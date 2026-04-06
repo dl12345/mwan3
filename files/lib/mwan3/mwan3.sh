@@ -1165,16 +1165,20 @@ mwan3_report_policies()
 	# Check if numgen is used (load balancing)
 	if echo "$output" | grep -q "numgen"; then
 		# Parse numgen map entries to extract marks and weights
-		# Format: numgen inc mod N map { 0-2 : 0xMARK1, 3-5 : 0xMARK2, ... }
-		# Note: nft may wrap the map across multiple lines
+		# nft normalizes single-value ranges (e.g. 0-0) to plain values (e.g. 0),
+		# so handle both "N-M : 0xMARK" (weight>1) and "N : 0xMARK" (weight=1)
 		total=$(echo "$output" | grep -oE 'mod [0-9]+' | awk '{print $2}')
-		# Extract ranges from entire output (map may span lines)
-		echo "$output" | grep -oE '[0-9]+-[0-9]+ : 0x[0-9a-f]+' | while read -r entry; do
-			local range_start range_end mark_val
-			range_start="${entry%%-*}"
-			entry="${entry#*-}"
-			range_end="${entry%% *}"
+		echo "$output" | grep -oE '([0-9]+-[0-9]+|[0-9]+) : 0x[0-9a-f]+' | while read -r entry; do
+			local range range_start range_end mark_val
+			range="${entry%% *}"
 			mark_val="${entry##* }"
+			if echo "$range" | grep -q '-'; then
+				range_start="${range%%-*}"
+				range_end="${range##*-}"
+			else
+				range_start="$range"
+				range_end="$range"
+			fi
 			weight=$((range_end - range_start + 1))
 			local percent=$((weight * 100 / total))
 			echo " $(mwan3_mark_to_name "$mark_val") ($percent%)"
