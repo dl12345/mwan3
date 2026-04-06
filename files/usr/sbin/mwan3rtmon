@@ -589,7 +589,10 @@ function main() {
 	log_msg("debug", "entering event loop");
 	uloop.run();
 
-	route_listener.close();
+	// Do not call route_listener.close() — ucode-mod-rtnl bug: explicit close
+	// zeroes the resource data pointer while the variable still holds a
+	// reference; the destructor is then called again with NULL on scope exit,
+	// causing a segfault. Let the GC collect the listener naturally instead.
 	log_msg("debug", "exiting cleanly");
 }
 
