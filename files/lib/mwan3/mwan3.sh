@@ -546,13 +546,21 @@ mwan3_set_policy()
 	fi
 
 	if [ $is_lowest -eq 1 ]; then
-		# New lowest metric: reset the member list
-		policy_members=""
+		# New lowest metric for this family: reset only that family's member list
+		if [ "$family" = "ipv4" ]; then
+			policy_members_v4=""
+		else
+			policy_members_v6=""
+		fi
 	fi
 
 	if [ $is_offline -eq 0 ]; then
-		# Accumulate members: "iface_name:id:weight" tuples
-		policy_members="$policy_members $iface:$id:$weight"
+		# Accumulate members per family: "iface_name:id:weight" tuples
+		if [ "$family" = "ipv4" ]; then
+			policy_members_v4="$policy_members_v4 $iface:$id:$weight"
+		else
+			policy_members_v6="$policy_members_v6 $iface:$id:$weight"
+		fi
 	elif [ -n "$device" ]; then
 		# Offline interface with device: record for fallback out-device rule
 		policy_offline_devices="$policy_offline_devices $iface:$device"
@@ -562,10 +570,11 @@ mwan3_set_policy()
 mwan3_create_policies_nft()
 {
 	local last_resort lowest_metric_v4 lowest_metric_v6 total_weight_v4 total_weight_v6
-	local policy policy_members policy_offline_devices
+	local policy policy_members_v4 policy_members_v6 policy_offline_devices
 
 	policy="$1"
-	policy_members=""
+	policy_members_v4=""
+	policy_members_v6=""
 	policy_offline_devices=""
 
 	config_get last_resort "$1" last_resort unreachable
@@ -587,48 +596,70 @@ mwan3_create_policies_nft()
 
 	config_list_foreach "$1" use_member mwan3_set_policy
 
-	# Now build the policy chain rules from accumulated members
-	local member iface id weight mark total_weight running map_entries
+	# Now build the policy chain rules from accumulated members.
+	# For mixed IPv4/IPv6 policies, add per-family nfproto guards so each
+	# family's traffic is only directed to members of the matching address family.
+	local member iface id weight mark total_weight running map_entries nfproto_guard
+	local _fam _members_cur _total_fam _has_v4 _has_v6
 
-	# Count and build numgen map entries
+	_has_v4=0; [ -n "$(echo "$policy_members_v4" | tr -d ' ')" ] && _has_v4=1
+	_has_v6=0; [ -n "$(echo "$policy_members_v6" | tr -d ' ')" ] && _has_v6=1
+
 	total_weight=0
-	for member in $policy_members; do
+	for member in $policy_members_v4 $policy_members_v6; do
 		weight="${member##*:}"
 		total_weight=$((total_weight + weight))
 	done
 
 	if [ "$total_weight" -gt 0 ]; then
-		if [ "$total_weight" -eq "$(echo "$policy_members" | awk -F: '{print $NF}')" ] && \
-		   [ "$(echo "$policy_members" | wc -w)" -eq 1 ]; then
-			# Single member: direct mark set, no numgen needed
-			member=$(echo "$policy_members" | tr -d ' ')
-			id="${member#*:}"
-			id="${id%%:*}"
-			mark=$(mwan3_id2mask id MMX_MASK)
-			mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
-				meta mark \& "$MMX_MASK" == 0 \
-				"$(mwan3_nft_mark_expr $mark $MMX_MASK)"
-		else
-			# Multiple members: use numgen for load balancing
-			running=0
-			map_entries=""
-			for member in $policy_members; do
-				iface="${member%%:*}"
+		for _fam in v4 v6; do
+			if [ "$_fam" = "v4" ]; then
+				[ $_has_v4 -eq 0 ] && continue
+				_members_cur="$policy_members_v4"
+				[ $_has_v6 -eq 1 ] && nfproto_guard="meta nfproto ipv4" || nfproto_guard=""
+			else
+				[ $_has_v6 -eq 0 ] && continue
+				_members_cur="$policy_members_v6"
+				[ $_has_v4 -eq 1 ] && nfproto_guard="meta nfproto ipv6" || nfproto_guard=""
+			fi
+
+			_total_fam=0
+			for member in $_members_cur; do
+				weight="${member##*:}"
+				_total_fam=$((_total_fam + weight))
+			done
+
+			if [ "$(echo "$_members_cur" | wc -w)" -eq 1 ]; then
+				# Single member: direct mark set, no numgen needed
+				member=$(echo "$_members_cur" | tr -d ' ')
 				id="${member#*:}"
 				id="${id%%:*}"
-				weight="${member##*:}"
 				mark=$(mwan3_id2mask id MMX_MASK)
-				local end=$((running + weight - 1))
-				if [ -n "$map_entries" ]; then
-					map_entries="$map_entries, "
-				fi
-				map_entries="${map_entries}${running}-${end} : $mark"
-				running=$((end + 1))
-			done
-			mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
-				meta mark \& "$MMX_MASK" == 0 \
-				meta mark set "numgen inc mod $total_weight map { $map_entries }"
-		fi
+				mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
+					$nfproto_guard meta mark \& "$MMX_MASK" == 0 \
+					"$(mwan3_nft_mark_expr $mark $MMX_MASK)"
+			else
+				# Multiple members: use numgen for load balancing
+				running=0
+				map_entries=""
+				for member in $_members_cur; do
+					iface="${member%%:*}"
+					id="${member#*:}"
+					id="${id%%:*}"
+					weight="${member##*:}"
+					mark=$(mwan3_id2mask id MMX_MASK)
+					local end=$((running + weight - 1))
+					if [ -n "$map_entries" ]; then
+						map_entries="$map_entries, "
+					fi
+					map_entries="${map_entries}${running}-${end} : $mark"
+					running=$((end + 1))
+				done
+				mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
+					$nfproto_guard meta mark \& "$MMX_MASK" == 0 \
+					meta mark set "numgen inc mod $_total_fam map { $map_entries }"
+			fi
+		done
 	fi
 
 	# Add offline device fallback rules
