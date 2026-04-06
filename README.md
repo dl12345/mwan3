@@ -2,7 +2,7 @@
 
 **Developer Reference** — OpenWrt 25.12+
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.
-*Package version: 3.1.2*
+*Package version: 3.1.3*
 
 ---
 
@@ -52,6 +52,7 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.
     - [15.2 Software Flow Offloading Co-existence](#152-software-flow-offloading-co-existence)
     - [15.3 Automatic Gateway Tracking (track_gateway)](#153-automatic-gateway-tracking-track_gateway)
 16. [Changelog](#changelog)
+    - [Version 3.1.3](#version-313)
     - [Version 3.1.2](#version-312)
     - [Version 3.1.1](#version-311)
 
@@ -1069,6 +1070,60 @@ config interface 'wan'
 ---
 
 # Changelog
+
+## Version 3.1.3
+
+Fix three bugs in `mwan3_create_policies_nft` and `mwan3_report_policies`. Equal-weight load balancing policies were incorrectly shown as empty in `mwan3 status`. Mixed IPv4/IPv6 policies silently lost members from one address family when the other family's members were processed. Single-member and mixed-family policies showed spurious `unreachable` entries in `mwan3 status` instead of interface names.
+
+### mwan3: fix load balancing policy not shown in status
+
+When all members in a load-balancing policy have equal weight of 1, nft
+normalises numgen map entries from the range form `N-N : 0xMARK` to the
+plain form `N : 0xMARK`. The regex used by `mwan3_report_policies` to
+parse the chain output only matched the `N-M` range form, so equal-weight
+policies produced no output and appeared empty in `mwan3 status`. The
+load balancing itself was unaffected — only the status display was wrong.
+
+Fixed by extending the regex to match both `N-M : 0xMARK` and
+`N : 0xMARK`, and updating the weight calculation to handle both forms.
+
+**File changed:** `files/lib/mwan3/mwan3.sh`
+
+### mwan3: fix cross-family member reset in mixed IPv4/IPv6 policies
+
+When a policy contained members from both IPv4 and IPv6 interfaces, a
+single shared `policy_members` list was reset on each new lowest-metric
+member regardless of address family. This caused IPv4 members to be
+erased when a lower-metric IPv6 member was processed (or vice versa),
+leaving the policy with only the last-processed family's members. The
+generated nft rules were therefore incomplete.
+
+Fixed by maintaining separate `policy_members_v4` and `policy_members_v6`
+lists, each reset only when a new lowest-metric member of the same family
+is encountered. When both families have members, per-family nft rules are
+emitted with `meta nfproto ipv4`/`meta nfproto ipv6` guards so traffic is
+only directed to members of the matching address family.
+
+**File changed:** `files/lib/mwan3/mwan3.sh`
+
+### mwan3: fix status reporting for single-member and mixed-family policies
+
+`mwan3_report_policies` resolved nft marks to interface names using
+`mwan3_mark_to_name` and tested `[ -n "$iface_name" ]` to skip special
+marks. However `mwan3_mark_to_name` never returns an empty string — it
+returns `"unreachable"`, `"blackhole"`, `"default"`, or the raw hex value
+as a fallthrough for unrecognised marks. The empty-string check therefore
+never filtered anything, causing spurious `unreachable` entries in the
+status output. Additionally, only the first `meta mark set` rule in the
+chain was examined, so mixed-family policies with one IPv4 and one IPv6
+member only ever showed one interface.
+
+Fixed by replacing the empty-string guard with a `case` statement that
+explicitly skips the known non-interface values (`unreachable`, `blackhole`,
+`default`, and raw `0x...` hex fallthrough), and by iterating all
+`meta mark set` rules in the chain rather than only the first.
+
+**File changed:** `files/lib/mwan3/mwan3.sh`
 
 ## Version 3.1.2
 

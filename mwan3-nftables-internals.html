@@ -95,7 +95,7 @@
 <h1>mwan3 nftables Implementation</h1>
 <p><strong>Developer Reference</strong> &mdash; OpenWrt 25.12+<br>
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
-<em>Package version: 3.1.2</em></p>
+<em>Package version: 3.1.3</em></p>
 
 <nav class="toc">
 <strong>Contents</strong>
@@ -157,6 +157,7 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
   </li>
   <li><a href="#changelog">16. Changelog</a>
     <ul>
+      <li><a href="#version-3-1-3">Version 3.1.3</a></li>
       <li><a href="#version-3-1-2">Version 3.1.2</a></li>
       <li><a href="#version-3-1-1">Version 3.1.1</a></li>
     </ul>
@@ -1203,6 +1204,60 @@ mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-05
 <hr>
 
 <h1 id="changelog">Changelog</h1>
+
+<h2 id="version-3-1-3">Version 3.1.3</h2>
+
+<p>Fix three bugs in <code>mwan3_create_policies_nft</code> and <code>mwan3_report_policies</code>. Equal-weight load balancing policies were incorrectly shown as empty in <code>mwan3 status</code>. Mixed IPv4/IPv6 policies silently lost members from one address family when the other family's members were processed. Single-member and mixed-family policies showed spurious <code>unreachable</code> entries in <code>mwan3 status</code> instead of interface names.</p>
+
+<h3 id="cl-lb-policy-not-shown">mwan3: fix load balancing policy not shown in status</h3>
+
+<p>When all members in a load-balancing policy have equal weight of 1, nft
+normalises numgen map entries from the range form <code>N-N : 0xMARK</code> to the
+plain form <code>N : 0xMARK</code>. The regex used by <code>mwan3_report_policies</code> to
+parse the chain output only matched the <code>N-M</code> range form, so equal-weight
+policies produced no output and appeared empty in <code>mwan3 status</code>. The
+load balancing itself was unaffected &mdash; only the status display was wrong.</p>
+
+<p>Fixed by extending the regex to match both <code>N-M : 0xMARK</code> and
+<code>N : 0xMARK</code>, and updating the weight calculation to handle both forms.</p>
+
+<p><strong>File changed:</strong> <code>files/lib/mwan3/mwan3.sh</code></p>
+
+<h3 id="cl-cross-family-reset">mwan3: fix cross-family member reset in mixed IPv4/IPv6 policies</h3>
+
+<p>When a policy contained members from both IPv4 and IPv6 interfaces, a
+single shared <code>policy_members</code> list was reset on each new lowest-metric
+member regardless of address family. This caused IPv4 members to be
+erased when a lower-metric IPv6 member was processed (or vice versa),
+leaving the policy with only the last-processed family's members. The
+generated nft rules were therefore incomplete.</p>
+
+<p>Fixed by maintaining separate <code>policy_members_v4</code> and <code>policy_members_v6</code>
+lists, each reset only when a new lowest-metric member of the same family
+is encountered. When both families have members, per-family nft rules are
+emitted with <code>meta nfproto ipv4</code>/<code>meta nfproto ipv6</code> guards so traffic is
+only directed to members of the matching address family.</p>
+
+<p><strong>File changed:</strong> <code>files/lib/mwan3/mwan3.sh</code></p>
+
+<h3 id="cl-status-reporting">mwan3: fix status reporting for single-member and mixed-family policies</h3>
+
+<p><code>mwan3_report_policies</code> resolved nft marks to interface names using
+<code>mwan3_mark_to_name</code> and tested <code>[ -n "$iface_name" ]</code> to skip special
+marks. However <code>mwan3_mark_to_name</code> never returns an empty string &mdash; it
+returns <code>"unreachable"</code>, <code>"blackhole"</code>, <code>"default"</code>, or the raw hex value
+as a fallthrough for unrecognised marks. The empty-string check therefore
+never filtered anything, causing spurious <code>unreachable</code> entries in the
+status output. Additionally, only the first <code>meta mark set</code> rule in the
+chain was examined, so mixed-family policies with one IPv4 and one IPv6
+member only ever showed one interface.</p>
+
+<p>Fixed by replacing the empty-string guard with a <code>case</code> statement that
+explicitly skips the known non-interface values (<code>unreachable</code>, <code>blackhole</code>,
+<code>default</code>, and raw <code>0x...</code> hex fallthrough), and by iterating all
+<code>meta mark set</code> rules in the chain rather than only the first.</p>
+
+<p><strong>File changed:</strong> <code>files/lib/mwan3/mwan3.sh</code></p>
 
 <h2 id="version-3-1-2">Version 3.1.2</h2>
 
