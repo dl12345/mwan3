@@ -30,7 +30,8 @@ let extra_table_set = {};   // { table_id: true } for O(1) lookup
 let dev_table_map = {};     // { device_name: table_id }
 let iface_list = [];        // [ { name, family, tid, enabled, has_tracking } ]
 let active_chains = {};     // { chain_name: true } cached from nft
-let connected_timer = null; // debounce timer for connected set rebuilds
+let connected_timer = null;    // debounce timer for connected set rebuilds
+let main_route_cache = {};     // { route_key: count } for ECMP-safe delete checks
 let ubus_conn;
 
 // ---------------------------------------------------------------------------
@@ -336,21 +337,12 @@ function get_all_routes() {
 	return result;
 }
 
-// Check if a route still exists in the main table (for delete event verification)
+// Build a cache key from the fields that uniquely identify a route for ECMP purposes
 
-function route_still_exists(route) {
+function route_key(route) {
 
-	let routes = rtnl.request(RTM_GETROUTE, NLM_F_DUMP,
-		{ family: family_num }) ?? [];
-
-	for (let r in routes) {
-		if (r.table != RT_TABLE_MAIN)
-			continue;
-		if (r.dst == route.dst && r.oif == route.oif &&
-		    r.gateway == route.gateway && r.priority == route.priority)
-			return true;
-	}
-	return false;
+	return (route.dst ?? "default") + "|" + (route.oif ?? "") + "|" +
+	       (route.gateway ?? "") + "|" + (route.priority ?? 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -394,6 +386,15 @@ function populate_iface_routes() {
 
 	let routes = get_all_routes();
 	let active_tids = get_active_tids();
+
+	// Rebuild main route cache from current snapshot
+	main_route_cache = {};
+	for (let route in routes) {
+		if (route.table == RT_TABLE_MAIN) {
+			let k = route_key(route);
+			main_route_cache[k] = (main_route_cache[k] ?? 0) + 1;
+		}
+	}
 
 	if (length(keys(active_tids)) == 0)
 		return;
@@ -443,6 +444,18 @@ function handle_route_event(event) {
 		(route.dst ?? "default") + " dev=" + (route.oif ?? "none") +
 		" gw=" + (route.gateway ?? "none"));
 
+	// -- Maintain main route cache for ECMP-safe delete checks --
+
+	let k = route_key(route);
+	if (is_new) {
+		main_route_cache[k] = (main_route_cache[k] ?? 0) + 1;
+	} else {
+		if (main_route_cache[k] > 1)
+			main_route_cache[k]--;
+		else
+			delete main_route_cache[k];
+	}
+
 	// -- Update connected set --
 
 	let setname = (family_num == AF_INET)
@@ -468,10 +481,10 @@ function handle_route_event(event) {
 	build_dev_table_map();
 	refresh_active_chains();
 
-	// For delete events, verify the route is actually gone (ECMP case)
+	// For delete events, check cache: if count > 0 an ECMP path still exists
 
-	if (!is_new && route_still_exists(route)) {
-		log_msg("debug", "deleted but route still exists: " +
+	if (!is_new && main_route_cache[k] != null) {
+		log_msg("debug", "deleted but route still exists (ECMP): " +
 			(route.dst ?? "default"));
 		return;
 	}
