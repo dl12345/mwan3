@@ -95,7 +95,7 @@
 <h1>mwan3 nftables Implementation</h1>
 <p><strong>Developer Reference</strong> &mdash; OpenWrt 25.12+<br>
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
-<em>Package version: 3.1.1</em></p>
+<em>Package version: 3.1.2</em></p>
 
 <nav class="toc">
 <strong>Contents</strong>
@@ -157,6 +157,7 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
   </li>
   <li><a href="#changelog">16. Changelog</a>
     <ul>
+      <li><a href="#version-3-1-2">Version 3.1.2</a></li>
       <li><a href="#version-3-1-1">Version 3.1.1</a></li>
     </ul>
   </li>
@@ -1202,6 +1203,37 @@ mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-05
 <hr>
 
 <h1 id="changelog">Changelog</h1>
+
+<h2 id="version-3-1-2">Version 3.1.2</h2>
+
+<p>Fix a segfault in mwan3rtmon on process exit, and replace an unnecessary
+netlink round-trip with an in-memory route cache.</p>
+
+<h3 id="cl-rtmon-segfault">mwan3rtmon: fix segfault on exit caused by ucode-mod-rtnl double-destructor bug</h3>
+
+<p>Calling <code>route_listener.close()</code> explicitly zeroed the resource data pointer
+while the ucode variable still held a live reference. When that reference was
+later released at scope exit, <code>uc_nl_listener_free()</code> fired a second time with
+<code>arg=NULL</code> and read <code>uc_nl_listener_t.index</code> at <code>NULL+0x10</code>, producing a
+reliable <code>segfault at 10</code> on every clean shutdown.</p>
+
+<p>Fixed by omitting the explicit <code>close()</code> call and letting the GC collect the
+listener naturally. The destructor then fires exactly once with a valid pointer.</p>
+
+<p><strong>File changed:</strong> <code>usr/sbin/mwan3rtmon</code></p>
+
+<h3 id="cl-rtmon-route-cache">mwan3rtmon: replace route_still_exists() with an in-memory route cache</h3>
+
+<p><code>route_still_exists()</code> issued a full <code>RTM_GETROUTE</code> dump on every route-delete
+event to check whether an ECMP path still existed before removing per-interface
+table entries. This is unnecessary overhead.</p>
+
+<p>Replaced with <code>main_route_cache</code>: a <code>{ route_key: count }</code> map built from the
+initial route snapshot in <code>populate_iface_routes()</code> and maintained
+incrementally in <code>handle_route_event()</code>. The ECMP check becomes an O(1) cache
+lookup with no rtnl round-trip.</p>
+
+<p><strong>File changed:</strong> <code>usr/sbin/mwan3rtmon</code></p>
 
 <h2 id="version-3-1-1">Version 3.1.1</h2>
 

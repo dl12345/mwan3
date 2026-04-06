@@ -2,7 +2,7 @@
 
 **Developer Reference** — OpenWrt 25.12+
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.
-*Package version: 3.1.1*
+*Package version: 3.1.2*
 
 ---
 
@@ -52,6 +52,7 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.
     - [15.2 Software Flow Offloading Co-existence](#152-software-flow-offloading-co-existence)
     - [15.3 Automatic Gateway Tracking (track_gateway)](#153-automatic-gateway-tracking-track_gateway)
 16. [Changelog](#changelog)
+    - [Version 3.1.2](#version-312)
     - [Version 3.1.1](#version-311)
 
 ---
@@ -1068,6 +1069,37 @@ config interface 'wan'
 ---
 
 # Changelog
+
+## Version 3.1.2
+
+Fix a segfault in mwan3rtmon on process exit, and replace an unnecessary
+netlink round-trip with an in-memory route cache.
+
+### mwan3rtmon: fix segfault on exit caused by ucode-mod-rtnl double-destructor bug
+
+Calling `route_listener.close()` explicitly zeroed the resource data pointer
+while the ucode variable still held a live reference. When that reference was
+later released at scope exit, `uc_nl_listener_free()` fired a second time with
+`arg=NULL` and read `uc_nl_listener_t.index` at `NULL+0x10`, producing a
+reliable `segfault at 10` on every clean shutdown.
+
+Fixed by omitting the explicit `close()` call and letting the GC collect the
+listener naturally. The destructor then fires exactly once with a valid pointer.
+
+**File changed:** `usr/sbin/mwan3rtmon`
+
+### mwan3rtmon: replace route_still_exists() with an in-memory route cache
+
+`route_still_exists()` issued a full `RTM_GETROUTE` dump on every route-delete
+event to check whether an ECMP path still existed before removing per-interface
+table entries. This is unnecessary overhead.
+
+Replaced with `main_route_cache`: a `{ route_key: count }` map built from the
+initial route snapshot in `populate_iface_routes()` and maintained
+incrementally in `handle_route_event()`. The ECMP check becomes an O(1) cache
+lookup with no rtnl round-trip.
+
+**File changed:** `usr/sbin/mwan3rtmon`
 
 ## Version 3.1.1
 
