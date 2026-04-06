@@ -1215,13 +1215,19 @@ mwan3_report_policies()
 			echo " $(mwan3_mark_to_name "$mark_val") ($percent%)"
 		done
 	else
-		# Single member or last resort — extract mark and resolve to name
-		local mark_line mark_val
-		mark_line=$(echo "$output" | grep "meta mark set" | head -1)
-		if [ -n "$mark_line" ]; then
+		# Single member(s) — iterate all mark set rules, resolving each mark
+		# to an interface name.  Skip special/fallthrough values: mwan3_mark_to_name
+		# never returns empty — it returns "unreachable", "blackhole", "default",
+		# or the raw hex string for unknown marks — so test explicitly.
+		local mark_val iface_name
+		echo "$output" | grep "meta mark set" | while read -r mark_line; do
 			mark_val=$(echo "$mark_line" | grep -oE '0x[0-9a-f]+' | tail -1)
-			echo " $(mwan3_mark_to_name "$mark_val")"
-		fi
+			iface_name=$(mwan3_mark_to_name "$mark_val")
+			case "$iface_name" in
+				unreachable|blackhole|default|0x*) continue ;;
+			esac
+			echo " $iface_name"
+		done
 	fi
 }
 
