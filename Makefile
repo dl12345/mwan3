@@ -54,6 +54,16 @@ endef
 define Package/mwan3/postinst
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
+	# Remove mwan3 base chains if they exist with the old priority (mangle + 1).
+	# They must be deleted so fw4 can recreate them at the new priority (mangle - 1).
+	# Flushing rules first is required before a base chain can be deleted.
+	for chain in mwan3_prerouting mwan3_output; do
+		if nft list chain inet fw4 "$$chain" 2>/dev/null | grep -q "priority mangle + 1"; then
+			nft flush chain inet fw4 "$$chain" 2>/dev/null
+			nft delete chain inet fw4 "$$chain" 2>/dev/null
+		fi
+	done
+	fw4 -q reload
 	/etc/init.d/rpcd restart
 fi
 exit 0

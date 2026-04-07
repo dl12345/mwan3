@@ -109,8 +109,8 @@ mwan3_ensure_nft_framework()
 	mwan3_nft_push "add set inet fw4 mwan3_dynamic_v6 { type ipv6_addr; flags interval; auto-merge; }"
 
 	# Hook chains (base chains with type/hook/priority)
-	mwan3_nft_push "add chain inet fw4 mwan3_prerouting { type filter hook prerouting priority mangle + 1; policy accept; }"
-	mwan3_nft_push "add chain inet fw4 mwan3_output { type route hook output priority mangle + 1; policy accept; }"
+	mwan3_nft_push "add chain inet fw4 mwan3_prerouting { type filter hook prerouting priority mangle - 1; policy accept; }"
+	mwan3_nft_push "add chain inet fw4 mwan3_output { type route hook output priority mangle - 1; policy accept; }"
 
 	# Internal chains (jumped to from hook chains)
 	mwan3_nft_push "add chain inet fw4 mwan3_ifaces_in"

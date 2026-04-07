@@ -42,13 +42,13 @@ set mwan3_dynamic_v6 {
 
 # Entry point for prerouting
 chain mwan3_prerouting {
-	type filter hook prerouting priority mangle + 1; policy accept;
+	type filter hook prerouting priority mangle - 1; policy accept;
 }
 
 # Entry point for locally-originated traffic
 # type route so mark changes trigger re-routing
 chain mwan3_output {
-	type route hook output priority mangle + 1; policy accept;
+	type route hook output priority mangle - 1; policy accept;
 }
 
 # Interface input marking (jumped to from mwan3_prerouting/mwan3_output)
