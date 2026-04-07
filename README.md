@@ -2,7 +2,7 @@
 
 **Developer Reference** — OpenWrt 25.12+
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.
-*Package version: 3.1.3*
+*Package version: 3.1.4*
 
 ---
 
@@ -52,6 +52,7 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.
     - [15.2 Software Flow Offloading Co-existence](#152-software-flow-offloading-co-existence)
     - [15.3 Automatic Gateway Tracking (track_gateway)](#153-automatic-gateway-tracking-track_gateway)
 16. [Changelog](#changelog)
+    - [Version 3.1.4](#version-314)
     - [Version 3.1.3](#version-313)
     - [Version 3.1.2](#version-312)
     - [Version 3.1.1](#version-311)
@@ -1065,11 +1066,33 @@ config interface 'wan'
 
 ---
 
-*mwan3 nftables port — OpenWrt 25.12 — Updated 2026-04-05*
+*mwan3 nftables port — OpenWrt 25.12 — Updated 2026-04-07*
 
 ---
 
 # Changelog
+
+## Version 3.1.4
+
+Fix interoperability between mwan3 and pbr (Policy Based Routing). The nftables port's unmasked mark restore zeroed pbr's fwmark bits on every packet, causing pbr's `ip rule` entries to never match. Fixed by running mwan3 at `priority mangle - 1` so mwan3 processes before pbr. A postinst migration removes old chains so fw4 can recreate them at the new priority on upgrade.
+
+### mwan3: fix pbr interoperability by running at priority mangle - 1
+
+The original iptables implementation used `CONNMARK --restore-mark --nfmask $MMX_MASK --ctmask $MMX_MASK`, which selectively merged only mwan3's bits into the packet mark, leaving bits owned by other packages (such as pbr's `0x00ff0000` range) untouched. The nftables equivalent requires a compound two-source bitwise expression that the Linux kernel rejects with "Operation not supported", so the port uses an unmasked restore instead:
+
+```
+meta mark set ct mark & MMX_MASK
+```
+
+This replaces the entire packet mark with only mwan3's bits. Since pbr injects into fw4's `mangle_prerouting` at `priority mangle` (−150) and mwan3's chains were at `priority mangle + 1` (−149), pbr ran first and its marks were zeroed by mwan3 before the routing decision. pbr's `ip rule` entries never matched.
+
+The fix moves mwan3's chains to `priority mangle - 1` (−151) so mwan3 runs before pbr. mwan3 restores and saves its mark while the packet mark is still zero, then pbr adds its bits on top. Both sets of marks are present at the routing decision, matching the coexistence behaviour of the iptables version.
+
+A postinst script detects existing chains with the old priority and removes them before calling `fw4 reload`, since nftables rejects a chain redeclaration with a different priority.
+
+**Files changed:** `files/usr/share/nftables.d/table-post/10-mwan3.nft`, `files/lib/mwan3/common.sh`, `Makefile`
+
+---
 
 ## Version 3.1.3
 
