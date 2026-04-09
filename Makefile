@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mwan3
-PKG_VERSION:=3.1.4
+PKG_VERSION:=3.2
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Florian Eckert <fe@dev.tdt.de>
@@ -54,14 +54,22 @@ endef
 define Package/mwan3/postinst
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
-	# Remove mwan3 base chains if they exist with the old priority (mangle + 1).
-	# They must be deleted so fw4 can recreate them at the new priority (mangle - 1).
-	# Flushing rules first is required before a base chain can be deleted.
+	# v3.2: priority moves back to mangle + 1 (was mangle - 1 in v3.1.4),
+	# this time backed by non-destructive vmap-dispatch save/restore so the
+	# new placement is order-independent w.r.t. pbr. nftables rejects a base
+	# chain redeclaration at a different priority, so flush+delete first.
 	for chain in mwan3_prerouting mwan3_output; do
-		if nft list chain inet fw4 "$$chain" 2>/dev/null | grep -q "priority mangle + 1"; then
+		if nft list chain inet fw4 "$$chain" 2>/dev/null | grep -q "priority mangle - 1"; then
 			nft flush chain inet fw4 "$$chain" 2>/dev/null
 			nft delete chain inet fw4 "$$chain" 2>/dev/null
 		fi
+	done
+	# Drop legacy ip->mark sticky maps from <=v3.1.4. They are replaced by
+	# per-(rule,family,member) ip-only sets. Leftover legacy maps are
+	# unreferenced after upgrade but waste a name and confuse status.
+	for mapname in $$(nft list maps inet 2>/dev/null | \
+			  awk '$$1=="map" && $$2 ~ /^mwan3_sticky_v[46]_/ { print $$2 }'); do
+		nft delete map inet fw4 "$$mapname" 2>/dev/null
 	done
 	fw4 -q reload
 	/etc/init.d/rpcd restart
