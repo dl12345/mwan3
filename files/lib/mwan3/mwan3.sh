@@ -203,11 +203,20 @@ mwan3_set_general_rules()
 
 mwan3_set_general_nft()
 {
-	local chain_exists
+	local chain_exists restore_vmap save_vmap all_marks
 
 	# Check if rules are already populated
 	chain_exists=$($NFT list chain inet fw4 mwan3_prerouting 2>/dev/null | grep -c "meta mark")
 	[ "$chain_exists" -gt 0 ] && return
+
+	# Build (idempotently) the per-mark OR-immediate setter chains used by
+	# the non-destructive restore/save vmap dispatch below. These chains
+	# must exist before any rule that jumps to them.
+	mwan3_build_or_chains_nft
+
+	all_marks=$(mwan3_all_marks)
+	restore_vmap=$(mwan3_or_vmap_body meta $all_marks)
+	save_vmap=$(mwan3_or_vmap_body ct $all_marks)
 
 	mwan3_nft_batch_start
 
@@ -229,15 +238,23 @@ mwan3_set_general_nft()
 	[ $NO_IPV6 -eq 0 ] && \
 		mwan3_nft_push "add rule inet fw4 mwan3_dynamic ip6 daddr @mwan3_dynamic_v6 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
 
+	# Flush postrouting SNAT chain — per-iface rules are re-added by
+	# mwan3_create_iface_nft as part of the iface rebuild that follows.
+	mwan3_nft_push "flush chain inet fw4 mwan3_postrouting"
+
 	# Populate mwan3_prerouting hook chain
 	mwan3_nft_push "flush chain inet fw4 mwan3_prerouting"
 	# IPv6 RA bypass
 	mwan3_nft_push "add rule inet fw4 mwan3_prerouting icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, nd-redirect } accept"
-	# Restore mark from conntrack
-	# Kernel doesn't support compound "meta mark | ct mark" in one expression,
-	# so we use ct mark directly. Since we only restore when meta mark mwan3 bits
-	# are 0, and ct mark was saved from meta mark, this is equivalent.
-	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 meta mark set ct mark & $MMX_MASK"
+	# Restore mark from conntrack — non-destructive in unmasked bits.
+	# A direct compound "meta mark set (meta mark & ~MMX) | (ct mark & MMX)"
+	# is rejected by the kernel (a set-statement expression tree may reference
+	# at most one runtime source register). We synthesise the same effect via
+	# vmap dispatch on (ct mark & MMX): each branch jumps to a tiny chain that
+	# does "meta mark set meta mark | <imm>". Lookup miss (ct mark MMX bits = 0)
+	# falls through cleanly. Pbr's bits in meta mark are preserved across the
+	# restore, which is what removes mwan3's prior priority dependency on pbr.
+	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 ct mark & $MMX_MASK vmap { $restore_vmap }"
 	# Jump to interface classification
 	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_ifaces_in"
 	# Check custom/connected/dynamic destinations
@@ -246,10 +263,13 @@ mwan3_set_general_nft()
 	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_dynamic"
 	# User rules
 	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_rules"
-	# Save mark to conntrack
-	# Kernel doesn't support compound "ct mark & X | meta mark & Y", so we
-	# save the full meta mark. mwan3 owns its mask bits exclusively.
-	mwan3_nft_push "add rule inet fw4 mwan3_prerouting ct mark set meta mark"
+	# Save mark to conntrack — non-destructive in unmasked bits of ct mark.
+	# Two-step: clear the MMX bits in ct mark (single-source masked write),
+	# then vmap-dispatch on (meta mark & MMX) into a per-mark "ct mark set
+	# ct mark | <imm>" chain. Net effect: ct mark's MMX bits are replaced
+	# with meta mark's MMX bits, every other bit of ct mark untouched.
+	mwan3_nft_push "add rule inet fw4 mwan3_prerouting ct mark set ct mark & $MMX_MASK_COMPLEMENT"
+	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK vmap { $save_vmap }"
 	# Post-rules: check custom/connected/dynamic for non-default marks
 	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_custom"
 	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_connected"
@@ -258,7 +278,7 @@ mwan3_set_general_nft()
 	# Populate mwan3_output hook chain
 	mwan3_nft_push "flush chain inet fw4 mwan3_output"
 	# Restore mark from conntrack (see prerouting comment above)
-	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 meta mark set ct mark & $MMX_MASK"
+	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 ct mark & $MMX_MASK vmap { $restore_vmap }"
 	# Jump to interface classification
 	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_ifaces_in"
 	# Check custom/connected/dynamic destinations
@@ -268,7 +288,8 @@ mwan3_set_general_nft()
 	# User rules
 	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_rules"
 	# Save mark to conntrack (see prerouting comment above)
-	mwan3_nft_push "add rule inet fw4 mwan3_output ct mark set meta mark"
+	mwan3_nft_push "add rule inet fw4 mwan3_output ct mark set ct mark & $MMX_MASK_COMPLEMENT"
+	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK vmap { $save_vmap }"
 	# Post-rules: check custom/connected/dynamic for non-default marks
 	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_custom"
 	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_connected"
@@ -279,7 +300,7 @@ mwan3_set_general_nft()
 
 mwan3_create_iface_nft()
 {
-	local id family iface_mark device
+	local id family iface_mark device src_ip handle snat6
 
 	iface_mark=""
 	config_get family "$1" family ipv4
@@ -374,22 +395,20 @@ mwan3_delete_iface_nft()
 
 mwan3_delete_iface_map_entries()
 {
-	local id iface_mark mapname entry
+	local id setname
 
 	mwan3_get_iface_id id "$1"
 	[ -n "$id" ] || return 0
 
-	iface_mark=$(mwan3_id2mask id MMX_MASK)
-
-	# Iterate through all sticky maps and remove entries matching this interface's mark
-	for mapname in $($NFT list maps inet fw4 2>/dev/null | grep "map mwan3_sticky_" | awk '{print $2}'); do
-		$NFT list map inet fw4 "$mapname" 2>/dev/null | \
-			grep -oE '[0-9a-f.:]+\s*:\s*'"$(printf '0x%08x' $((iface_mark)))" | \
-			while read -r entry; do
-				local addr="${entry%%:*}"
-				addr=$(echo "$addr" | sed 's/[[:space:]]//g')
-				[ -n "$addr" ] && $NFT delete element inet fw4 "$mapname" "{ $addr }" 2>/dev/null
-			done
+	# v3.1.5+ sticky scheme: one set per (rule, family, iface_id) holding
+	# only saddrs (no value side). Removing an interface invalidates every
+	# such set whose name ends in "_<id>"; we flush rather than delete since
+	# rule chains may still reference the set name.
+	for setname in $($NFT list sets inet 2>/dev/null | \
+			 awk '$1=="set" && $2 ~ /^mwan3_sticky_v[46]_/ { print $2 }'); do
+		case "$setname" in
+			*_"$id") $NFT flush set inet fw4 "$setname" 2>/dev/null ;;
+		esac
 	done
 }
 
@@ -639,7 +658,13 @@ mwan3_create_policies_nft()
 					$nfproto_guard meta mark \& "$MMX_MASK" == 0 \
 					"$(mwan3_nft_mark_expr $mark $MMX_MASK)"
 			else
-				# Multiple members: use numgen for load balancing
+				# Multiple members: use numgen for load balancing.
+				# Non-destructive: dispatch via verdict map into per-mark
+				# OR-immediate setter chains. The previous form
+				#   meta mark set numgen ... map { range : 0xMARK }
+				# is single-source but destructive in unmasked bits, so it
+				# would clobber pbr's marks if pbr ran first. The vmap form
+				# preserves all bits outside MMX.
 				running=0
 				map_entries=""
 				for member in $_members_cur; do
@@ -652,12 +677,12 @@ mwan3_create_policies_nft()
 					if [ -n "$map_entries" ]; then
 						map_entries="$map_entries, "
 					fi
-					map_entries="${map_entries}${running}-${end} : $mark"
+					map_entries="${map_entries}${running}-${end} : jump mwan3_or_meta_$(mwan3_or_chain_suffix "$mark")"
 					running=$((end + 1))
 				done
 				mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
 					$nfproto_guard meta mark \& "$MMX_MASK" == 0 \
-					meta mark set "numgen inc mod $_total_fam map { $map_entries }"
+					"numgen inc mod $_total_fam vmap { $map_entries }"
 			fi
 		done
 	fi
@@ -746,20 +771,26 @@ mwan3_set_sticky_nft()
 	fi
 }
 
-mwan3_set_sticky_map()
+# Enumerate the iface members of a policy whose family matches $2 (ipv4|ipv6).
+# Sets _policy_member_marks to a space-separated list of "id:mark" tuples.
+# Used by the sticky implementation to size the per-member sticky set fan-out.
+mwan3_get_policy_members_for_family()
 {
-	local rule="$1"
-	local timeout="$2"
+	local policy="$1" want_family="$2"
+	_policy_member_marks=""
 
-	$NFT list map inet fw4 "mwan3_sticky_v4_${rule}" &>/dev/null || \
-		mwan3_nft_exec add map inet fw4 "mwan3_sticky_v4_${rule}" \
-			"{ type ipv4_addr : mark ; flags dynamic,timeout ; timeout ${timeout}s ; }"
-
-	[ $NO_IPV6 -eq 0 ] && {
-		$NFT list map inet fw4 "mwan3_sticky_v6_${rule}" &>/dev/null || \
-			mwan3_nft_exec add map inet fw4 "mwan3_sticky_v6_${rule}" \
-				"{ type ipv6_addr : mark ; flags dynamic,timeout ; timeout ${timeout}s ; }"
+	_mwan3_pmf_accum() {
+		local m_iface m_id m_family m_mark
+		config_get m_iface "$1" interface
+		[ -n "$m_iface" ] || return
+		config_get m_family "$m_iface" family ipv4
+		[ "$m_family" = "$want_family" ] || return
+		mwan3_get_iface_id m_id "$m_iface"
+		[ -n "$m_id" ] || return
+		m_mark=$(mwan3_id2mask m_id MMX_MASK)
+		_policy_member_marks="$_policy_member_marks $m_id:$m_mark"
 	}
+	config_list_foreach "$policy" use_member _mwan3_pmf_accum
 }
 
 mwan3_set_user_nft_rule()
@@ -912,9 +943,6 @@ mwan3_set_user_nft_rule()
 		rule_policy=1
 		policy_action="jump mwan3_policy_$use_policy"
 
-		if [ "$sticky" -eq 1 ]; then
-			mwan3_set_sticky_map "$rule" "$timeout"
-		fi
 	fi
 
 	# Create policy chain if it doesn't exist
@@ -924,27 +952,56 @@ mwan3_set_user_nft_rule()
 	fi
 
 	if [ $rule_policy -eq 1 ] && [ "$sticky" -eq 1 ]; then
-		# Create sticky rule chain
+		# Non-destructive sticky implementation:
+		#   The legacy form  meta mark set ip saddr map @stickymap
+		# is single-source destructive — it overwrites meta mark with the
+		# looked-up mark, wiping any pbr bits that may already be present.
+		# We replace the single ip->mark map with one ip-only set per policy
+		# member, plus per-member lookup rules that "jump mwan3_or_meta_<mark>"
+		# to OR the member's mark into meta mark while preserving every other
+		# bit. The save side mirrors this with per-member "update @set" rules
+		# guarded on (meta mark & MMX) == <member_mark>.
+		local _policy_member_marks _entry _m_id _m_mark _setname
+		local _fam_short _saddr_kw _addr_type
+		if [ "$ipv" = "ipv4" ]; then
+			_fam_short="v4"; _saddr_kw="ip saddr"; _addr_type="ipv4_addr"
+		else
+			_fam_short="v6"; _saddr_kw="ip6 saddr"; _addr_type="ipv6_addr"
+		fi
+
+		mwan3_get_policy_members_for_family "$use_policy" "$ipv"
+
+		# Create sticky rule chain (idempotent) and reset its body.
+		# Note: same flush-on-each-pass behaviour as before; sticky+family=any
+		# remains a pre-existing latent issue not addressed here.
 		$NFT list chain inet fw4 "mwan3_rule_$1" &>/dev/null || \
 			mwan3_nft_push "add chain inet fw4 mwan3_rule_$1"
 		mwan3_nft_push "flush chain inet fw4 mwan3_rule_$1"
 
-		# Restore mark from sticky map (regular map lookup, not vmap which requires verdicts)
-		if [ "$ipv" = "ipv4" ]; then
-			mwan3_nft_push "add rule inet fw4 mwan3_rule_$1 meta mark set ip saddr map @mwan3_sticky_v4_${rule}"
-		else
-			mwan3_nft_push "add rule inet fw4 mwan3_rule_$1 meta mark set ip6 saddr map @mwan3_sticky_v6_${rule}"
-		fi
+		# Per-member sticky sets and lookup rules.
+		for _entry in $_policy_member_marks; do
+			_m_id="${_entry%%:*}"
+			_m_mark="${_entry##*:}"
+			_setname="mwan3_sticky_${_fam_short}_${rule}_${_m_id}"
 
-		# Fall through to policy for new flows (mark still 0 means no sticky entry)
+			$NFT list set inet fw4 "$_setname" &>/dev/null || \
+				mwan3_nft_push "add set inet fw4 $_setname { type ${_addr_type}; flags timeout; timeout ${timeout}s; }"
+
+			mwan3_nft_push "add rule inet fw4 mwan3_rule_$1 ${_saddr_kw} @${_setname} jump mwan3_or_meta_$(mwan3_or_chain_suffix "$_m_mark")"
+		done
+
+		# Fall through to policy for new flows (no sticky entry hit -> mark still 0).
 		mwan3_nft_push "add rule inet fw4 mwan3_rule_$1 meta mark & $MMX_MASK == 0 jump mwan3_policy_$use_policy"
 
-		# After policy marks, update sticky map
-		if [ "$ipv" = "ipv4" ]; then
-			mwan3_nft_push "add rule inet fw4 mwan3_rule_$1 meta mark & $MMX_MASK != 0 update @mwan3_sticky_v4_${rule} { ip saddr timeout ${timeout}s : meta mark & $MMX_MASK }"
-		else
-			mwan3_nft_push "add rule inet fw4 mwan3_rule_$1 meta mark & $MMX_MASK != 0 update @mwan3_sticky_v6_${rule} { ip6 saddr timeout ${timeout}s : meta mark & $MMX_MASK }"
-		fi
+		# After the policy assigns a mark, populate the matching per-member
+		# sticky set so subsequent packets from this saddr stay on the same WAN.
+		for _entry in $_policy_member_marks; do
+			_m_id="${_entry%%:*}"
+			_m_mark="${_entry##*:}"
+			_setname="mwan3_sticky_${_fam_short}_${rule}_${_m_id}"
+
+			mwan3_nft_push "add rule inet fw4 mwan3_rule_$1 meta mark & $MMX_MASK == $_m_mark update @${_setname} { ${_saddr_kw} timeout ${timeout}s }"
+		done
 
 		policy_action="jump mwan3_rule_$1"
 	fi
@@ -1195,14 +1252,16 @@ mwan3_report_policies()
 
 	# Check if numgen is used (load balancing)
 	if echo "$output" | grep -q "numgen"; then
-		# Parse numgen map entries to extract marks and weights
+		# Parse numgen vmap entries to extract marks and weights.
+		# v3.1.5+ form: "N-M : jump mwan3_or_meta_0xMARK" (or "N : jump ...").
 		# nft normalizes single-value ranges (e.g. 0-0) to plain values (e.g. 0),
-		# so handle both "N-M : 0xMARK" (weight>1) and "N : 0xMARK" (weight=1)
+		# so handle both range and bare-value keys. The mark hex is now embedded
+		# in the setter chain name rather than appearing as the map value.
 		total=$(echo "$output" | grep -oE 'mod [0-9]+' | awk '{print $2}')
-		echo "$output" | grep -oE '([0-9]+-[0-9]+|[0-9]+) : 0x[0-9a-f]+' | while read -r entry; do
+		echo "$output" | grep -oE '([0-9]+-[0-9]+|[0-9]+) : jump mwan3_or_meta_0x[0-9a-f]+' | while read -r entry; do
 			local range range_start range_end mark_val
 			range="${entry%% *}"
-			mark_val="${entry##* }"
+			mark_val="0x${entry##*_0x}"
 			if echo "$range" | grep -q '-'; then
 				range_start="${range%%-*}"
 				range_end="${range##*-}"

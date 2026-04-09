@@ -83,6 +83,90 @@ mwan3_nft_mark_expr()
 	echo "meta mark set meta mark & $complement | $value"
 }
 
+# Canonicalise a mark value (e.g. 0x100, 0x00000100) to a stable chain-name suffix.
+# Used to name the per-mark OR-immediate setter chains. Always emits lowercase
+# 0x%x form so two callers computing the same mark land on the same chain name.
+mwan3_or_chain_suffix()
+{
+	printf "0x%x" $(($1))
+}
+
+# Build the per-mark OR-immediate setter chains used to synthesise non-destructive
+# cross-register copies via vmap dispatch. For each mark M in the configured set
+# of valid mwan3 mark values we create:
+#   chain mwan3_or_meta_<M>:  meta mark set meta mark | M
+#   chain mwan3_or_ct_<M>  :  ct   mark set ct   mark | M
+# These chains are jumped into from vmap statements that key on the masked value
+# of the source register; the runtime register value is "lifted" into the
+# immediate operand of each branch's set statement, sidestepping the kernel
+# limitation that an nft set-statement expression tree may reference at most one
+# runtime source register. With these helpers in place, both restore (ct -> meta)
+# and save (meta -> ct) become non-destructive in the unmasked bits, which
+# removes mwan3's previous priority dependency on pbr.
+mwan3_build_or_chains_nft()
+{
+	local id mark suffix want
+
+	# Compute the full set of mark values that may need a setter chain:
+	# every per-iface mark id 1..MWAN3_INTERFACE_MAX, plus the three special
+	# marks (default, blackhole, unreachable).
+	want=""
+	for id in $(seq 1 "$MWAN3_INTERFACE_MAX"); do
+		mark=$(mwan3_id2mask id MMX_MASK)
+		suffix=$(mwan3_or_chain_suffix "$mark")
+		want="$want $suffix"
+	done
+	want="$want $(mwan3_or_chain_suffix "$MMX_DEFAULT")"
+	want="$want $(mwan3_or_chain_suffix "$MMX_BLACKHOLE")"
+	want="$want $(mwan3_or_chain_suffix "$MMX_UNREACHABLE")"
+
+	# Always flush+repopulate. A previous idempotency check that only verified
+	# chain *existence* could leave empty chain bodies wedged after a partial
+	# batch failure, with no recovery path. ~126 trivial statements; cheap.
+	mwan3_nft_batch_start
+	for suffix in $want; do
+		mwan3_nft_push "add chain inet fw4 mwan3_or_meta_${suffix}"
+		mwan3_nft_push "add chain inet fw4 mwan3_or_ct_${suffix}"
+		mwan3_nft_push "flush chain inet fw4 mwan3_or_meta_${suffix}"
+		mwan3_nft_push "flush chain inet fw4 mwan3_or_ct_${suffix}"
+		mwan3_nft_push "add rule inet fw4 mwan3_or_meta_${suffix} meta mark set meta mark | ${suffix}"
+		mwan3_nft_push "add rule inet fw4 mwan3_or_ct_${suffix} ct mark set ct mark | ${suffix}"
+	done
+	mwan3_nft_batch_commit
+}
+
+# Build the verdict-map body of a vmap statement that, given a key set of
+# mark values, jumps to the matching mwan3_or_<reg>_<mark> setter chain.
+# Args: $1 = "meta" or "ct" (target register), $2... = mark values
+# Result echoed as the body for use as: <key-expr> vmap { <body> }
+mwan3_or_vmap_body()
+{
+	local reg="$1"; shift
+	local mark suffix first=1 body=""
+	for mark in "$@"; do
+		suffix=$(mwan3_or_chain_suffix "$mark")
+		if [ $first -eq 1 ]; then
+			body="${suffix} : jump mwan3_or_${reg}_${suffix}"
+			first=0
+		else
+			body="${body}, ${suffix} : jump mwan3_or_${reg}_${suffix}"
+		fi
+	done
+	echo "$body"
+}
+
+# Enumerate every mark value that needs to appear in the restore/save vmaps:
+# all per-iface marks plus the three specials. Echoes a space-separated list.
+mwan3_all_marks()
+{
+	local id
+	for id in $(seq 1 "$MWAN3_INTERFACE_MAX"); do
+		mwan3_id2mask id MMX_MASK
+		printf " "
+	done
+	printf "%s %s %s\n" "$MMX_DEFAULT" "$MMX_BLACKHOLE" "$MMX_UNREACHABLE"
+}
+
 # Ensure all mwan3 nftables framework objects exist with correct flags.
 # Always deletes and recreates sets to guarantee auto-merge is present.
 mwan3_ensure_nft_framework()
@@ -109,8 +193,8 @@ mwan3_ensure_nft_framework()
 	mwan3_nft_push "add set inet fw4 mwan3_dynamic_v6 { type ipv6_addr; flags interval; auto-merge; }"
 
 	# Hook chains (base chains with type/hook/priority)
-	mwan3_nft_push "add chain inet fw4 mwan3_prerouting { type filter hook prerouting priority mangle - 1; policy accept; }"
-	mwan3_nft_push "add chain inet fw4 mwan3_output { type route hook output priority mangle - 1; policy accept; }"
+	mwan3_nft_push "add chain inet fw4 mwan3_prerouting { type filter hook prerouting priority mangle + 1; policy accept; }"
+	mwan3_nft_push "add chain inet fw4 mwan3_output { type route hook output priority mangle + 1; policy accept; }"
 
 	# Internal chains (jumped to from hook chains)
 	mwan3_nft_push "add chain inet fw4 mwan3_ifaces_in"
