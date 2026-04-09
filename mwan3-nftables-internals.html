@@ -95,7 +95,7 @@
 <h1>mwan3 nftables Implementation</h1>
 <p><strong>Developer Reference</strong> &mdash; OpenWrt 25.12+<br>
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
-<em>Package version: 3.1.4</em></p>
+<em>Package version: 3.2</em></p>
 
 <nav class="toc">
 <strong>Contents</strong>
@@ -153,10 +153,13 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
       <li><a href="#enh-conntrack-flush">15.1 Selective Conntrack Flush on Interface Down</a></li>
       <li><a href="#enh-flow-offloading">15.2 Software Flow Offloading Co-existence</a></li>
       <li><a href="#enh-track-gateway">15.3 Automatic Gateway Tracking (track_gateway)</a></li>
+      <li><a href="#enh-snat4">15.4 Postrouting SNAT for Rerouted Router-Originated Traffic</a></li>
+      <li><a href="#enh-snat6">15.5 Opt-in IPv6 SNAT via Per-Interface snat6</a></li>
     </ul>
   </li>
   <li><a href="#changelog">16. Changelog</a>
     <ul>
+      <li><a href="#version-3-2">Version 3.2</a></li>
       <li><a href="#version-3-1-4">Version 3.1.4</a></li>
       <li><a href="#version-3-1-3">Version 3.1.3</a></li>
       <li><a href="#version-3-1-2">Version 3.1.2</a></li>
@@ -171,12 +174,13 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
 <!-- ================================================================== -->
 <h2 id="overview">1. Architecture Overview</h2>
 
-<p>mwan3 is OpenWrt's multi-WAN policy routing framework. It classifies packets using <strong>firewall marks</strong>, then uses <code>ip rule</code> entries to route marked packets through per-interface routing tables. The nftables port replaces all iptables/ipset usage with nftables equivalents while keeping the ip rule/route management, health tracking (<code>mwan3track</code>), and socket-level mark injection (<code>libwrap_mwan3_sockopt.so</code>) completely unchanged.</p>
+<p>mwan3 is OpenWrt's multi-WAN policy routing framework. It classifies packets using <strong>firewall marks</strong>, then uses <code>ip rule</code> entries to route marked packets through per-interface routing tables. The nftables port replaces all iptables/ipset usage with nftables equivalents while keeping the ip rule/route management unchanged.</p>
 
 <h3>Key Design Decisions</h3>
 <ul>
   <li><strong>Lives inside <code>table inet fw4</code></strong> &mdash; mwan3 chains and sets are defined inside fw4's own table, not a separate table. This is how fw4 extension points (<code>table-post/*.nft</code>) work.</li>
   <li><strong>Own-priority hook chains</strong> &mdash; <code>mwan3_prerouting</code> and <code>mwan3_output</code> are registered at <code>priority mangle + 1</code>, running after fw4's own mangle chains but before any higher-priority processing.</li>
+  <li><strong>Non-destructive mark save/restore</strong> &mdash; Connmark save and restore are masked to mwan3's own bit-range (<code>MMX_MASK</code>) and never touch bits owned by other packages such as pbr. This is the same property the iptables version had implicitly via <code>CONNMARK --restore-mark --nfmask</code>. The naive nftables translation cannot do it in one rule because the kernel rejects compound two-source bitwise expressions; mwan3 synthesises masked save/restore through a vmap-dispatch technique built from per-mark OR-immediate setter chains. See <a href="#mark-system">Section 2 &mdash; Connmark Operations</a>.</li>
   <li><strong>Static skeleton + dynamic rules</strong> &mdash; A static <code>.nft</code> file defines empty sets and chains at fw4 startup. All rules are added dynamically by shell scripts since they depend on the configurable <code>MMX_MASK</code>.</li>
   <li><strong>inet family</strong> &mdash; Chains handle both IPv4 and IPv6 in a single pass. Sets remain type-specific (separate v4/v6 sets) since nftables requires a single address type per set.</li>
   <li><strong>Batch operations</strong> &mdash; Multi-element operations (connected set rebuild, policy chain rebuild, user rules) are batched via a temp file and committed with <code>nft -f</code> for atomicity and performance.</li>
@@ -260,17 +264,82 @@ Interface 5 (binary 000101) -> 0x0500   (bits 8+10)
 <strong>Operator syntax:</strong> Always use the <code>&amp;</code> and <code>|</code> <em>symbols</em>, not the <code>and</code>/<code>or</code> keywords. The nft parser treats keywords ambiguously after expressions like <code>meta mark set ct mark</code>&mdash;it cannot tell if <code>and</code> starts a new match or a bitwise operation. Symbols are unambiguous.
 </div>
 
-<h3>Connmark Operations</h3>
-<pre>
-# Restore mark from conntrack (first packet of existing flow):
-meta mark set ct mark &amp; $MMX_MASK
+<h3 id="connmark-operations">Connmark Operations</h3>
 
-# Save mark to conntrack:
-ct mark set meta mark
+<p>The iptables version of mwan3 used:</p>
+<pre>
+-j CONNMARK --restore-mark --nfmask $MMX_MASK --ctmask $MMX_MASK
+-j CONNMARK --save-mark    --nfmask $MMX_MASK --ctmask $MMX_MASK
 </pre>
 
+<p>The <code>--nfmask</code>/<code>--ctmask</code> arguments scope both operations to mwan3's bit-range only &mdash; bits owned by other packages (such as pbr's <code>0x00ff0000</code> range) are left untouched in both directions. This non-destructive coexistence is essential when mwan3 shares the mark register with another mark-using package.</p>
+
+<p>The naive nftables translation would be a compound two-source bitwise:</p>
+<pre>
+# Naive masked restore (does NOT compile):
+meta mark set (meta mark &amp; ~MMX_MASK) | (ct mark &amp; MMX_MASK)
+
+# Naive masked save (does NOT compile):
+ct mark set (ct mark &amp; ~MMX_MASK) | (meta mark &amp; MMX_MASK)
+</pre>
+
+<p>The kernel rejects both with "Operation not supported": an nft set-statement can reference at most one runtime source register on its right-hand side. The single-source forms that <em>do</em> compile are:</p>
+<pre>
+meta mark set ct mark &amp; MMX_MASK     # destructive: clobbers all non-mwan3 bits in meta mark
+ct mark   set meta mark              # destructive: clobbers all non-mwan3 bits in ct   mark
+</pre>
+
+<p>Earlier port revisions used these destructive forms and worked around the resulting pbr breakage by changing chain priorities so that mwan3 ran <em>before</em> pbr (see <a href="#version-3-1-4">Changelog Version 3.1.4</a>). That ordering papered over the symptom for one specific package but left the underlying behaviour broken &mdash; any second mark-using package would still have its bits zeroed.</p>
+
+<h4>vmap-dispatch save/restore (Version 3.2)</h4>
+
+<p>Version 3.2 restores iptables-equivalent masked semantics by synthesising the masked-restore and masked-save from a primitive that the kernel <em>does</em> allow: OR-ing a <em>literal immediate</em> into a single register.</p>
+
+<pre>
+meta mark set meta mark | &lt;constant&gt;     # non-destructive: only sets bits, never clears
+ct mark   set ct   mark | &lt;constant&gt;     # same on the conntrack side
+</pre>
+
+<p>The runtime source value is bridged to the constant immediate via a verdict map (<code>vmap</code>) that dispatches on the masked source bits into per-mark setter chains:</p>
+
+<pre>
+# Restore: copy mwan3 bits from ct mark into meta mark, non-destructively
+meta mark &amp; MMX_MASK == 0 ct mark &amp; MMX_MASK vmap {
+    0x0100 : jump mwan3_or_meta_0x100,
+    0x0200 : jump mwan3_or_meta_0x200,
+    ...
+    0x3f00 : jump mwan3_or_meta_0x3f00
+}
+
+chain mwan3_or_meta_0x0100 { meta mark set meta mark | 0x0100 ; return }
+chain mwan3_or_meta_0x0200 { meta mark set meta mark | 0x0200 ; return }
+...
+
+# Save: same trick, opposite direction
+ct mark set ct mark &amp; MMX_MASK_COMPLEMENT     # clear ONLY mwan3 bits in ct mark
+meta mark &amp; MMX_MASK vmap {
+    0x0100 : jump mwan3_or_ct_0x0100,
+    ...
+}
+
+chain mwan3_or_ct_0x0100 { ct mark set ct mark | 0x0100 ; return }
+...
+</pre>
+
+<p><strong>Properties:</strong></p>
+<ul>
+  <li><strong>Restore</strong> is purely additive (<code>meta mark | &lt;imm&gt;</code>); bits in meta mark not owned by mwan3 are preserved across restore.</li>
+  <li><strong>Save</strong> clears only mwan3's own bits (<code>ct mark &amp; MMX_MASK_COMPLEMENT</code>, where <code>MMX_MASK_COMPLEMENT = ~MMX_MASK &amp; 0xFFFFFFFF</code>) before OR-ing the new value in. Bits in ct mark owned by other packages survive the save unchanged.</li>
+  <li>The dispatch tables are bounded: with the default <code>MMX_MASK = 0x3F00</code>, there are 63 possible non-zero mwan3 mark values, so 63 setter chains per direction (126 total). All chains are 2-statement skeletons (<code>meta/ct mark set ... | &lt;imm&gt;</code> + <code>return</code>).</li>
+  <li>The technique is <em>order-independent</em> with respect to any other package that operates on a disjoint bit-range. Whether mwan3 runs before or after pbr in the prerouting hook stack, both packages' mark bits arrive at the routing decision intact.</li>
+</ul>
+
+<p><strong>Why this works where the naive form does not:</strong> the kernel constraint is on the <em>expression</em>, not the <em>control flow</em>. The kernel will not let one rule combine two register sources, but it will happily let a vmap dispatch on a runtime register value into a chain whose body uses a literal immediate. The dispatch chain materialises at runtime exactly the value you wanted to OR, baked into a constant when the mwan3 init scripts emit the rule.</p>
+
+<p><strong>Cost:</strong> chain count, not packet-path overhead. Each packet traverses one extra <code>vmap</code> lookup (O(log) in the kernel's set lookup) and one extra <code>jump</code>/<code>return</code> per save and per restore. The 126 setter chains add no fast-path cost &mdash; they are visited via constant-time dispatch, and most never fire on any given packet.</p>
+
 <div class="note">
-<strong>Why not preserve non-mwan3 bits?</strong> The ideal connmark save would be <code>ct mark set ct mark &amp; ~MASK | meta mark &amp; MASK</code> to preserve other bits. However, the kernel does not support compound two-source bitwise expressions (mixing <code>ct mark</code> and <code>meta mark</code> in one set expression fails with "Operation not supported"). Since mwan3 owns its mask bits exclusively, saving the full <code>meta mark</code> is safe and equivalent in practice.
+<strong>The kernel limitation has not changed.</strong> Compound two-source bitwise set expressions are still rejected. vmap-dispatch is a workaround built from primitives that <em>are</em> permitted; it does not require any new kernel capability.
 </div>
 
 <hr>
@@ -292,6 +361,7 @@ ct mark set meta mark
 <tr><td><code>mwan3_dynamic_v6</code></td><td>set (ipv6_addr, interval, auto-merge)</td><td>Dynamically managed networks</td></tr>
 <tr><td><code>mwan3_prerouting</code></td><td>chain (filter, prerouting, mangle+1)</td><td>Entry point for forwarded/incoming traffic</td></tr>
 <tr><td><code>mwan3_output</code></td><td>chain (route, output, mangle+1)</td><td>Entry point for locally-originated traffic</td></tr>
+<tr><td><code>mwan3_postrouting</code></td><td>chain (nat, postrouting, srcnat-1)</td><td>Opt-in IPv6 SNAT for router-originated traffic rerouted by mwan3 &mdash; see <a href="#enh-snat6">§15.5</a></td></tr>
 <tr><td><code>mwan3_ifaces_in</code></td><td>chain (regular)</td><td>Dispatches to per-interface chains</td></tr>
 <tr><td><code>mwan3_rules</code></td><td>chain (regular)</td><td>User-defined classification rules</td></tr>
 <tr><td><code>mwan3_connected</code></td><td>chain (regular)</td><td>Marks traffic to connected networks as default</td></tr>
@@ -310,8 +380,10 @@ ct mark set meta mark
 <tr><td><code>mwan3_iface_in_&lt;name&gt;</code></td><td>chain</td><td><code>mwan3_create_iface_nft()</code></td></tr>
 <tr><td><code>mwan3_policy_&lt;name&gt;</code></td><td>chain</td><td><code>mwan3_create_policies_nft()</code></td></tr>
 <tr><td><code>mwan3_rule_&lt;name&gt;</code></td><td>chain</td><td><code>mwan3_set_user_nft_rule()</code> (sticky rules only)</td></tr>
-<tr><td><code>mwan3_sticky_v4_&lt;rule&gt;</code></td><td>map (ipv4_addr : mark)</td><td><code>mwan3_set_sticky_map()</code></td></tr>
-<tr><td><code>mwan3_sticky_v6_&lt;rule&gt;</code></td><td>map (ipv6_addr : mark)</td><td><code>mwan3_set_sticky_map()</code></td></tr>
+<tr><td><code>mwan3_or_meta_&lt;mark&gt;</code></td><td>chain (&times;63 with default <code>MMX_MASK</code>)</td><td><code>mwan3_build_or_chains_nft()</code> &mdash; non-destructive restore setter chains</td></tr>
+<tr><td><code>mwan3_or_ct_&lt;mark&gt;</code></td><td>chain (&times;63 with default <code>MMX_MASK</code>)</td><td><code>mwan3_build_or_chains_nft()</code> &mdash; non-destructive save setter chains</td></tr>
+<tr><td><code>mwan3_sticky_v4_&lt;rule&gt;_&lt;id&gt;</code></td><td>set (ipv4_addr, timeout) &mdash; one per policy member</td><td><code>mwan3_set_user_nft_rule()</code></td></tr>
+<tr><td><code>mwan3_sticky_v6_&lt;rule&gt;_&lt;id&gt;</code></td><td>set (ipv6_addr, timeout) &mdash; one per policy member</td><td><code>mwan3_set_user_nft_rule()</code></td></tr>
 </table>
 
 <div class="note">
@@ -333,7 +405,9 @@ Packet enters mwan3_prerouting (or mwan3_output)
   |
   |-- mark &amp; MMX_MASK == 0?
   |     |
-  |     +-- YES: Restore mark from conntrack (ct mark &amp; MMX_MASK)
+  |     +-- YES: Restore mwan3 bits from conntrack via vmap-dispatch
+  |     |        (ct mark &amp; MMX_MASK -> jump mwan3_or_meta_&lt;mark&gt;;
+  |     |         non-destructive &mdash; preserves non-mwan3 bits in meta mark)
   |     |
   |     +-- Still mark == 0?
   |           |
@@ -351,8 +425,10 @@ Packet enters mwan3_prerouting (or mwan3_output)
   |                 jump mwan3_rules     (user classification rules)
   |                   -> jump to policy chain / set mark directly
   |
-  |-- Save mark to conntrack:
-  |     ct mark = meta mark
+  |-- Save mwan3 bits to conntrack via vmap-dispatch:
+  |     ct mark &amp;= MMX_MASK_COMPLEMENT          (clear only mwan3 bits)
+  |     meta mark &amp; MMX_MASK -> jump mwan3_or_ct_&lt;mark&gt;
+  |     (non-destructive &mdash; preserves non-mwan3 bits in ct mark)
   |
   |-- mark &amp; MMX_MASK != MMX_DEFAULT?
   |     (Traffic that got a specific interface mark, not "default")
@@ -379,8 +455,12 @@ Packet enters mwan3_prerouting (or mwan3_output)
 
 <!-- 5.1 -->
 <h3 id="file-nft">5.1 <span class="file-path">usr/share/nftables.d/table-post/10-mwan3.nft</span> <span class="tag tag-static">static</span></h3>
-<p>The static nftables framework file. Included inside <code>table inet fw4 { }</code> by fw4 at startup. Defines 6 named sets (all empty, with <code>flags interval</code> and <code>auto-merge</code> for CIDR support with overlapping element handling) and 7 skeleton chains (all empty). No rules are present&mdash;all rules are added dynamically by the shell scripts because they depend on the configurable <code>MMX_MASK</code> value.</p>
-<p>The <code>mwan3_prerouting</code> chain is type <code>filter</code> at priority <code>mangle + 1</code>. The <code>mwan3_output</code> chain is type <code>route</code> at the same priority.</p>
+<p>The static nftables framework file. Included inside <code>table inet fw4 { }</code> by fw4 at startup. Defines 6 named sets (all empty, with <code>flags interval</code> and <code>auto-merge</code> for CIDR support with overlapping element handling) and 8 skeleton chains (all empty). No rules are present&mdash;all rules are added dynamically by the shell scripts because they depend on the configurable <code>MMX_MASK</code> value.</p>
+<ul>
+  <li><code>mwan3_prerouting</code> &mdash; type <code>filter</code> at priority <code>mangle + 1</code></li>
+  <li><code>mwan3_output</code> &mdash; type <code>route</code> at priority <code>mangle + 1</code> (<code>type route</code> is required so mark mutations trigger a routing re-lookup for locally-originated traffic)</li>
+  <li><code>mwan3_postrouting</code> &mdash; type <code>nat</code> at priority <code>srcnat - 1</code>. Opt-in IPv6 SNAT chain for router-originated traffic that mwan3 has rerouted onto a different WAN. IPv4 router-originated traffic is handled by fw4's unguarded <code>masquerade</code> and needs no explicit rule here. See <a href="#enh-snat6">§15.5</a>.</li>
+</ul>
 
 <!-- 5.2 -->
 <h3 id="file-common">5.2 <span class="file-path">lib/mwan3/common.sh</span></h3>
@@ -412,7 +492,7 @@ Packet enters mwan3_prerouting (or mwan3_output)
 <p>procd service script. Handles:</p>
 <ul>
   <li><strong><code>start_service()</code></strong>: Initializes everything in order: ensure nft framework &rarr; sets &rarr; general rules &rarr; general nft chains &rarr; interface hotplug &rarr; policies &rarr; user rules. Starts <code>mwan3track</code> instances and <code>mwan3rtmon</code> (one per address family).</li>
-  <li><strong><code>stop_service()</code></strong>: Tears down in reverse: shuts down interfaces, flushes ip routes/rules, flushes all mwan3 nft chains, deletes dynamic chains (keeps skeleton chains from the static .nft file), flushes sets, deletes sticky maps.</li>
+  <li><strong><code>stop_service()</code></strong>: Tears down in reverse: shuts down interfaces, flushes ip routes/rules, flushes all mwan3 nft chains, deletes dynamic chains (keeps skeleton chains from the static .nft file), flushes sets, flushes sticky sets.</li>
   <li><strong><code>start_tracker()</code></strong>: Launches a <code>mwan3track</code> procd instance per enabled interface with track IPs.</li>
   <li><strong><code>service_running()</code></strong>: Returns true if <code>$MWAN3_STATUS_DIR</code> exists.</li>
 </ul>
@@ -458,7 +538,7 @@ mwan3_init()
 <table>
 <tr><th>Action</th><th>Operations</th></tr>
 <tr><td><code>ifup</code></td><td>Update peer track IP (if <code>track_gateway</code> enabled), create interface nft chain, create ip rules, set hotplug state, create routes (if not init), set general rules, rebuild policies (if online and not init). Signal tracker with USR2.</td></tr>
-<tr><td><code>ifdown</code></td><td>Set offline state, selectively flush conntrack entries for this interface's fwmark, delete sticky map entries, delete ip rules, delete routes, delete interface nft chain. Signal tracker with USR1. Rebuild policies.</td></tr>
+<tr><td><code>ifdown</code></td><td>Set offline state, selectively flush conntrack entries for this interface's fwmark, flush sticky set entries for this interface, delete ip rules, delete routes, delete interface nft chain. Signal tracker with USR1. Rebuild policies.</td></tr>
 <tr><td><code>connected</code></td><td>Set online state, rebuild policies</td></tr>
 <tr><td><code>disconnected</code></td><td>Set offline state, rebuild policies</td></tr>
 </table>
@@ -630,7 +710,7 @@ firewall.mwan3_reload.fw4_compatible=1</code></pre>
 <tr><td class="func-sig">mwan3_create_iface_nft iface device</td><td>Creates (or flushes) <code>mwan3_iface_in_&lt;iface&gt;</code> chain. Adds rules matching on <code>iifname</code> and address family: source in connected/custom/dynamic &rarr; MMX_DEFAULT; otherwise &rarr; interface mark. Adds jump from <code>mwan3_ifaces_in</code> if not already present.</td></tr>
 <tr><td class="func-sig">mwan3_rebuild_iface_nft iface</td><td>Rebuilds a single interface's nft chain if the interface is enabled, the correct family is available, and the interface is currently up (verified via ubus). Used during fw4 reload recovery to restore all interface chains. Calls <code>mwan3_create_iface_nft()</code> after resolving the L3 device from netifd.</td></tr>
 <tr><td class="func-sig">mwan3_delete_iface_nft iface</td><td>Removes the jump rule from <code>mwan3_ifaces_in</code> (by handle lookup) then flushes and deletes the interface chain.</td></tr>
-<tr><td class="func-sig">mwan3_delete_iface_map_entries iface</td><td>Iterates all <code>mwan3_sticky_*</code> maps, finds entries whose mark matches this interface, and deletes them.</td></tr>
+<tr><td class="func-sig">mwan3_delete_iface_map_entries iface</td><td>Iterates all <code>mwan3_sticky_v[46]_*</code> sets in the <code>inet</code> family, finds sets whose name ends with <code>_&lt;id&gt;</code> (this interface's id), and flushes them. Sets are flushed rather than deleted because rule chains may still reference the set name.</td></tr>
 <tr><td class="func-sig">mwan3_create_iface_rules iface device</td><td>Adds <code>ip rule</code> entries: pref id+1000 (iif lookup), pref id+2000 (fwmark lookup), pref id+3000 (fwmark unreachable). <em>Unchanged from iptables version.</em></td></tr>
 <tr><td class="func-sig">mwan3_delete_iface_rules iface</td><td>Removes ip rules matching this interface's ID range. <em>Unchanged.</em></td></tr>
 <tr><td class="func-sig">mwan3_create_iface_route iface device</td><td>Copies routes from main table into the per-interface table. <em>Unchanged.</em></td></tr>
@@ -659,8 +739,7 @@ $NFT delete rule inet fw4 mwan3_ifaces_in handle "$handle"</code></pre>
 
 <table>
 <tr><th>Function</th><th>Purpose</th></tr>
-<tr><td class="func-sig">mwan3_set_sticky_map rule timeout</td><td>Creates <code>mwan3_sticky_v4_&lt;rule&gt;</code> and <code>_v6_</code> maps if they don't exist. Maps are type <code>ipv4_addr : mark</code> with <code>flags dynamic,timeout</code>.</td></tr>
-<tr><td class="func-sig">mwan3_set_sticky_nft iface rule ipv policy</td><td>(Legacy sticky approach) Inserts per-interface restore/clear rules at the beginning of a sticky rule chain. Not used in the primary sticky path (map approach is used instead).</td></tr>
+<tr><td class="func-sig">mwan3_get_policy_members_for_family policy family</td><td>Iterates the members of a policy config via <code>config_list_foreach</code>. For each member whose interface matches the requested family, resolves the interface id and computes its mark, and accumulates <code>&lt;id&gt;:&lt;mark&gt;</code> tuples into <code>$_policy_member_marks</code>. Used by the sticky path in <code>mwan3_set_user_nft_rule()</code> to enumerate per-member sets.</td></tr>
 </table>
 
 <!-- 6.7 -->
@@ -668,7 +747,7 @@ $NFT delete rule inet fw4 mwan3_ifaces_in handle "$handle"</code></pre>
 
 <table>
 <tr><th>Function</th><th>Purpose</th></tr>
-<tr><td class="func-sig">mwan3_set_user_nft_rule rule ipv</td><td>Builds and adds a single nft rule to <code>mwan3_rules</code>. Translates UCI config options (proto, src_ip, dest_ip, src_port, dest_port, src_iface, ipset) into nft match expressions. Handles sticky routing (creates sticky map, map lookup chain). Handles logging rules. Pre-creates missing nft sets (e.g., dnsmasq nftsets that haven't started yet) to prevent batch failures.</td></tr>
+<tr><td class="func-sig">mwan3_set_user_nft_rule rule ipv</td><td>Builds and adds a single nft rule to <code>mwan3_rules</code>. Translates UCI config options (proto, src_ip, dest_ip, src_port, dest_port, src_iface, ipset) into nft match expressions. For sticky rules, calls <code>mwan3_get_policy_members_for_family()</code> and builds a <code>mwan3_rule_&lt;name&gt;</code> chain with per-member address sets and OR-immediate restore/save (see §8). Handles logging rules. Pre-creates missing nft sets (e.g., dnsmasq nftsets that haven't started yet) to prevent batch failures.</td></tr>
 <tr><td class="func-sig">mwan3_set_user_rules</td><td>Flushes <code>mwan3_rules</code> chain, then iterates all rule configs for both ipv4 and ipv6, calling <code>mwan3_set_user_nft_rule</code> for each. Uses a single batch.</td></tr>
 <tr><td class="func-sig">mwan3_set_user_iface_rules iface device</td><td>Called on ifup to check if the rules chain needs rebuilding (if this interface is a <code>src_iface</code> in any rule).</td></tr>
 </table>
@@ -762,43 +841,44 @@ nft add rule inet fw4 mwan3_policy_balanced \
 <!-- ================================================================== -->
 <h2 id="sticky-detail">8. Sticky Routing Detail</h2>
 
-<p>Sticky routing ensures that repeat connections from the same source IP use the same WAN interface (important for HTTPS sessions, banking sites, etc.). The iptables version used <code>ipset hash:ip,mark</code> sets. The nftables version uses <strong>maps</strong> with regular <code>map</code> lookup (not <code>vmap</code>&mdash;see note below).</p>
+<p>Sticky routing ensures that repeat connections from the same source IP use the same WAN interface (important for HTTPS sessions, banking sites, etc.). The iptables version used <code>ipset hash:ip,mark</code> sets. The nftables version uses per-member <strong>address sets</strong> with OR-immediate vmap dispatch for non-destructive mark restore.</p>
+
+<h3>Why Per-Member Sets Instead of a Single Map</h3>
+<p>An earlier implementation used a single <code>ipv4_addr : mark</code> map per rule with <code>meta mark set ip saddr map @mwan3_sticky_v4_https</code>. This is destructive: the map lookup overwrites meta mark entirely with the stored value, wiping any bits set by other packages (pbr etc.). With the vmap-dispatch infrastructure introduced in v3.2, the correct approach is a plain address set per policy member, with the mark encoded in the chain name rather than the map value. The corresponding <code>mwan3_or_meta_&lt;mark&gt;</code> setter chain ORs only the mwan3 bits into meta mark, preserving everything else.</p>
 
 <h3>Data Structure</h3>
 <pre>
-# Created per sticky rule:
-nft add map inet fw4 mwan3_sticky_v4_https \
-    '{ type ipv4_addr : mark; flags dynamic,timeout; timeout 600s; }'
+# Created per policy member for rule "https"
+# (policy "balanced" has members: wan id=1 mark=0x100, wanb id=2 mark=0x200)
+nft add set inet fw4 mwan3_sticky_v4_https_1 { type ipv4_addr; flags timeout; timeout 600s; }
+nft add set inet fw4 mwan3_sticky_v4_https_2 { type ipv4_addr; flags timeout; timeout 600s; }
 </pre>
-<p>This is a dynamic map that stores <code>source_ip &rarr; mark_value</code> entries, each with a configurable timeout.</p>
+<p>One set per policy member, per rule, per address family. Sets hold source addresses only (no value side). The mark to apply is encoded in which set the saddr is found in.</p>
 
-<h3>Rule Chain Structure (for sticky rule "https")</h3>
+<h3>Rule Chain Structure (for sticky rule "https", policy "balanced", wan=id1 wanb=id2)</h3>
 <pre>
 chain mwan3_rule_https {
-    # 1. Try to restore from sticky map (regular map lookup)
-    #    If source IP is in the map, the stored mark is applied
-    meta mark set ip saddr map @mwan3_sticky_v4_https
+    # Restore: if saddr is in this member's set, OR its mark into meta mark
+    # (non-destructive &mdash; pbr bits in meta mark are preserved)
+    ip saddr @mwan3_sticky_v4_https_1 jump mwan3_or_meta_0x100
+    ip saddr @mwan3_sticky_v4_https_2 jump mwan3_or_meta_0x200
 
-    # 2. New flows (no map entry) fall through to the policy
+    # New flows (no set match, mark still 0) fall through to policy
     meta mark &amp; 0x3f00 == 0 jump mwan3_policy_balanced
 
-    # 3. After policy selection: record the chosen mark
-    meta mark &amp; 0x3f00 != 0 update @mwan3_sticky_v4_https \
-        { ip saddr timeout 600s : meta mark &amp; 0x3f00 }
+    # Save: after policy assigns a mark, record saddr in the matching member's set
+    meta mark &amp; 0x3f00 == 0x100 update @mwan3_sticky_v4_https_1 { ip saddr timeout 600s }
+    meta mark &amp; 0x3f00 == 0x200 update @mwan3_sticky_v4_https_2 { ip saddr timeout 600s }
 }
 </pre>
-
-<div class="warn">
-<strong>map vs vmap:</strong> An earlier implementation used <code>vmap</code> (verdict map) for sticky lookup. This is incorrect: <code>vmap</code> expects verdict values (<code>accept</code>, <code>drop</code>, <code>jump</code>) as the mapped value, not marks. For IP&rarr;mark lookup, a regular <code>map</code> must be used: <code>meta mark set ip saddr map @mapname</code>.
-</div>
 
 <h3>Flow for a Sticky Rule</h3>
 <ol>
   <li>Packet arrives at <code>mwan3_rules</code> chain</li>
   <li>Matches the user rule &rarr; <code>jump mwan3_rule_https</code></li>
-  <li><strong>Returning source</strong>: map finds IP, sets mark via <code>meta mark set ip saddr map @...</code>, then the <code>meta mark &amp; MMX_MASK == 0</code> guard on the policy jump is false (mark already set), so policy is skipped. The update rule refreshes the timeout.</li>
-  <li><strong>New source</strong>: map lookup produces no match (mark stays 0), falls through to policy chain which sets a mark, then the update rule records <code>src_ip &rarr; mark</code> in the map with the configured timeout</li>
-  <li>After timeout seconds of inactivity, the map entry expires and the source gets re-evaluated</li>
+  <li><strong>Returning source</strong>: saddr is found in one of the per-member sets &rarr; <code>jump mwan3_or_meta_&lt;mark&gt;</code> ORs only the mwan3 bits into meta mark (non-destructive). The policy jump guard is false (mark already set), so policy is skipped. The matching update rule refreshes the timeout.</li>
+  <li><strong>New source</strong>: no set match, mark stays 0. Falls through to the policy chain which assigns a mark. The matching update rule then adds saddr to the corresponding member's set with the configured timeout.</li>
+  <li>After timeout seconds of inactivity the set entry expires and the source is re-evaluated at next connection.</li>
 </ol>
 
 <hr>
@@ -851,7 +931,7 @@ chain mwan3_rule_https {
   +--> 25-mwan3 hotplug script
        +--> mwan3_set_iface_hotplug_state "offline"
        +--> mwan3_flush_conntrack()            flush conntrack entries for this iface's fwmark
-       +--> mwan3_delete_iface_map_entries()  clean sticky maps
+       +--> mwan3_delete_iface_map_entries()  flush sticky sets for this iface
        +--> mwan3_delete_iface_rules()        ip rule del
        +--> mwan3_delete_iface_route()        ip route flush table
        +--> mwan3_delete_iface_nft()          remove chain + jump rule
@@ -869,7 +949,7 @@ chain mwan3_rule_https {
   +--> delete dynamic chains (keep skeleton chains from .nft file)
   +--> final safety flush of skeleton chains
   +--> flush ALL mwan3_* sets
-  +--> delete sticky maps
+  +--> flush sticky sets
   +--> rm -rf status dirs
 
 Result: skeleton chains and empty sets remain (harmless).
@@ -935,11 +1015,9 @@ Result: skeleton chains and empty sets remain (harmless).
 
 <table>
 <tr><th>File</th><th>Reason</th></tr>
-<tr><td><code>usr/sbin/mwan3track</code></td><td>Uses <code>libwrap_mwan3_sockopt.so</code> (socket-level SO_MARK), no firewall interaction</td></tr>
 <tr><td><code>etc/hotplug.d/iface/26-mwan3-user</code></td><td>Just calls <code>/etc/mwan3.user</code>, no firewall code</td></tr>
 <tr><td><code>etc/config/mwan3</code></td><td>UCI schema is firewall-agnostic</td></tr>
 <tr><td><code>etc/mwan3.user</code></td><td>User script template, no firewall code</td></tr>
-<tr><td><code>src/sockopt_wrap.c</code></td><td>Uses SO_MARK kernel API, works with any firewall backend</td></tr>
 <tr><td><code>etc/uci-defaults/mwan3-migrate-flush_conntrack</code></td><td>UCI migration, no firewall code</td></tr>
 </table>
 
@@ -953,18 +1031,29 @@ nft list table inet fw4 | grep -A 50 'chain mwan3_'
 
 # List specific chain
 nft list chain inet fw4 mwan3_prerouting
+nft list chain inet fw4 mwan3_output
+nft list chain inet fw4 mwan3_postrouting
 nft list chain inet fw4 mwan3_ifaces_in
 nft list chain inet fw4 mwan3_policy_balanced
 
 # Check set contents
 nft list set inet fw4 mwan3_connected_v4
+nft list set inet fw4 mwan3_connected_v6
 nft list set inet fw4 mwan3_custom_v4
+nft list set inet fw4 mwan3_dynamic_v4
 
-# Check sticky map entries
-nft list map inet fw4 mwan3_sticky_v4_https
+# Check sticky set entries (per-member sets, id suffix = interface id)
+nft list set inet fw4 mwan3_sticky_v4_https_1
+nft list set inet fw4 mwan3_sticky_v6_https_1
+# List all sticky sets for a rule
+nft list sets inet fw4 | grep mwan3_sticky_v4_https
 
 # List all mwan3 chains (names only)
-nft list chains inet fw4 | grep mwan3_
+# Note: nft list chains only accepts an optional family, not a table name
+nft list chains inet | grep mwan3_
+
+# List OR-immediate setter chains (vmap dispatch, v3.2+)
+nft list chains inet | grep mwan3_or_
 
 # List all mwan3 sets (names only)
 nft list sets inet fw4 | grep mwan3_
@@ -1078,6 +1167,8 @@ uci show firewall.mwan3_reload
 
 <p>A "Track gateway" checkbox was added to the interface configuration modal, visible only when the internet protocol is set to IPv4. This exposes the <code>track_gateway</code> UCI option for automatic point-to-point peer/gateway discovery (see <a href="#enh-track-gateway">Section 15.3</a>).</p>
 
+<p>An "IPv6 SNAT" text field (<code>snat6</code>) was added in the same place, visible only when the internet protocol is set to IPv6. It accepts unset/<code>0</code> (off, default), <code>1</code> (SNAT to the interface's primary GUA), or a literal IPv6 address. See <a href="#enh-snat6">Section 15.5</a>.</p>
+
 <p>The help text for the <code>flush_conntrack</code> option was also updated to clarify that it flushes the entire global conntrack table, and that per-interface conntrack entries are now flushed automatically on ifdown (see <a href="#enh-conntrack-flush">Section 15.1</a>).</p>
 
 <hr>
@@ -1098,8 +1189,8 @@ uci show firewall.mwan3_reload
 <tr><td><code>-X chain</code></td><td><code>nft delete chain inet fw4 name</code></td><td>Must be empty first</td></tr>
 <tr><td><code>-D chain match...</code></td><td><code>nft delete rule ... handle N</code></td><td>Must look up handle with <code>nft -a</code></td></tr>
 <tr><td><code>-j MARK --set-xmark V/M</code></td><td><code>meta mark set meta mark &amp; ~M | V</code></td><td>See <code>mwan3_nft_mark_expr()</code>; use <code>&amp;</code>/<code>|</code> symbols not keywords</td></tr>
-<tr><td><code>-j CONNMARK --restore-mark --nfmask M</code></td><td><code>meta mark set ct mark &amp; MASK</code></td><td>Single-source expression; kernel doesn't support compound <code>meta mark | ct mark &amp; X</code></td></tr>
-<tr><td><code>-j CONNMARK --save-mark --nfmask M</code></td><td><code>ct mark set meta mark</code></td><td>Full overwrite; kernel doesn't support compound <code>ct mark &amp; ~M | meta mark &amp; M</code></td></tr>
+<tr><td><code>-j CONNMARK --restore-mark --nfmask M</code></td><td>vmap-dispatch into <code>mwan3_or_meta_&lt;imm&gt;</code> setter chains</td><td>Non-destructive masked restore. Kernel rejects the compound <code>(meta mark &amp; ~M) | (ct mark &amp; M)</code>; vmap-dispatch synthesises the same effect via per-mark OR-immediate setter chains. See <a href="#connmark-operations">§2 Connmark Operations</a>.</td></tr>
+<tr><td><code>-j CONNMARK --save-mark --nfmask M</code></td><td><code>ct mark set ct mark &amp; ~M</code>, then vmap-dispatch into <code>mwan3_or_ct_&lt;imm&gt;</code> setter chains</td><td>Non-destructive masked save. Same kernel limitation, same vmap-dispatch workaround in the opposite direction.</td></tr>
 <tr><td><code>-m mark --mark V/M</code></td><td><code>meta mark &amp; M == V</code></td><td></td></tr>
 <tr><td><code>-m set --match-set S dst</code></td><td><code>ip daddr @S</code></td><td></td></tr>
 <tr><td><code>-m statistic --probability P</code></td><td><code>numgen inc mod N map { ... }</code></td><td>Deterministic round-robin instead of probabilistic</td></tr>
@@ -1118,7 +1209,7 @@ uci show firewall.mwan3_reload
 <div class="warn">
 <strong>Key kernel limitations to be aware of:</strong>
 <ul>
-  <li><strong>No compound two-source bitwise:</strong> Expressions like <code>meta mark set meta mark | ct mark &amp; X</code> or <code>ct mark set ct mark &amp; ~M | meta mark &amp; M</code> fail with "Operation not supported". Each set expression can only draw from one register source.</li>
+  <li><strong>No compound two-source bitwise:</strong> Expressions like <code>meta mark set meta mark | ct mark &amp; X</code> or <code>ct mark set ct mark &amp; ~M | meta mark &amp; M</code> fail with "Operation not supported". Each set expression can only draw from one register source. <strong>Workaround:</strong> synthesise the masked operation via <code>vmap</code>-dispatch into per-mark setter chains whose body is a single-source <code>meta/ct mark | &lt;constant immediate&gt;</code>. mwan3 uses this for masked connmark save and restore &mdash; see <a href="#connmark-operations">§2 Connmark Operations</a>.</li>
   <li><strong>No numgen in compound expressions:</strong> <code>meta mark set meta mark &amp; COMP | numgen inc mod N map { ... }</code> fails for the same reason. Use <code>meta mark set numgen ...</code> with a guard condition ensuring the target bits are already zero.</li>
   <li><strong>vmap vs map:</strong> <code>vmap</code> expects verdict values (accept/drop/jump), not data values like marks. For IP&rarr;mark lookups, use regular <code>map</code>.</li>
   <li><strong><code>nft add set</code> flag immutability:</strong> Creating a set is idempotent, but flags (like <code>auto-merge</code>) cannot be updated on existing sets. Must delete and recreate to change flags.</li>
@@ -1196,15 +1287,89 @@ uci show firewall.mwan3_reload
 
 <p><strong>Files changed:</strong> <code>lib/mwan3/mwan3.sh</code> (<code>mwan3_update_peer_track_ip()</code>), <code>etc/init.d/mwan3</code> (<code>start_tracker()</code>), <code>etc/hotplug.d/iface/25-mwan3</code> (ifup action)</p>
 
+<!-- 15.4 -->
+<h3 id="enh-snat4">15.4 Postrouting SNAT for Rerouted Router-Originated Traffic</h3>
+
+<p><strong>The failure mode:</strong> When the router itself originates an IPv4 or IPv6 packet, the kernel binds the source address at <code>sendto()</code> time using the <em>unmarked</em> initial route lookup. mwan3's mark is not set at that point, so the kernel picks the saddr for whichever WAN the unmarked default route points at &mdash; call it WAN-A. Later in the egress path, <code>mwan3_output</code> sets a mark and (because the chain is <code>type route</code>) the kernel re-looks up the route, which may move the outgoing interface to WAN-B. The reroute updates <code>oif</code> but does <em>not</em> rewrite the source address &mdash; that was already set. The packet leaves WAN-B with WAN-A's source address and is dropped upstream by BCP38 / uRPF filtering. mwan3track is unaffected: it sets <code>SO_BINDTODEVICE</code>, which forces the correct saddr at bind time.</p>
+
+<p><strong>IPv4:</strong> No explicit mwan3 SNAT rule is needed. fw4's <code>srcnat_wan</code> masquerade applies to all outgoing traffic including locally-originated. When a rerouted packet reaches the <code>srcnat</code> hook, masquerade picks the primary IP of the actual outgoing interface and rewrites the source address correctly.</p>
+
+<p><strong>IPv6:</strong> fw4 does not masquerade IPv6 by default, so there is no automatic safety net. See <a href="#enh-snat6">§15.5</a> for the opt-in <code>snat6</code> solution.</p>
+
+<!-- 15.5 -->
+<h3 id="enh-snat6">15.5 Opt-in IPv6 SNAT via Per-Interface <code>snat6</code></h3>
+
+<p><strong>Problem:</strong> The router-originated, mark-rerouted, wrong-saddr failure mode described in §15.4 also exists for IPv6, but unlike IPv4 there is no automatic safety net: fw4 does not masquerade IPv6 by default, so a packet rerouted from WAN-A onto WAN-B will egress with WAN-A's source prefix and be dropped upstream. The iptables version of mwan3 also did not address this.</p>
+
+<p><strong>Why a default-on fix is wrong for v6:</strong></p>
+<ol>
+  <li><strong>RFC 6724 source-address selection sometimes solves it without NAT.</strong> A host with multiple v6 addresses configured and source-address-dependent routes (SADR) in the routing table can pick the correct saddr at socket-bind time and the problem never arises. A default-on SNAT would silently mask working RFC 6724 / SADR machinery and degrade deployments doing v6 multihoming correctly.</li>
+  <li><strong>NAT66 is actively harmful in some topologies.</strong> ULA + delegated-PA designs depend on end-to-end addressing. Address-embedding protocols (SIP, FTP, IPsec keying, anything using referrals) break.</li>
+  <li><strong>Some upstreams require a specific source.</strong> Tunnel brokers (Hurricane Electric), fixed-address WireGuard endpoints, and similar links only accept packets from a specific saddr.</li>
+  <li><strong>RFC 4864 / RFC 6296 stance.</strong> The IPv6 community treats address translation as a deliberate, opt-in choice &mdash; never a default.</li>
+</ol>
+
+<p><strong>Solution:</strong> Version 3.2 introduces an opt-in per-interface UCI option <code>snat6</code>:</p>
+
+<table>
+<tr><th>value</th><th>meaning</th></tr>
+<tr><td>unset / <code>0</code></td><td>no v6 SNAT &mdash; current default behaviour, preserves the iptables-era v6 baseline</td></tr>
+<tr><td><code>1</code></td><td>SNAT to the interface's primary global address, looked up via <code>mwan3_get_src_ip</code> (which already handles ipv6 family with prefix-delegation fallback)</td></tr>
+<tr><td><code>&lt;v6 addr&gt;</code></td><td>SNAT to the literal address. Used for NPTv6-style fixed mappings or where the operator wants to pin a specific source from a delegated /64. The literal value is not validated against the device.</td></tr>
+</table>
+
+<p>The installed nft rule uses <code>meta nfproto ipv6</code> and <code>ip6 saddr</code>. The <code>mwan3_postrouting</code> base chain hosts these v6 SNAT rules. The stale-rule cleanup loop in <code>mwan3_create_iface_nft()</code> and <code>mwan3_delete_iface_nft()</code> matches by comment tag (<code>mwan3_snat_&lt;iface&gt;</code>).</p>
+
+<h4>UCI Configuration</h4>
+<pre><code>config interface 'wan6'
+    option enabled '1'
+    option family 'ipv6'
+    option snat6 '1'</code></pre>
+
+<p>The corresponding LuCI control is described in <a href="#luci-interface-js">§13.4</a>.</p>
+
+<h4>Scope of this enhancement</h4>
+<p><code>snat6</code> only addresses the router-originated rerouted case (<code>fib saddr type local</code>). It does <strong>not</strong> extend mwan3's IPv6 capability beyond what the iptables version offered. A more complete v6 multihoming story (forwarded LAN traffic, dual-PA + SADR integration, NPTv6 prefix translation, PD renewal handling) is intentionally out of scope for this release.</p>
+
+<p><strong>Files changed:</strong> <code>lib/mwan3/mwan3.sh</code> (<code>mwan3_create_iface_nft()</code>), <code>applications/luci-app-mwan3/.../interface.js</code> (LuCI form field).</p>
+
 <hr>
 
 <p style="text-align:center; color:#6b7280; font-size:0.85em; margin-top:3rem;">
-mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-07
+mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-08
 </p>
 
 <hr>
 
 <h1 id="changelog">Changelog</h1>
+
+<h2 id="version-3-2">Version 3.2</h2>
+
+<p>A substantive release. Restores iptables-equivalent non-destructive masked connmark save/restore via a new vmap-dispatch architecture, moves base-chain priority back to its original <code>mangle + 1</code> placement, and adds opt-in IPv6 SNAT via the new per-interface <code>snat6</code> UCI option. IPv4 router-originated traffic rerouted by mwan3 is handled by fw4's unguarded masquerade and requires no explicit rule.</p>
+
+<h3>mwan3: rearchitect mark save/restore as non-destructive vmap-dispatch</h3>
+
+<p>The original nftables port translated iptables's <code>CONNMARK --restore-mark --nfmask $MMX_MASK</code> to a single-source <code>meta mark set ct mark &amp; MMX_MASK</code>, and <code>CONNMARK --save-mark --nfmask $MMX_MASK</code> to a single-source <code>ct mark set meta mark</code>. Both forms are <em>destructive</em> &mdash; they overwrite the entire target register, including bits owned by other mark-using packages such as pbr. The kernel rejects the obvious compound forms with "Operation not supported" because an nft set-statement may reference at most one runtime source register.</p>
+
+<p>Version 3.1.4 worked around the resulting pbr coexistence breakage by moving mwan3's chains to <code>priority mangle - 1</code> so that mwan3 ran <em>before</em> pbr. That ordering papered over the symptom for one specific package but left the underlying behaviour broken &mdash; any second mark-using package would still have its bits zeroed.</p>
+
+<p>Version 3.2 fixes this properly. mwan3 now synthesises masked save and restore through <code>vmap</code>-dispatch into 126 trivial per-mark setter chains (63 per direction with the default <code>MMX_MASK = 0x3F00</code>). Restore looks up <code>ct mark &amp; MMX_MASK</code> in a vmap and dispatches into the matching setter chain, which OR-s the immediate value into <code>meta mark</code> without touching any other bit. Save does the same in the opposite direction, after first clearing only mwan3's own bits in <code>ct mark</code> (<code>&amp; MMX_MASK_COMPLEMENT</code>). The result is functionally equivalent to iptables's masked CONNMARK operations.</p>
+
+<p>Because the operation is now non-destructive in both directions, mwan3's chain priority moves back to the original <code>mangle + 1</code>. Order-independence with pbr is now an architectural property, not a side-effect of priority ordering. The Makefile postinst migration removes any chains created at the v3.1.4 <code>mangle - 1</code> priority on upgrade.</p>
+
+<p>See <a href="#connmark-operations">§2 Connmark Operations</a> for the full architectural narrative.</p>
+
+<h3>mwan3: opt-in IPv6 SNAT via per-interface <code>snat6</code> UCI option</h3>
+
+<p>Adds the <code>mwan3_postrouting</code> base chain (<code>type nat hook postrouting priority srcnat - 1</code>) and an opt-in IPv6 SNAT path gated by a new per-interface UCI option <code>snat6</code>. Addresses the router-originated, mark-rerouted, wrong-saddr failure mode for IPv6: when mwan3 reroutes a packet from WAN-A onto WAN-B, the saddr was bound at <code>sendto()</code> to WAN-A's prefix; without SNAT it egresses WAN-B with the wrong prefix and is dropped upstream. Default is off because RFC 6724 source-address selection / SADR routing can solve the same problem without translation, NAT66 is harmful in PA/ULA designs, and some upstreams require a specific saddr. Three values: unset/<code>0</code> (off, default), <code>1</code> (SNAT to the interface's primary global address via <code>mwan3_get_src_ip</code>), or <code>&lt;v6 addr&gt;</code> (literal &mdash; NPTv6-style fixed-source pinning).</p>
+
+<p>IPv4 router-originated traffic does not require an explicit mwan3 SNAT rule &mdash; fw4's masquerade handles it.</p>
+
+<p>See <a href="#enh-snat6">§15.5</a>.</p>
+
+<h3>luci-app-mwan3: expose <code>snat6</code> option for IPv6 interfaces</h3>
+
+<p>Adds a corresponding "IPv6 SNAT" form field to the interface configuration modal, visible only when the internet protocol is set to IPv6. See <a href="#luci-interface-js">§13.4</a>.</p>
 
 <h2 id="version-3-1-4">Version 3.1.4</h2>
 
