@@ -196,6 +196,10 @@ mwan3_ensure_nft_framework()
 	mwan3_nft_push "add chain inet fw4 mwan3_prerouting { type filter hook prerouting priority mangle + 1; policy accept; }"
 	mwan3_nft_push "add chain inet fw4 mwan3_output { type route hook output priority mangle + 1; policy accept; }"
 
+	# IPv6 SNAT chain (opt-in per interface via 'snat6'). See 10-mwan3.nft
+	# for the rationale; per-iface rules are added by mwan3_create_iface_nft.
+	mwan3_nft_push "add chain inet fw4 mwan3_postrouting { type nat hook postrouting priority srcnat - 1; policy accept; }"
+
 	# Internal chains (jumped to from hook chains)
 	mwan3_nft_push "add chain inet fw4 mwan3_ifaces_in"
 	mwan3_nft_push "add chain inet fw4 mwan3_rules"

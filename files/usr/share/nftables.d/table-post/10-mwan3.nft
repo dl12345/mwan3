@@ -41,14 +41,18 @@ set mwan3_dynamic_v6 {
 }
 
 # Entry point for prerouting
+# priority mangle + 1: runs AFTER fw4's main mangle and after pbr.
+# Order-independence with pbr is achieved by using non-destructive
+# masked save/restore via vmap-dispatch into per-mark OR-immediate
+# setter chains (mwan3_or_meta_*, mwan3_or_ct_*); see common.sh.
 chain mwan3_prerouting {
-	type filter hook prerouting priority mangle - 1; policy accept;
+	type filter hook prerouting priority mangle + 1; policy accept;
 }
 
 # Entry point for locally-originated traffic
 # type route so mark changes trigger re-routing
 chain mwan3_output {
-	type route hook output priority mangle - 1; policy accept;
+	type route hook output priority mangle + 1; policy accept;
 }
 
 # Interface input marking (jumped to from mwan3_prerouting/mwan3_output)
@@ -65,4 +69,15 @@ chain mwan3_connected {
 chain mwan3_custom {
 }
 chain mwan3_dynamic {
+}
+
+# IPv6 SNAT for router-originated traffic rerouted by mwan3_output. fw4 does
+# not masquerade IPv6 by default, so packets rerouted from WAN-A onto WAN-B
+# would egress with WAN-A's source prefix and be dropped upstream. Opt-in
+# per interface via the 'snat6' UCI option. Per-iface rules are added
+# dynamically by mwan3.sh and only fire when (oif == this WAN) AND
+# (mark == this WAN's mark) AND (saddr is local) AND (saddr != this WAN's
+# IP). Runs at srcnat - 1 so it fires before fw4's srcnat hook.
+chain mwan3_postrouting {
+	type nat hook postrouting priority srcnat - 1; policy accept;
 }

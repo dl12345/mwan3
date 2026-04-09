@@ -315,6 +315,49 @@ mwan3_create_iface_nft()
 	device="$2"
 	iface_mark=$(mwan3_id2mask id MMX_MASK)
 
+	# IPv6 opt-in SNAT for router-originated traffic rerouted by mwan3_output.
+	# fw4 does not masquerade IPv6 by default, so packets whose saddr was
+	# bound to WAN-A's prefix but rerouted onto WAN-B would egress with the
+	# wrong source and be dropped upstream by BCP38/uRPF. Enable per-interface
+	# via the 'snat6' UCI option (default OFF — RFC 6724 source-address
+	# selection and SADR routing can solve the same problem without
+	# translation, and NAT66 is harmful in PA/ULA designs).
+	# snat6 values:
+	#   unset / 0 : no v6 SNAT (default)
+	#   1         : SNAT to the interface's primary GUA via mwan3_get_src_ip
+	#   <addr>    : SNAT to the literal v6 address (NPTv6-style fixed pin)
+	#
+	# Stale rules from a prior incarnation of this interface are removed
+	# first; comment-tagged for unambiguous identification across reloads.
+	while handle=$($NFT -a list chain inet fw4 mwan3_postrouting 2>/dev/null | \
+			sed -n "s/.*comment \"mwan3_snat_$1\".*# handle \([0-9]*\)/\1/p" | head -n1); \
+	      [ -n "$handle" ]; do
+		mwan3_nft_exec delete rule inet fw4 mwan3_postrouting handle "$handle"
+	done
+
+	if [ "$family" = "ipv6" ]; then
+		config_get snat6 "$1" snat6 ""
+		src_ip=""
+		case "$snat6" in
+			""|"0")
+				: # disabled — no rule
+				;;
+			"1")
+				mwan3_get_src_ip src_ip "$1"
+				;;
+			*)
+				src_ip="$snat6"
+				;;
+		esac
+		if [ -n "$src_ip" ] && [ "$src_ip" != "::" ]; then
+			mwan3_nft_exec add rule inet fw4 mwan3_postrouting \
+				oifname "\"$device\"" meta nfproto ipv6 \
+				meta mark \& "$MMX_MASK" == "$iface_mark" \
+				fib saddr type local ip6 saddr != "$src_ip" \
+				snat to "$src_ip" comment "\"mwan3_snat_$1\""
+		fi
+	fi
+
 	# Check if chain already exists, if so flush it; otherwise create it
 	if $NFT list chain inet fw4 "mwan3_iface_in_$1" &>/dev/null; then
 		mwan3_nft_exec flush chain inet fw4 "mwan3_iface_in_$1"
@@ -385,6 +428,14 @@ mwan3_delete_iface_nft()
 	handle=$($NFT -a list chain inet fw4 mwan3_ifaces_in 2>/dev/null | \
 		grep "jump mwan3_iface_in_$1" | sed -n 's/.*# handle \([0-9]*\)/\1/p')
 	[ -n "$handle" ] && mwan3_nft_exec delete rule inet fw4 mwan3_ifaces_in handle "$handle"
+
+	# Remove the per-iface postrouting SNAT rule (loop in case both v4/v6
+	# rules exist for the same interface name).
+	while handle=$($NFT -a list chain inet fw4 mwan3_postrouting 2>/dev/null | \
+			sed -n "s/.*comment \"mwan3_snat_$1\".*# handle \([0-9]*\)/\1/p" | head -n1); \
+	      [ -n "$handle" ]; do
+		mwan3_nft_exec delete rule inet fw4 mwan3_postrouting handle "$handle"
+	done
 
 	# Delete the interface chain
 	$NFT list chain inet fw4 "mwan3_iface_in_$1" &>/dev/null && {
