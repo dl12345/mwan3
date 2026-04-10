@@ -125,11 +125,10 @@ internal()
 	echo "Software-Version"
 	echo "$dash"
 
-	if [ "$DISTRIB_RELEASE" != "" ]; then
-		echo "OpenWrt - $DISTRIB_RELEASE"
-	else
-		echo "OpenWrt - unknown"
-	fi
+	local mwan3_ver
+	mwan3_ver=$(apk info mwan3 2>/dev/null | head -1 | sed 's/^mwan3-//; s/ .*//')
+	[ -z "$mwan3_ver" ] && mwan3_ver="unknown"
+	echo "mwan3 - $mwan3_ver"
 
 	echo ""
 	echo "Output of \"$ip a show\""
