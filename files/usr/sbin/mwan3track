@@ -290,7 +290,7 @@ main() {
 			if [ -n "$gw_ip" ]; then
 				case " $track_ips " in
 					*" $gw_ip "*) ;;
-					*) track_ips="$track_ips $gw_ip" ;;
+					*) track_ips="$gw_ip $track_ips" ;;
 				esac
 			fi
 		fi
