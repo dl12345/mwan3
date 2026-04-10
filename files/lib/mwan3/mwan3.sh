@@ -400,8 +400,14 @@ mwan3_create_iface_nft()
 		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv6 ip6 saddr @mwan3_dynamic_v6 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
 	fi
 
-	# Mark with interface-specific mark
-	mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $iface_mark $MMX_MASK)"
+	# Mark with interface-specific mark — scoped to address family so that an
+	# IPv4 chain's catchall cannot misclassify IPv6 packets when two mwan3
+	# interfaces (one IPv4, one IPv6) share the same physical device.
+	if [ "$family" = "ipv4" ]; then
+		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv4 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $iface_mark $MMX_MASK)"
+	elif [ "$family" = "ipv6" ]; then
+		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv6 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $iface_mark $MMX_MASK)"
+	fi
 
 	mwan3_nft_batch_commit
 
