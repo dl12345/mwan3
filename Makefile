@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mwan3
-PKG_VERSION:=3.2
+PKG_VERSION:=3.2.1
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Florian Eckert <fe@dev.tdt.de>
@@ -54,9 +54,9 @@ endef
 define Package/mwan3/postinst
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
-	# v3.2: priority moves back to mangle + 1 (was mangle - 1 in v3.1.4),
-	# this time backed by non-destructive vmap-dispatch save/restore so the
-	# new placement is order-independent w.r.t. pbr. nftables rejects a base
+	# v3.2+: priority is mangle + 1 (was mangle - 1 in v3.1.4),
+	# backed by non-destructive vmap-dispatch save/restore so the
+	# placement is order-independent w.r.t. pbr. nftables rejects a base
 	# chain redeclaration at a different priority, so flush+delete first.
 	for chain in mwan3_prerouting mwan3_output; do
 		if nft list chain inet fw4 "$$chain" 2>/dev/null | grep -q "priority mangle - 1"; then
