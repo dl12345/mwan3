@@ -452,10 +452,13 @@ mwan3_delete_iface_nft()
 		return
 	fi
 
-	# Remove jump rule from mwan3_ifaces_in
-	handle=$($NFT -a list chain inet fw4 mwan3_ifaces_in 2>/dev/null | \
-		grep "jump mwan3_iface_in_$1" | sed -n 's/.*# handle \([0-9]*\)/\1/p')
-	[ -n "$handle" ] && mwan3_nft_exec delete rule inet fw4 mwan3_ifaces_in handle "$handle"
+	# Remove all jump rules for this interface from mwan3_ifaces_in (loop handles
+	# the case where duplicate rules accumulated due to repeated fw4 reload cycles)
+	while handle=$($NFT -a list chain inet fw4 mwan3_ifaces_in 2>/dev/null | \
+			grep "jump mwan3_iface_in_$1" | sed -n 's/.*# handle \([0-9]*\)/\1/p' | head -n1); \
+	      [ -n "$handle" ]; do
+		mwan3_nft_exec delete rule inet fw4 mwan3_ifaces_in handle "$handle"
+	done
 
 	# Remove the per-iface postrouting SNAT rule (loop in case both v4/v6
 	# rules exist for the same interface name).
