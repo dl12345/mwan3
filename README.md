@@ -52,6 +52,7 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.
     - [15.2 Software Flow Offloading Co-existence](#152-software-flow-offloading-co-existence)
     - [15.3 Automatic Gateway Tracking (track_gateway)](#153-automatic-gateway-tracking-track_gateway)
 16. [Changelog](#changelog)
+    - [Version 3.2.1](#version-321)
     - [Version 3.2](#version-32)
     - [Version 3.1.4](#version-314)
     - [Version 3.1.3](#version-313)
@@ -1227,6 +1228,46 @@ The corresponding LuCI control is described in [§13.4](#134-interfacejs--interf
 ---
 
 # Changelog
+
+## Version 3.2.1
+
+Fixes a dnsmasq SIGHUP race that could kill dnsmasq during fw4-reload recovery, corrects policy status reporting to show all configured members with traffic share percentages, and shows the installed mwan3 package version in `mwan3 internal` output. The v3.2 postinst chain-cleanup migration was also corrected - the original v3.2 tag had the upgrade direction backwards for users coming from v3.1.4; the v3.2-1 tag has been updated.
+
+The luci-app-mwan3 status pages have been substantially redesigned. The Overview tab now shows interface status cards in a flex layout alongside a full policies table with per-member traffic share percentages and a rules summary. The Status tab replaces the previous static cards with per-interface tracking health panels showing probe IP status, tracking mode and score. The Troubleshooting tab replaces the raw text dump with collapsible per-section panels, adds IPv6 diagnostic output alongside IPv4, and filters vmap-dispatch boilerplate from the nftables listing.
+
+### mwan3: fix dnsmasq SIGHUP race during concurrent startup
+
+`killall -HUP dnsmasq` sends SIGHUP to every process named dnsmasq, including instances mid-initialization. When mwan3's fw4-reload recovery hotplug (position 25) fires concurrently with anything restarting dnsmasq - for example pbr restarting dnsmasq as part of its own startup sequence - the mid-init dnsmasq receives SIGHUP before it has finished initializing and exits.
+
+Replaced with `mwan3_dnsmasq_hup()` in `mwan3.sh`. The function queries procd via `ubus call service list`, finds instances of the dnsmasq service, and sends SIGHUP only to PIDs that procd reports as `running: true`. Instances still in the startup phase are not signalled. `json_set_namespace` is used to protect the caller's jshn state.
+
+**Files changed:** `files/etc/hotplug.d/iface/25-mwan3`, `files/lib/mwan3/mwan3-fw-rebuild.sh`, `files/lib/mwan3/mwan3.sh`
+
+### mwan3: fix policy status to show all members with traffic share
+
+`mwan3_report_policies()` (shell status command) and the rpcd ucode `get_policies()` both read live nftables policy chains to determine membership. Only the actively-routing member has rules in the chain - standby members (metric 2+) have no nft rules while a metric-1 member is up, so they were invisible in both the CLI output and the LuCI overview. The rpcd function additionally returned raw nft mark hex values instead of interface names.
+
+Both functions now read policy membership from UCI config and cross-reference with mwan3track `STATUS` files to determine which metric tier is active and the traffic share for each member. Every member is always shown: 100% for a sole active member, the load-balanced share for equal-priority active members, and 0% for standby or offline members.
+
+**Files changed:** `files/lib/mwan3/mwan3.sh`, `files/usr/share/rpcd/ucode/mwan3`
+
+### mwan3: show mwan3 package version in internal troubleshooting output
+
+The `Software-Version` section of `mwan3 internal` previously showed the OpenWrt OS release string (`DISTRIB_RELEASE` from `/etc/openwrt_release`). Replaced with the installed mwan3 package version queried from apk (`apk info mwan3`), which is the version relevant for troubleshooting reports.
+
+**File changed:** `files/usr/sbin/mwan3`
+
+### luci-app-mwan3: redesign status pages with structured views
+
+**Overview tab:** Replaces the previous simple interface list with a full operational view - interface status cards in a flex-wrap layout, a policies table showing every configured policy member with its current traffic share percentage, and a rules table.
+
+**Status tab:** Replaces static interface cards with per-interface tracking health panels. Each panel shows interface name, status, tracking mode and score in a header bar, and a table of probe IPs with up/down/ignored status in coloured text indicators. Polls live via the mwan3 ubus status interface.
+
+**Troubleshooting tab:** Replaces the raw pre-formatted text dump with collapsible sections (collapsed by default with expand arrow indicators). IPv6 diagnostic sections now appear alongside IPv4 - previously only IPv4 output was shown because the IPv6 exec permission was missing from the ACL. vmap-dispatch boilerplate chains are filtered from the nftables output and replaced with a count annotation.
+
+**ACL:** Added `mwan3 internal ipv6` exec permission to `luci-app-mwan3.json`.
+
+---
 
 ## Version 3.2
 
