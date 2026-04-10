@@ -1,6 +1,6 @@
 'use strict';
 
-import { popen, readfile } from 'fs';
+import { popen, readfile, glob } from 'fs';
 import { cursor } from 'uci';
 
 const ubus = require('ubus').connect();
@@ -41,8 +41,8 @@ function ucibool(val) {
 	}
 }
 
-function get_mwan3track_status(iface, uci_track_ips, procd) {
-	if (length(uci_track_ips) == 0) {
+function get_mwan3track_status(iface, uci_track_ips, track_gateway, procd) {
+	if (length(uci_track_ips) == 0 && !track_gateway) {
 		return 'disabled';
 	}
 	if (procd?.[sprintf('track_%s', iface)]?.running) {
@@ -204,10 +204,14 @@ function interfaces_status(request) {
 		}
 		const netstatus = ubus.call(sprintf('network.interface.%s', ifname), 'status', {});
 		const uptime = get_uptime();
-		const uci_track_ips = intf['track_ip'];
-		const track_status = get_mwan3track_status(ifname, uci_track_ips, procd);
+		const uci_track_ips = intf['track_ip'] || [];
+		const track_gateway = ucibool(intf['track_gateway'] || '0');
+		const track_status = get_mwan3track_status(ifname, uci_track_ips, track_gateway, procd);
 		const track_ips = [];
-		for (let ip in uci_track_ips) {
+		const track_files = glob(sprintf('/var/run/mwan3track/%s/TRACK_*', ifname)) || [];
+		for (let f in track_files) {
+			const ip = substr(f, length(sprintf('/var/run/mwan3track/%s/TRACK_', ifname)));
+			if (ip == 'OUTPUT') continue;
 			push(track_ips, {
 				'ip': ip,
 				'status': get_str(ifname, sprintf('TRACK_%s', ip)) || 'unknown',
@@ -228,6 +232,7 @@ function interfaces_status(request) {
 			'running': track_status == 'active',
 			'tracking': track_status,
 			'up': netstatus?.up || false,
+			'check_quality': ucibool(intf['check_quality'] || '0'),
 			'track_ip': track_ips,
 		};
 	});
