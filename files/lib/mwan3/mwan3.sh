@@ -20,6 +20,28 @@ IPv4_REGEX="((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[0
 
 DEFAULT_LOWEST_METRIC=256
 
+
+mwan3_dnsmasq_hup()
+{
+	local old_ns
+	json_set_namespace mwan3_dnsmasq_hup old_ns
+
+	json_load "$(ubus call service list '{"name":"dnsmasq","verbose":true}')"
+	if json_select "dnsmasq"; then
+		json_select "instances"
+		json_get_keys instance_keys
+		for key in $instance_keys; do
+			json_select "$key"
+			json_get_var pid "pid"
+			json_get_var running "running"
+			[ "$running" = "true" ] && /bin/kill -s HUP $pid 2>/dev/null
+			json_select ".."
+		done
+	fi
+
+	json_set_namespace "$old_ns"
+}
+
 mwan3_update_dev_to_table()
 {
 	local _tid
@@ -451,7 +473,7 @@ mwan3_delete_iface_map_entries()
 	mwan3_get_iface_id id "$1"
 	[ -n "$id" ] || return 0
 
-	# v3.1.5+ sticky scheme: one set per (rule, family, iface_id) holding
+	# v3.2+ sticky scheme: one set per (rule, family, iface_id) holding
 	# only saddrs (no value side). Removing an interface invalidates every
 	# such set whose name ends in "_<id>"; we flush rather than delete since
 	# rule chains may still reference the set name.

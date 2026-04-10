@@ -30,8 +30,8 @@ config_foreach mwan3_rebuild_iface_nft interface
 mwan3_set_policies_nft
 mwan3_set_user_rules
 
-# Signal dnsmasq to clear cache — next client queries will trigger
+# Signal dnsmasq to clear cache - next client queries will trigger
 # fresh upstream resolution which re-populates nft sets via nftset option
-killall -HUP dnsmasq 2>/dev/null
+mwan3_dnsmasq_hup
 
 exit 0

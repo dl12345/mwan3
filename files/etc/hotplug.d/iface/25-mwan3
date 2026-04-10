@@ -50,7 +50,7 @@ if [ "$MWAN3_STARTUP" != "init" ] && \
 	mwan3_set_user_rules
 	# fw4 reload flushed all nft sets including dnsmasq-populated ones;
 	# signal dnsmasq to clear cache so next queries re-populate nft sets
-	killall -HUP dnsmasq 2>/dev/null
+	mwan3_dnsmasq_hup
 fi
 
 if [ "$MWAN3_STARTUP" != "init" ] && [ "$ACTION" = "ifup" ]; then
