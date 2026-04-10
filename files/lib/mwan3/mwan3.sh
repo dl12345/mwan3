@@ -1315,70 +1315,44 @@ mwan3_mark_to_name()
 	echo "$target"
 }
 
-mwan3_report_policies()
+_mwan3_report_policies_for_family()
 {
-	local policy="$1"
-	local output iface weight total mark
+	local family="$1"
+	local json pkeys pname mkeys midx iface percent status
 
-	output=$($NFT list chain inet fw4 "mwan3_policy_$policy" 2>/dev/null)
-	[ -z "$output" ] && return
-
-	# Check if numgen is used (load balancing)
-	if echo "$output" | grep -q "numgen"; then
-		# Parse numgen vmap entries to extract marks and weights.
-		# v3.1.5+ form: "N-M : jump mwan3_or_meta_0xMARK" (or "N : jump ...").
-		# nft normalizes single-value ranges (e.g. 0-0) to plain values (e.g. 0),
-		# so handle both range and bare-value keys. The mark hex is now embedded
-		# in the setter chain name rather than appearing as the map value.
-		total=$(echo "$output" | grep -oE 'mod [0-9]+' | awk '{print $2}')
-		echo "$output" | grep -oE '([0-9]+-[0-9]+|[0-9]+) : jump mwan3_or_meta_0x[0-9a-f]+' | while read -r entry; do
-			local range range_start range_end mark_val
-			range="${entry%% *}"
-			mark_val="0x${entry##*_0x}"
-			if echo "$range" | grep -q '-'; then
-				range_start="${range%%-*}"
-				range_end="${range##*-}"
-			else
-				range_start="$range"
-				range_end="$range"
-			fi
-			weight=$((range_end - range_start + 1))
-			local percent=$((weight * 100 / total))
-			echo " $(mwan3_mark_to_name "$mark_val") ($percent%)"
-		done
-	else
-		# Single member(s) — iterate all mark set rules, resolving each mark
-		# to an interface name.  Skip special/fallthrough values: mwan3_mark_to_name
-		# never returns empty — it returns "unreachable", "blackhole", "default",
-		# or the raw hex string for unknown marks — so test explicitly.
-		local mark_val iface_name
-		echo "$output" | grep "meta mark set" | while read -r mark_line; do
-			mark_val=$(echo "$mark_line" | grep -oE '0x[0-9a-f]+' | tail -1)
-			iface_name=$(mwan3_mark_to_name "$mark_val")
-			case "$iface_name" in
-				unreachable|blackhole|default|0x*) continue ;;
-			esac
-			echo " $iface_name"
-		done
+	json=$(ubus call mwan3 status '{"section":"policies"}' 2>/dev/null)
+	if [ -z "$json" ]; then
+		echo " (ubus unavailable)"
+		return
 	fi
+
+	json_load "$json"
+	json_select "policies" || return
+	json_select "$family" || return
+	json_get_keys pkeys
+	for pname in $pkeys; do
+		echo "$pname:"
+		json_select "$pname"
+		json_get_keys mkeys
+		for midx in $mkeys; do
+			json_select "$midx"
+			json_get_var iface interface
+			json_get_var percent percent
+			echo " $iface (${percent:-0}%)"
+			json_select ".."
+		done
+		json_select ".."
+	done
 }
 
 mwan3_report_policies_v4()
 {
-	_report_one_policy() {
-		local output
-		output=$($NFT list chain inet fw4 "mwan3_policy_$1" 2>/dev/null)
-		[ -z "$output" ] && return
-		echo "$1:"
-		mwan3_report_policies "$1"
-	}
-	config_foreach _report_one_policy policy
+	_mwan3_report_policies_for_family "ipv4"
 }
 
 mwan3_report_policies_v6()
 {
-	# With nftables inet family, policies are shared; report same as v4
-	mwan3_report_policies_v4
+	_mwan3_report_policies_for_family "ipv6"
 }
 
 mwan3_report_connected_v4()

@@ -108,81 +108,88 @@ function get_connected_ips(version) {
 }
 
 function get_policies(version) {
-	// List all chains in fw4 and find mwan3_policy_* chains
-	const nft = popen('nft -j list chains inet fw4 2>/dev/null', 'r');
-	if (!nft) {
-		return {};
-	}
-	const raw = nft.read('all');
-	nft.close();
+	const uci = cursor();
+	const family_filter = (version == '6') ? 'ipv6' : 'ipv4';
 
-	if (!raw || length(raw) == 0) {
-		return {};
-	}
+	// Build interface family map: iface_name -> 'ipv4'/'ipv6'
+	const iface_family = {};
+	uci.foreach('mwan3', 'interface', intf => {
+		iface_family[intf['.name']] = intf['family'] || 'ipv4';
+	});
 
-	let data;
-	try {
-		data = json(raw);
-	} catch(e) {
-		return {};
-	}
-
-	const policy_names = [];
-	if (data?.nftables) {
-		for (let item in data.nftables) {
-			if (item?.chain?.name && match(item.chain.name, regexp('^mwan3_policy_'))) {
-				const name = substr(item.chain.name, 14); // strip "mwan3_policy_"
-				push(policy_names, name);
-			}
-		}
-	}
+	// Build member info map: member_name -> { interface, metric, weight }
+	const member_info = {};
+	uci.foreach('mwan3', 'member', m => {
+		member_info[m['.name']] = {
+			interface: m['interface'],
+			metric: int(m['metric'] || 1),
+			weight: int(m['weight'] || 1),
+		};
+	});
 
 	const policies = {};
-	for (let pname in policy_names) {
-		const chain_nft = popen(sprintf('nft -j list chain inet fw4 mwan3_policy_%s 2>/dev/null', pname), 'r');
-		if (!chain_nft) continue;
-		const chain_raw = chain_nft.read('all');
-		chain_nft.close();
 
-		let chain_data;
-		try {
-			chain_data = json(chain_raw);
-		} catch(e) {
-			continue;
+	uci.foreach('mwan3', 'policy', p => {
+		const pname = p['.name'];
+		let use_members = p['use_member'];
+		if (!use_members) return;
+		if (type(use_members) != 'array') use_members = [use_members];
+
+		// Collect members matching the requested address family
+		const by_metric = {};
+		for (let mname in use_members) {
+			const m = member_info[mname];
+			if (!m) continue;
+			if (iface_family[m.interface] != family_filter) continue;
+			if (!by_metric[m.metric]) by_metric[m.metric] = [];
+			push(by_metric[m.metric], {
+				interface: m.interface,
+				metric: m.metric,
+				weight: m.weight,
+			});
+		}
+
+		if (!length(keys(by_metric))) return;
+
+		// Find the lowest metric with at least one online member
+		const sorted_metrics = sort(keys(by_metric), (a, b) => int(a) - int(b));
+		let active_metric = null;
+		for (let metric in sorted_metrics) {
+			for (let m in by_metric[metric]) {
+				if (get_str(m.interface, 'STATUS') == 'online') {
+					active_metric = metric;
+					break;
+				}
+			}
+			if (active_metric != null) break;
+		}
+
+		// Sum weights of online members at the active metric for percent calculation
+		let total_weight = 0;
+		if (active_metric != null) {
+			for (let m in by_metric[active_metric]) {
+				if (get_str(m.interface, 'STATUS') == 'online')
+					total_weight += m.weight;
+			}
 		}
 
 		policies[pname] = [];
-
-		// Parse numgen map rules to extract weights
-		if (chain_data?.nftables) {
-			for (let item in chain_data.nftables) {
-				if (!item?.rule?.expr) continue;
-				for (let expr in item.rule.expr) {
-					// Look for numgen with vmap
-					if (expr?.mangle?.value?.map?.data?.set) {
-						const mapset = expr.mangle.value.map.data.set;
-						const mod_val = expr.mangle.value.map.key?.numgen?.mod;
-						if (mod_val && length(mapset) > 0) {
-							for (let mapping in mapset) {
-								if (type(mapping) == 'array' && length(mapping) == 2) {
-									const range = mapping[0];
-									const mark = mapping[1];
-									let weight = 1;
-									if (type(range) == 'object' && range?.range) {
-										weight = range.range[1] - range.range[0] + 1;
-									}
-									push(policies[pname], {
-										'interface': sprintf('mark_%s', mark),
-										'percent': weight / mod_val * 100,
-									});
-								}
-							}
-						}
-					}
-				}
+		for (let metric in sorted_metrics) {
+			for (let m in by_metric[metric]) {
+				const iface_status = get_str(m.interface, 'STATUS') || 'offline';
+				const is_active = (metric == active_metric) && (iface_status == 'online');
+				const percent = (is_active && total_weight > 0) ? int(m.weight * 100 / total_weight) : 0;
+				push(policies[pname], {
+					'interface': m.interface,
+					'metric': m.metric,
+					'weight': m.weight,
+					'percent': percent,
+					'status': iface_status,
+				});
 			}
 		}
-	}
+	});
+
 	return policies;
 }
 
