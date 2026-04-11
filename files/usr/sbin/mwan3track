@@ -281,7 +281,7 @@ main() {
 	}
 	mwan3_load_track_ips()
 	{
-		local track_gateway gw_ip
+		local track_gateway gw_ip f ip
 		track_ips=""
 		config_list_foreach "$INTERFACE" track_ip mwan3_list_track_ips
 		config_get_bool track_gateway "$INTERFACE" track_gateway 0
@@ -294,6 +294,17 @@ main() {
 				esac
 			fi
 		fi
+		for f in "$MWAN3TRACK_STATUS_DIR/$INTERFACE/TRACK_"*; do
+			[ -f "$f" ] || continue
+			ip="${f##*/TRACK_}"
+			[ "$ip" = "OUTPUT" ] && continue
+			case " $track_ips " in
+				*" $ip "*) ;;
+				*) rm -f "$MWAN3TRACK_STATUS_DIR/$INTERFACE/TRACK_${ip}" \
+				         "$MWAN3TRACK_STATUS_DIR/$INTERFACE/LATENCY_${ip}" \
+				         "$MWAN3TRACK_STATUS_DIR/$INTERFACE/LOSS_${ip}" ;;
+			esac
+		done
 	}
 	mwan3_load_track_ips
 
