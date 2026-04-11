@@ -1303,6 +1303,46 @@ mwan3_report_iface_status()
 	else
 		echo " interface $1 is $status and tracking is $tracking"
 	fi
+
+	local tip_f tip_ip tip_status tip_lat tip_loss tip_detail check_quality
+	check_quality=0
+	for tip_f in "$MWAN3TRACK_STATUS_DIR/${1}/LATENCY_"*; do
+		[ -f "$tip_f" ] || break
+		readfile tip_lat "$tip_f"
+		[ -n "$tip_lat" ] && { check_quality=1; break; }
+	done
+	for tip_f in "$MWAN3TRACK_STATUS_DIR/${1}/TRACK_"*; do
+		[ -f "$tip_f" ] || continue
+		tip_ip="${tip_f##*TRACK_}"
+		[ "$tip_ip" = "OUTPUT" ] && continue
+		readfile tip_status "$tip_f"
+		tip_status="${tip_status:-unknown}"
+		if [ "$check_quality" = "1" ]; then
+			case "$tip_status" in
+				up)
+					readfile tip_lat "$MWAN3TRACK_STATUS_DIR/${1}/LATENCY_${tip_ip}"
+					readfile tip_loss "$MWAN3TRACK_STATUS_DIR/${1}/LOSS_${tip_ip}"
+					tip_detail="${tip_lat}ms, ${tip_loss}% loss"
+					;;
+				down)
+					readfile tip_loss "$MWAN3TRACK_STATUS_DIR/${1}/LOSS_${tip_ip}"
+					tip_detail="-, ${tip_loss}% loss"
+					;;
+				*)
+					tip_detail=""
+					;;
+			esac
+			if [ -n "$tip_detail" ]; then
+				echo "   track $tip_ip: $tip_status ($tip_detail)"
+			else
+				[ "$tip_status" = "skipped" ] && tip_status="ignored"
+				echo "   track $tip_ip: $tip_status"
+			fi
+		else
+			[ "$tip_status" = "skipped" ] && tip_status="ignored"
+			echo "   track $tip_ip: $tip_status"
+		fi
+	done
 }
 
 mwan3_mark_to_name()
