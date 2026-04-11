@@ -95,7 +95,7 @@
 <h1>mwan3 nftables Implementation</h1>
 <p><strong>Developer Reference</strong> &mdash; OpenWrt 25.12+<br>
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
-<em>Package version: 3.2.2</em></p>
+<em>Package version: 3.2.3</em></p>
 
 <nav class="toc">
 <strong>Contents</strong>
@@ -160,6 +160,7 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
   </li>
   <li><a href="#changelog">16. Changelog</a>
     <ul>
+      <li><a href="#version-3-2-3">Version 3.2.3</a></li>
       <li><a href="#version-3-2-2">Version 3.2.2</a></li>
       <li><a href="#version-3-2-1">Version 3.2.1</a></li>
       <li><a href="#version-3-2">Version 3.2</a></li>
@@ -1384,12 +1385,59 @@ uci show firewall.mwan3_reload
 <hr>
 
 <p style="text-align:center; color:#6b7280; font-size:0.85em; margin-top:3rem;">
-mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-10
+mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-11
 </p>
 
 <hr>
 
 <h1 id="changelog">Changelog</h1>
+
+<h2 id="version-3-2-3">Version 3.2.3</h2>
+
+<p>Adds per-IP tracking detail to the <code>mwan3 interfaces</code> CLI status output, fixes two post-v3.2.2 issues with stale tracking state files, corrects the <code>check_quality</code> display inconsistency in both the rpcd status interface and mwan3track, and extends the luci-app-mwan3 status page with improved display for down and skipped tracking IPs.</p>
+
+<h3>mwan3: remove stale gateway TRACK_*/LATENCY_*/LOSS_* files on probe list rebuild</h3>
+
+<p>When <code>track_gateway=1</code> and the gateway IP changes (e.g. on PPPoE reconnect), <code>mwan3_load_track_ips()</code> rebuilt the probe list with the new gateway IP but left <code>TRACK_*</code>, <code>LATENCY_*</code> and <code>LOSS_*</code> files from the old gateway on disk. The rpcd status module globs all <code>TRACK_*</code> files to build the per-interface tracking IP list, so stale files from previous gateway IPs appeared alongside the current ones in <code>ubus call mwan3 status</code> output.</p>
+
+<p>Fixed by scanning the interface status directory at the end of <code>mwan3_load_track_ips()</code> and deleting any <code>TRACK_*/LATENCY_*/LOSS_*</code> files for IPs not present in the current probe list. Runs on every startup and ifup event.</p>
+
+<p><strong>File changed:</strong> <code>files/usr/sbin/mwan3track</code></p>
+
+<h3>mwan3: fix check_quality display inconsistency when UCI is changed without restart</h3>
+
+<p>When <code>check_quality</code> was changed in UCI without restarting mwan3track, the rpcd status reported the new UCI value while mwan3track continued operating with the old setting. Users saw "Not enabled" for latency and loss in the LuCI status page even though measurements were still being taken, or conversely saw stale measurement values after disabling <code>check_quality</code>.</p>
+
+<p>Fixed in two parts. In the rpcd ucode module, <code>check_quality</code> is now derived from <code>LATENCY_*</code> file content rather than UCI &mdash; mwan3track only writes these files when <code>check_quality=1</code>, so file presence with content is the authoritative indicator of runtime state. In mwan3track, <code>mwan3_load_track_ips()</code> now re-reads <code>check_quality</code> from current UCI config and removes any stale <code>LATENCY_*/LOSS_*</code> files when it is 0, ensuring the file-based detection also returns the correct result after a restart with <code>check_quality=0</code>.</p>
+
+<p><strong>Files changed:</strong> <code>files/usr/share/rpcd/ucode/mwan3</code>, <code>files/usr/sbin/mwan3track</code></p>
+
+<h3>mwan3: add per-IP tracking detail to interfaces status output</h3>
+
+<p><code>mwan3 interfaces</code> and <code>mwan3 status</code> now display each tracking IP below the interface status line, showing its individual probe status and (when <code>check_quality=1</code>) latency and packet loss:</p>
+
+<pre><code> interface wan is online and tracking is active
+   track 8.8.4.4: up (12ms, 0% loss)
+   track 8.8.8.8: down (-, 100% loss)
+   track 192.168.1.1: ignored</code></pre>
+
+<p>The <code>check_quality</code> state is derived from <code>LATENCY_*</code> file presence rather than UCI, consistent with the rpcd status module. The kernel-internal status value <code>skipped</code> is displayed as <code>ignored</code> for consistency with the LuCI status page.</p>
+
+<p><strong>File changed:</strong> <code>files/lib/mwan3/mwan3.sh</code></p>
+
+<h3>luci-app-mwan3: improve tracking IP latency/loss display for down/skipped/disabled states</h3>
+
+<p>The Status tab tracking IP table previously showed <code>0ms</code> and <code>0%</code> for tracking IPs that were down, skipped, or on disabled interfaces. Replaced with more informative sentinel values:</p>
+
+<ul>
+  <li><strong>Tracker down (<code>check_quality=1</code>):</strong> latency shows <code>-</code>, packet loss shows the measured loss percentage</li>
+  <li><strong>Skipped/ignored:</strong> both columns show <code>-</code></li>
+  <li><strong>Interface disabled:</strong> status shows "Disabled", both metric columns show <code>-</code></li>
+</ul>
+
+<p><strong>File changed:</strong> <code>applications/luci-app-mwan3/htdocs/luci-static/resources/view/mwan3/status/detail.js</code></p>
+
+<hr>
 
 <h2 id="version-3-2-2">Version 3.2.2</h2>
 
