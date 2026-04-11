@@ -219,6 +219,18 @@ function interfaces_status(request) {
 				'packetloss': get_int(ifname, sprintf('LOSS_%s', ip)),
 			});
 		}
+		// Derive check_quality from LATENCY file content rather than UCI.
+		// UCI may be stale if check_quality was changed without restarting mwan3track.
+		// mwan3track only writes LATENCY_* files when check_quality=1, so file
+		// presence with content is the authoritative indicator of actual state.
+		let check_quality = false;
+		for (let tip in track_ips) {
+			const lat = get_str_raw(ifname, sprintf('LATENCY_%s', tip.ip));
+			if (lat && length(rtrim(lat, '\n')) > 0) {
+				check_quality = true;
+				break;
+			}
+		}
 		interfaces[ifname] = {
 			'age': get_x_time(uptime, ifname, 'TIME'),
 			'online': get_x_time(uptime, ifname, 'ONLINE'),
@@ -232,7 +244,7 @@ function interfaces_status(request) {
 			'running': track_status == 'active',
 			'tracking': track_status,
 			'up': netstatus?.up || false,
-			'check_quality': ucibool(intf['check_quality'] || '0'),
+			'check_quality': check_quality,
 			'track_ip': track_ips,
 		};
 	});

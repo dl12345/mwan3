@@ -305,6 +305,12 @@ main() {
 				         "$MWAN3TRACK_STATUS_DIR/$INTERFACE/LOSS_${ip}" ;;
 			esac
 		done
+		local current_check_quality
+		config_get_bool current_check_quality "$INTERFACE" check_quality 0
+		if [ "$current_check_quality" -eq 0 ]; then
+			rm -f $MWAN3TRACK_STATUS_DIR/$INTERFACE/LATENCY_* \
+			      $MWAN3TRACK_STATUS_DIR/$INTERFACE/LOSS_* 2>/dev/null
+		fi
 	}
 	mwan3_load_track_ips
 
