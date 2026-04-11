@@ -126,7 +126,7 @@ internal()
 	echo "$dash"
 
 	local mwan3_ver
-	mwan3_ver=$(apk info mwan3 2>/dev/null | head -1 | sed 's/^mwan3-//; s/ .*//')
+	mwan3_ver=$(apk list -I 2>/dev/null | grep '^mwan3-' | head -1 | sed 's/^mwan3-//; s/ .*//')
 	[ -z "$mwan3_ver" ] && mwan3_ver="unknown"
 	echo "mwan3 - $mwan3_ver"
 
