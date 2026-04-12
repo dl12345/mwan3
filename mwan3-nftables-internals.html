@@ -156,10 +156,12 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
       <li><a href="#enh-track-gateway">15.3 Automatic Gateway Tracking (track_gateway)</a></li>
       <li><a href="#enh-snat4">15.4 Postrouting SNAT for Rerouted Router-Originated Traffic</a></li>
       <li><a href="#enh-snat6">15.5 Opt-in IPv6 SNAT via Per-Interface snat6</a></li>
+      <li><a href="#enh-diagnostic-tabs">15.6 Diagnostic Tabs: Simulator, Configuration Checker, and Routing Health</a></li>
     </ul>
   </li>
   <li><a href="#changelog">16. Changelog</a>
     <ul>
+      <li><a href="#version-3-3">Version 3.3</a></li>
       <li><a href="#version-3-2-3">Version 3.2.3</a></li>
       <li><a href="#version-3-2-2">Version 3.2.2</a></li>
       <li><a href="#version-3-2-1">Version 3.2.1</a></li>
@@ -1382,15 +1384,131 @@ uci show firewall.mwan3_reload
 
 <p><strong>Files changed:</strong> <code>lib/mwan3/mwan3.sh</code> (<code>mwan3_create_iface_nft()</code>), <code>applications/luci-app-mwan3/.../interface.js</code> (LuCI form field).</p>
 
+<!-- 15.6 -->
+<h3 id="enh-diagnostic-tabs">15.6 Diagnostic Tabs: Simulator, Configuration Checker, and Routing Health</h3>
+
+<p><strong>Problem:</strong> mwan3's routing model &mdash; ip rules, fwmark values, routing tables, and nft sets &mdash; is opaque to users who did not build it themselves. When traffic takes an unexpected path, or when a configuration change silently breaks policy routing, a non-expert user has no way to understand why without knowing which tools to run and how to interpret their output.</p>
+
+<p>Three diagnostic tabs were added to luci-app-mwan3 to close this gap.</p>
+
+<h4 id="enh-simulator">15.6.1 Traffic Path Simulator</h4>
+
+<p><strong>Location:</strong> Network &gt; MultiWAN Manager &gt; Simulator</p>
+
+<p>The Simulator tab lets the user describe a packet (source IP, destination IP, protocol, ports, address family) and see which mwan3 rule would match it first, what policy that rule assigns, and the live state of the policy's members at the moment of simulation.</p>
+
+<p><strong>Input semantics:</strong> all fields are optional. A blank field acts as a constraint on the <em>user's packet</em>, not a wildcard that bypasses rule matching. If a field is left blank and a rule has a constraint on that field, the rule will not match. This mirrors mwan3's runtime behaviour.</p>
+
+<p><strong>Connected-network bypass:</strong> Before the rule walk, the tab checks the destination IP against the <code>mwan3_connected_v4</code> and <code>mwan3_connected_v6</code> nft sets. If the destination falls in a directly connected subnet, a dedicated card explains that mwan3 exempts connected networks from policy routing entirely &mdash; mirroring the kernel behaviour where the connected-network check fires before any rule is evaluated.</p>
+
+<p><strong>Matching implementation:</strong></p>
+<ul>
+  <li>IPv4 CIDR matching uses uint32 arithmetic with <code>&gt;&gt;&gt; 0</code> to maintain unsigned semantics (JavaScript bitwise operators produce signed 32-bit results).</li>
+  <li>IPv6 CIDR matching uses BigInt with <code>::</code> expansion; the mask is computed as <code>all_ones XOR bottom_bits</code>.</li>
+  <li>Port matching handles single ports, comma- or space-separated lists, and colon-delimited ranges (<code>1024:2048</code>).</li>
+  <li>nft set membership for rules that use <code>ipset</code> is fetched live via the <code>mwan3.nftset_members</code> ubus method at simulation time.</li>
+</ul>
+
+<p><strong>Result display:</strong> The first matching rule is shown in a bordered card coloured green (policy has active members), red (all members offline or policy not found in UCI), or orange (terminal built-in policy). Subsequent rules that also matched but are superseded are listed in a shadowed-rules table below. If no rule matches, a muted card reports that traffic will use the main routing table.</p>
+
+<p><strong>File:</strong> <code>htdocs/luci-static/resources/view/mwan3/network/simulator.js</code></p>
+
+<h4 id="enh-config-checker">15.6.2 Configuration Consistency Checker</h4>
+
+<p><strong>Location:</strong> Network &gt; MultiWAN Manager &gt; Configuration</p>
+
+<p>The Configuration tab performs static analysis of the mwan3 UCI configuration without consulting any live system state. It runs automatically when the tab loads.</p>
+
+<p><strong>Errors (definite misconfiguration):</strong></p>
+<ul>
+  <li>Member references an interface not defined in mwan3 UCI</li>
+  <li>Policy references a member not defined in mwan3 UCI</li>
+  <li>Rule references a policy not defined in mwan3 UCI (traffic silently blackholed)</li>
+  <li>Policy has no members</li>
+</ul>
+
+<p><strong>Warnings (likely misconfiguration):</strong></p>
+<ul>
+  <li>Member, policy, or interface not referenced by any other section (orphaned)</li>
+  <li>Policy has multiple members but all reference the same physical interface (no failover if that interface goes down)</li>
+  <li>Rule is unreachable because an earlier rule matches a superset of its traffic</li>
+</ul>
+
+<p><strong>Rule shadowing check:</strong> Rule A is conservatively considered a superset of rule B if A has no tighter constraint than B on every field (family, protocol, source IP CIDR, destination IP CIDR, source port, destination port). CIDR containment is implemented for both IPv4 (uint32) and IPv6 (BigInt). ipset containment is not checked &mdash; only clear-cut address-range cases are flagged.</p>
+
+<p><strong>File:</strong> <code>htdocs/luci-static/resources/view/mwan3/network/configuration.js</code></p>
+
+<h4 id="enh-routing-health">15.6.3 Routing Table Health Check</h4>
+
+<p><strong>Location:</strong> Status &gt; MultiWAN Manager &gt; Routing</p>
+
+<p>The Routing tab compares the live kernel ip rule and routing table state against the mwan3 UCI configuration. It refreshes automatically via <code>poll.add</code>.</p>
+
+<p>One card is shown per UCI interface, colour-coded by health:</p>
+
+<table>
+<tr><th>State</th><th>Colour</th><th>Meaning</th></tr>
+<tr><td>Green</td><td>success</td><td>Online, both ip rules present, routing table has a default route</td></tr>
+<tr><td>Orange</td><td>warning</td><td>Degraded &mdash; online with a rule missing, or offline with rules unexpectedly present</td></tr>
+<tr><td>Red</td><td>danger</td><td>Online but ip rules or routing table default route missing</td></tr>
+<tr><td>Grey</td><td>muted</td><td>Offline or unknown status, rules absent &mdash; normal state</td></tr>
+</table>
+
+<p>Each card shows the interface's UCI index N, its current mwan3track status, and for each of the two ip rules (iif at priority 1000+N, fwmark at priority 2000+N) and the routing table (table N) whether the expected state is present or absent. Rule badges use <code>online</code> as the <code>expectedPresent</code> value so that absent rules on an offline interface show as &ldquo;Absent&rdquo; (grey) rather than &ldquo;Missing&rdquo; (red).</p>
+
+<p><strong>Stale rule detection:</strong> Any ip rule with a priority in mwan3's iif range (1001&ndash;1063) or fwmark range (2001&ndash;2063) that does not correspond to a current UCI interface is reported as stale. The built-in blackhole (<code>FWMARK_BASE + MAX_IFACES - 2 = 2061</code>) and unreachable (<code>FWMARK_BASE + MAX_IFACES - 1 = 2062</code>) policy rules are explicitly excluded.</p>
+
+<p>A static field reference panel below the interface cards explains the Index (N), iif rule, and fwmark rule fields for users unfamiliar with policy routing internals.</p>
+
+<p><strong>File:</strong> <code>htdocs/luci-static/resources/view/mwan3/status/routing.js</code></p>
+
+<h4 id="enh-diagnostic-rpcd">15.6.4 New rpcd Methods</h4>
+
+<p>Two new methods were added to <code>usr/share/rpcd/ucode/mwan3</code> and declared in <code>root/usr/share/rpcd/acl.d/luci-app-mwan3.json</code>.</p>
+
+<p><strong><code>mwan3.nftset_members { set: "&lt;name&gt;" }</code></strong> &mdash; Returns the current members of a named nft set in <code>table inet fw4</code>. The set name is validated against <code>^[a-zA-Z0-9_-]+$</code> before being passed to <code>nft -j list set</code>. Returns <code>{ members: [ ... ] }</code>. Used by the Simulator for ipset rule matching and connected-network bypass detection.</p>
+
+<p><strong><code>mwan3.routing_health {}</code></strong> &mdash; Compares the UCI configuration against live kernel state. For each mwan3 interface (by 1-based UCI order index N):</p>
+<ul>
+  <li>Checks for ip rule at priority 1000+N (iif) and 2000+N (fwmark) via <code>ip -j rule list</code></li>
+  <li>Checks routing table N for a default route via <code>ip -4/-6 -j route list table N</code></li>
+  <li>Reads <code>/var/run/mwan3track/&lt;ifname&gt;/STATUS</code> for current online/offline state</li>
+  <li>Reports stale ip rules (priorities in mwan3's range with no matching UCI interface)</li>
+  <li>Reports whether mwan3 is actively running (presence of any STATUS file under <code>/var/run/mwan3track/</code>)</li>
+</ul>
+
+<p><strong>Files changed:</strong> <code>files/usr/share/rpcd/ucode/mwan3</code>, <code>root/usr/share/rpcd/acl.d/luci-app-mwan3.json</code>, <code>root/usr/share/luci/menu.d/luci-app-mwan3.json</code></p>
+
 <hr>
 
 <p style="text-align:center; color:#6b7280; font-size:0.85em; margin-top:3rem;">
-mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-11
+mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-12
 </p>
 
 <hr>
 
 <h1 id="changelog">Changelog</h1>
+
+<h2 id="version-3-3">Version 3.3</h2>
+
+<p>Adds three diagnostic tabs to luci-app-mwan3 and two new rpcd ubus methods to support them.</p>
+
+<h3>luci-app-mwan3: add Traffic Path Simulator tab</h3>
+<p>New tab at Network &gt; MultiWAN Manager &gt; Simulator. Simulates which mwan3 rule matches a described packet (source IP, destination IP, protocol, ports, address family) and shows live policy member state. Implements IPv4 and IPv6 CIDR matching, port range matching, live nft set membership queries via the new <code>nftset_members</code> ubus method, and connected-network bypass detection via the <code>mwan3_connected_v4</code>/<code>mwan3_connected_v6</code> nft sets. See <a href="#enh-simulator">§15.6.1</a>.</p>
+
+<h3>luci-app-mwan3: add Configuration Consistency Checker tab</h3>
+<p>New tab at Network &gt; MultiWAN Manager &gt; Configuration. Performs static analysis of the mwan3 UCI configuration without consulting live system state. Detects undefined member/policy/interface references, orphaned sections, policies with no members, all-same-interface policies, and shadowed rules via IPv4 and IPv6 CIDR containment. See <a href="#enh-config-checker">§15.6.2</a>.</p>
+
+<h3>luci-app-mwan3: add Routing Table Health Check tab</h3>
+<p>New tab at Status &gt; MultiWAN Manager &gt; Routing. Compares live kernel ip rule and routing table state against the mwan3 UCI configuration. Refreshes automatically. Per-interface cards show iif rule, fwmark rule, and routing table health with colour-coded badges. Reports stale ip rules. Includes a field reference panel explaining the ip rule priority scheme for non-expert users. See <a href="#enh-routing-health">§15.6.3</a>.</p>
+
+<h3>mwan3: add nftset_members and routing_health rpcd ubus methods</h3>
+<p><code>mwan3.nftset_members { set: "&lt;name&gt;" }</code> returns the current members of a named nft set in <code>table inet fw4</code>. Used by the Simulator tab for ipset rule matching and connected-network bypass detection.</p>
+<p><code>mwan3.routing_health {}</code> compares UCI configuration against live kernel state: checks ip rules at priorities 1000+N (iif) and 2000+N (fwmark) per interface, checks routing table N for a default route, reads mwan3track STATUS files, and reports stale ip rules. Built-in blackhole (2061) and unreachable (2062) policy rules are excluded from stale detection. See <a href="#enh-diagnostic-rpcd">§15.6.4</a>.</p>
+
+<p><strong>Files changed:</strong> <code>files/usr/share/rpcd/ucode/mwan3</code>, <code>root/usr/share/rpcd/acl.d/luci-app-mwan3.json</code>, <code>root/usr/share/luci/menu.d/luci-app-mwan3.json</code>, <code>htdocs/luci-static/resources/view/mwan3/network/simulator.js</code> (new), <code>htdocs/luci-static/resources/view/mwan3/network/configuration.js</code> (new), <code>htdocs/luci-static/resources/view/mwan3/status/routing.js</code> (new).</p>
+
+<hr>
 
 <h2 id="version-3-2-3">Version 3.2.3</h2>
 
