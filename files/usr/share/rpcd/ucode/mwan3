@@ -64,6 +64,164 @@ const nft_connected_set = {
 	'6': 'mwan3_connected_v6',
 };
 
+function get_nftset_members(setname) {
+	if (!match(setname, /^[a-zA-Z0-9_-]+$/))
+		return [];
+	const nft = popen(sprintf('nft -j list set inet fw4 %s 2>/dev/null', setname), 'r');
+	if (!nft)
+		return [];
+	const raw = nft.read('all');
+	nft.close();
+	if (!raw || length(raw) == 0)
+		return [];
+	let data;
+	try {
+		data = json(raw);
+	} catch(e) {
+		return [];
+	}
+	const members = [];
+	if (data?.nftables) {
+		for (let item in data.nftables) {
+			if (item?.set?.elem) {
+				for (let elem in item.set.elem) {
+					if (type(elem) == 'string') {
+						push(members, elem);
+					} else if (type(elem) == 'object') {
+						if (elem?.prefix)
+							push(members, sprintf('%s/%d', elem.prefix.addr, elem.prefix.len));
+						else if (elem?.range)
+							push(members, sprintf('%s-%s', elem.range[0], elem.range[1]));
+					}
+				}
+			}
+		}
+	}
+	return members;
+}
+
+function get_ip_rules() {
+	const proc = popen('ip -j rule list 2>/dev/null', 'r');
+	if (!proc)
+		return [];
+	const raw = proc.read('all');
+	proc.close();
+	if (!raw || length(raw) == 0)
+		return [];
+	try {
+		return json(raw) || [];
+	} catch(e) {
+		return [];
+	}
+}
+
+function get_table_routes(table_id) {
+	const routes = [];
+	for (let family in ['-4', '-6']) {
+		const proc = popen(sprintf('ip %s -j route list table %d 2>/dev/null', family, table_id), 'r');
+		if (!proc) continue;
+		const raw = proc.read('all');
+		proc.close();
+		if (!raw || length(raw) == 0) continue;
+		try {
+			const parsed = json(raw);
+			if (type(parsed) == 'array') {
+				for (let r in parsed)
+					push(routes, r);
+			}
+		} catch(e) {}
+	}
+	return routes;
+}
+
+function routing_health() {
+	const IIF_BASE    = 1000;
+	const FWMARK_BASE = 2000;
+	const MAX_IFACES  = 63;
+
+	const uci = cursor();
+
+	// Build ordered interface list with 1-based index (same ordering mwan3 uses)
+	const iface_order = [];
+	const iface_index = {};
+	uci.foreach('mwan3', 'interface', intf => {
+		push(iface_order, intf['.name']);
+		iface_index[intf['.name']] = length(iface_order);
+	});
+
+	// Fetch all ip rules and index by priority for O(1) lookup
+	const all_rules = get_ip_rules();
+	const rule_by_priority = {};
+	for (let rule in all_rules) {
+		if (rule?.priority != null)
+			rule_by_priority[rule.priority] = rule;
+	}
+
+	// Pre-build the set of priorities that correspond to current UCI interfaces
+	const valid_priorities = {};
+	for (let ifname in iface_order) {
+		const id = iface_index[ifname];
+		valid_priorities[IIF_BASE + id]    = true;
+		valid_priorities[FWMARK_BASE + id] = true;
+	}
+	// Built-in policy rules are always valid: blackhole (MAX_IFACES-2) and unreachable (MAX_IFACES-1)
+	valid_priorities[FWMARK_BASE + MAX_IFACES - 2] = true;
+	valid_priorities[FWMARK_BASE + MAX_IFACES - 1] = true;
+
+	// Per-interface health report
+	const result = {};
+	for (let ifname in iface_order) {
+		const id            = iface_index[ifname];
+		const iif_pri       = IIF_BASE + id;
+		const fwmark_pri    = FWMARK_BASE + id;
+		const iif_rule      = rule_by_priority[iif_pri];
+		const fwmark_rule   = rule_by_priority[fwmark_pri];
+		const table_routes  = get_table_routes(id);
+		const default_routes = filter(table_routes, r =>
+			r?.dst == 'default' || r?.dst == '0.0.0.0/0' || r?.dst == '::/0'
+		);
+		const status = get_str(ifname, 'STATUS') || 'unknown';
+
+		result[ifname] = {
+			index: id,
+			status: status,
+			iif_rule: {
+				present:  iif_rule != null,
+				priority: iif_pri,
+			},
+			fwmark_rule: {
+				present:  fwmark_rule != null,
+				priority: fwmark_pri,
+			},
+			table: {
+				id:           id,
+				has_default:  length(default_routes) > 0,
+				default_routes: map(default_routes, r => ({
+					dst: r.dst,
+					gateway: r.gateway,
+					dev: r.dev,
+					family: (r.dst == '::/0') ? 'ipv6' : 'ipv4',
+				})),
+			},
+		};
+	}
+
+	// Stale rules: priorities in mwan3 ranges but not matching any current UCI interface
+	const stale = [];
+	for (let rule in all_rules) {
+		const p = rule?.priority;
+		if (p == null) continue;
+		const in_iif_range    = (p > IIF_BASE    && p <= IIF_BASE    + MAX_IFACES);
+		const in_fwmark_range = (p > FWMARK_BASE && p <= FWMARK_BASE + MAX_IFACES);
+		if ((in_iif_range || in_fwmark_range) && !valid_priorities[p])
+			push(stale, { priority: p });
+	}
+
+	const mwan3_active = length(glob('/var/run/mwan3track/*/STATUS') || []) > 0;
+
+	return { interfaces: result, stale_rules: stale, mwan3_active: mwan3_active };
+}
+
 function get_connected_ips(version) {
 	const setname = nft_connected_set[version];
 	const nft = popen(sprintf('nft -j list set inet fw4 %s 2>/dev/null', setname), 'r');
@@ -252,6 +410,21 @@ function interfaces_status(request) {
 }
 
 const methods = {
+	nftset_members: {
+		args: { set: 'set' },
+		call: function(request) {
+			const setname = request.args.set;
+			if (!setname)
+				return { error: 'set name required', members: [] };
+			return { members: get_nftset_members(setname) };
+		}
+	},
+	routing_health: {
+		args: {},
+		call: function(request) {
+			return routing_health();
+		}
+	},
 	status: {
 		args: {
 			section: 'section',
