@@ -1,0 +1,576 @@
+#!/bin/sh
+
+# mwan3-lb-test - Load balancing distribution verifier
+#
+# Verifies that a mwan3 load-balancing policy distributes traffic according
+# to its configured member weights. Inserts temporary nft counter rules,
+# generates a test command using mwan3 tracking IPs, waits for the user to
+# run it, then reports per-member actual vs expected hit counts.
+#
+# Usage: mwan3-lb-test [-6] <policy_name> [ip1 ip2 ...]
+#
+# -6            Test IPv6 traffic distribution instead of IPv4 (default).
+#
+# Optional IP arguments override the default set of well-known public IPs
+# used as ping destinations. Provide at least two distinct IPs. Use this
+# when the well-known defaults are not reachable from your WAN links.
+#
+# Run on the router as root.
+
+. /lib/functions.sh
+
+TABLE="inet fw4"
+MWAN3TRACK_STATUS_DIR="/var/run/mwan3track"
+MMX_MASK=$(uci -q get mwan3.globals.mmx_mask 2>/dev/null || echo "0x3f00")
+HANDLES=""
+TEST_RULE_HANDLE=""
+TEST_SET="mwan3_lb_test_$$"
+IPV6=0
+POLICY=""
+MEMBERS=""
+MEMBER_MARKS=""
+MEMBER_WEIGHTS=""
+MEMBER_IFACES=""
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+die() {
+	echo "ERROR: $*" >&2
+	cleanup
+	exit 1
+}
+
+warn() {
+	echo "WARNING: $*" >&2
+}
+
+cleanup() {
+	# Remove temporary test rule from mwan3_rules
+	if [ -n "$TEST_RULE_HANDLE" ]; then
+		nft delete rule $TABLE mwan3_rules handle "$TEST_RULE_HANDLE" 2>/dev/null
+		TEST_RULE_HANDLE=""
+	fi
+	# Remove temporary destination set
+	nft delete set $TABLE "$TEST_SET" 2>/dev/null
+	# Remove diagnostic counter rules from policy chain
+	[ -z "$HANDLES" ] && return
+	for h in $HANDLES; do
+		nft delete rule $TABLE "mwan3_policy_${POLICY}" handle "$h" 2>/dev/null
+	done
+	HANDLES=""
+}
+
+trap 'echo; echo "Interrupted - cleaning up..."; cleanup; exit 1' INT TERM PIPE
+
+# Append handle to HANDLES list
+add_handle() {
+	if [ -z "$HANDLES" ]; then
+		HANDLES="$1"
+	else
+		HANDLES="$HANDLES $1"
+	fi
+}
+
+# ---------------------------------------------------------------------------
+# Argument check
+# ---------------------------------------------------------------------------
+
+if [ "$1" = "-6" ]; then
+	IPV6=1
+	shift
+fi
+
+if [ -z "$1" ]; then
+	echo "Usage: $0 [-6] <policy_name> [ip1 ip2 ...]"
+	echo
+	echo "  -6    Test IPv6 traffic distribution (default: IPv4)"
+	echo
+	echo "  Optional IP arguments override the default well-known public IPs."
+	echo
+	echo "Available load-balancing policies:"
+	nft list chains inet 2>/dev/null \
+		| awk '/mwan3_policy_/{gsub(/.*mwan3_policy_/,""); gsub(/ \{.*/,""); print}' \
+		| sort -u \
+		| while read -r name; do
+			nft list chain inet fw4 "mwan3_policy_${name}" 2>/dev/null \
+				| grep -q "numgen" && echo "  $name"
+		done
+	exit 1
+fi
+
+POLICY="$1"
+shift
+CHAIN="mwan3_policy_${POLICY}"
+CUSTOM_IPS="$*"
+
+# ---------------------------------------------------------------------------
+# Pre-flight: chain exists
+# ---------------------------------------------------------------------------
+
+nft list chain $TABLE "$CHAIN" >/dev/null 2>&1 \
+	|| die "chain $CHAIN not found - is mwan3 running?"
+
+# ---------------------------------------------------------------------------
+# Pre-flight: chain contains a numgen rule (load-balancing policy)
+# ---------------------------------------------------------------------------
+
+NUMGEN_LINE=$(nft list chain $TABLE "$CHAIN" 2>/dev/null | grep "numgen")
+[ -n "$NUMGEN_LINE" ] \
+	|| die "policy $POLICY has no numgen rule - it is not a load-balancing policy (single active member or all members offline)"
+
+# ---------------------------------------------------------------------------
+# Pre-flight: read members and weights from UCI
+# ---------------------------------------------------------------------------
+
+config_load mwan3
+
+collect_member() {
+	local member="$1"
+	local iface weight
+	config_get iface  "$member" interface ""
+	config_get weight "$member" weight    1
+	[ -z "$iface" ] && return
+	MEMBERS="$MEMBERS $member"
+	MEMBER_IFACES="$MEMBER_IFACES $iface"
+	MEMBER_WEIGHTS="$MEMBER_WEIGHTS $weight"
+}
+
+config_list_foreach "$POLICY" use_member collect_member
+
+MEMBERS="${MEMBERS# }"
+MEMBER_IFACES="${MEMBER_IFACES# }"
+MEMBER_WEIGHTS="${MEMBER_WEIGHTS# }"
+
+[ -z "$MEMBERS" ] && die "policy $POLICY has no members in UCI config"
+
+MEMBER_COUNT=$(echo "$MEMBER_WEIGHTS" | wc -w)
+[ "$MEMBER_COUNT" -ge 2 ] || die "policy $POLICY has fewer than two members in UCI config"
+
+# ---------------------------------------------------------------------------
+# Pre-flight: parse member marks from live numgen vmap
+#
+# The vmap entries are in member order, matching UCI use_member list order.
+# Each entry jumps to mwan3_or_meta_0xMARK; extract MARK from chain name.
+# ---------------------------------------------------------------------------
+
+MEMBER_MARKS=$(echo "$NUMGEN_LINE" \
+	| grep -oE 'mwan3_or_meta_0x[0-9a-f]+' \
+	| sed 's/mwan3_or_meta_//')
+
+MARK_COUNT=$(echo "$MEMBER_MARKS" | wc -w)
+
+# For mixed IPv4/IPv6 policies there may be two numgen lines; marks may repeat.
+# Deduplicate while preserving order.
+MEMBER_MARKS=$(echo "$MEMBER_MARKS" | tr ' ' '\n' | awk '!seen[$0]++' | tr '\n' ' ')
+MEMBER_MARKS="${MEMBER_MARKS% }"
+MARK_COUNT=$(echo "$MEMBER_MARKS" | wc -w)
+
+[ "$MARK_COUNT" -lt 2 ] \
+	&& die "could not parse at least two member marks from numgen vmap"
+
+[ "$MARK_COUNT" -ne "$MEMBER_COUNT" ] \
+	&& warn "mark count ($MARK_COUNT) differs from UCI member count ($MEMBER_COUNT) - mixed IPv4/IPv6 policy; per-member results may be approximate"
+
+# Normalise marks to consistent hex format (no leading zeros beyond 0x prefix)
+# so our inserted rule syntax and the awk extraction both use the same values.
+MEMBER_MARKS_NORM=""
+for mark in $MEMBER_MARKS; do
+	norm=$(printf "0x%x" "$((mark))")
+	MEMBER_MARKS_NORM="$MEMBER_MARKS_NORM $norm"
+done
+MEMBER_MARKS="${MEMBER_MARKS_NORM# }"
+
+# ---------------------------------------------------------------------------
+# Startup cleanup: remove stale mwan3_lb_test_* artifacts from aborted runs
+# ---------------------------------------------------------------------------
+
+for stale_set in $(nft list sets inet 2>/dev/null \
+		| awk '/mwan3_lb_test_/{gsub(/.*mwan3_lb_test_/,"mwan3_lb_test_"); gsub(/ \{.*/,""); print}'); do
+	stale_handle=$(nft -a list chain $TABLE mwan3_rules 2>/dev/null \
+		| awk "/@${stale_set}/{print \$NF; exit}")
+	[ -n "$stale_handle" ] && \
+		nft delete rule $TABLE mwan3_rules handle "$stale_handle" 2>/dev/null
+	nft delete set $TABLE "$stale_set" 2>/dev/null
+done
+
+# ---------------------------------------------------------------------------
+# Pre-flight: warn if other rules use this policy
+# ---------------------------------------------------------------------------
+
+OTHER_RULES=$(nft list chain $TABLE mwan3_rules 2>/dev/null \
+	| grep "jump ${CHAIN}" \
+	| grep -v "^[[:space:]]*#")
+
+RULE_COUNT=$(echo "$OTHER_RULES" | grep -c "jump ${CHAIN}" 2>/dev/null)
+if [ "$RULE_COUNT" -gt 1 ]; then
+	warn "$RULE_COUNT rules send traffic to policy $POLICY."
+	warn "flows from rules other than your test rule will also increment the counter."
+	warn "consider temporarily disabling other rules using this policy before testing."
+	echo
+fi
+
+# ---------------------------------------------------------------------------
+# Compute N
+#
+# NITER = (total_weight / GCD(all_weights)) * multiplier
+# where multiplier = ceil(30 / base_N), giving NITER >= 30.
+# This ensures NITER * weight_i / total_weight is an integer for every member.
+# ---------------------------------------------------------------------------
+
+TOTAL_WEIGHT=0
+for w in $MEMBER_WEIGHTS; do
+	TOTAL_WEIGHT=$((TOTAL_WEIGHT + w))
+done
+
+GCD_WEIGHTS=$(echo "$MEMBER_WEIGHTS" | tr ' ' '\n' | \
+	awk 'BEGIN{g=0} {
+		a=$1; b=g;
+		while(b!=0){t=b; b=a%b; a=t}
+		g=a
+	} END{print g}')
+
+BASE_N=$((TOTAL_WEIGHT / GCD_WEIGHTS))
+MULTIPLIER=$(( (30 + BASE_N - 1) / BASE_N ))
+NITER=$((BASE_N * MULTIPLIER))
+
+# ---------------------------------------------------------------------------
+# Collect test destination IPs
+#
+# Use well-known public IPs that should be reachable from any WAN link.
+# Exclude any IPs that mwan3track is already pinging: those pings go through
+# mwan3_output -> mwan3_rules and would match the test rule, contaminating
+# the counter with router-originated traffic.
+# ---------------------------------------------------------------------------
+
+if [ -n "$CUSTOM_IPS" ]; then
+	TRACK_IPS="$CUSTOM_IPS"
+	CUSTOM_IP_COUNT=$(echo "$TRACK_IPS" | wc -w)
+	[ "$CUSTOM_IP_COUNT" -lt 2 ] && die "at least two destination IPs are required (got $CUSTOM_IP_COUNT)"
+else
+	# Collect all track_ip values configured across all mwan3 interfaces.
+	MWAN3_TRACKED_IPS=""
+	collect_iface_track_ips() {
+		local iface_track_ips
+		config_get iface_track_ips "$1" track_ip ""
+		MWAN3_TRACKED_IPS="$MWAN3_TRACKED_IPS $iface_track_ips"
+	}
+	config_foreach collect_iface_track_ips interface
+
+	# Default pools - exclude IPs that mwan3track is already pinging
+	# (those go through mwan3_output -> mwan3_rules and contaminate the counter).
+	if [ "$IPV6" -eq 1 ]; then
+		DEFAULT_POOL="2001:4860:4860::8888 2001:4860:4860::8844 2606:4700:4700::1111 2606:4700:4700::1001 2620:fe::fe 2620:fe::9 2620:119:35::35 2620:119:53::53"
+	else
+		DEFAULT_POOL="8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1 9.9.9.9 149.112.112.112 208.67.222.222 208.67.220.220 4.2.2.1 4.2.2.2 185.228.168.168 185.228.169.168"
+	fi
+
+	TRACK_IPS=""
+	for ip in $DEFAULT_POOL; do
+		case " $MWAN3_TRACKED_IPS " in
+			*" $ip "*) ;;
+			*) TRACK_IPS="$TRACK_IPS $ip" ;;
+		esac
+	done
+	TRACK_IPS="${TRACK_IPS# }"
+
+	[ -z "$TRACK_IPS" ] && die "all default destination IPs are configured as mwan3 tracking IPs - use the IP override argument to specify test destinations not being tracked"
+fi
+TRACK_COUNT=$(echo "$TRACK_IPS" | wc -w)
+
+# Build the rotated destination array for the generated command.
+# Each iteration pings TRACK_IPS[i % TRACK_COUNT].
+# Expand to exactly N destinations, rotating through the pool.
+DEST_LIST=""
+i=0
+for seq in $(seq 1 "$NITER"); do
+	idx=$((i % TRACK_COUNT + 1))
+	dst=$(echo "$TRACK_IPS" | tr ' ' '\n' | sed -n "${idx}p")
+	DEST_LIST="$DEST_LIST $dst"
+	i=$((i + 1))
+done
+DEST_LIST="${DEST_LIST# }"
+
+# ---------------------------------------------------------------------------
+# Compute expected per-member hits
+# ---------------------------------------------------------------------------
+
+EXPECTED_LIST=""
+for w in $MEMBER_WEIGHTS; do
+	expected=$((NITER * w / TOTAL_WEIGHT))
+	EXPECTED_LIST="$EXPECTED_LIST $expected"
+done
+EXPECTED_LIST="${EXPECTED_LIST# }"
+
+# ---------------------------------------------------------------------------
+# Insert temporary test rule into mwan3_rules
+#
+# Creates a temporary nft set containing the test destination IPs and inserts
+# a rule at the head of mwan3_rules that directs matching traffic to the
+# policy under test. This ensures the test pings hit the policy chain without
+# requiring the user to add a permanent rule. Both the rule and the set are
+# removed by cleanup().
+# ---------------------------------------------------------------------------
+
+echo "Adding temporary test rule to mwan3_rules..."
+echo
+
+if [ "$IPV6" -eq 1 ]; then
+	SET_TYPE="ipv6_addr"
+	PROTO_MATCH="meta l4proto ipv6-icmp ip6 daddr"
+	PING_CMD="ping6"
+else
+	SET_TYPE="ipv4_addr"
+	PROTO_MATCH="meta l4proto icmp ip daddr"
+	PING_CMD="ping"
+fi
+
+# The rule matches ICMP/ICMPv6 only - not DNS, TCP, or other traffic to these
+# IPs. This prevents contamination from DNS forwarders and rogue clients that
+# bypass the local resolver, without needing to avoid popular DNS server IPs.
+nft add set $TABLE "$TEST_SET" { type "$SET_TYPE" \; } \
+	|| die "failed to create temporary destination set $TEST_SET"
+
+for ip in $TRACK_IPS; do
+	nft add element $TABLE "$TEST_SET" { "$ip" } 2>/dev/null
+done
+
+nft insert rule $TABLE mwan3_rules \
+	$PROTO_MATCH @"$TEST_SET" meta mark \& "$MMX_MASK" == 0 \
+	jump "mwan3_policy_${POLICY}" \
+	|| die "failed to insert temporary test rule into mwan3_rules"
+
+TEST_RULE_HANDLE=$(nft -a list chain $TABLE mwan3_rules 2>/dev/null \
+	| awk "/@${TEST_SET}/{print \$NF; exit}")
+[ -n "$TEST_RULE_HANDLE" ] || die "could not read temporary test rule handle"
+
+# ---------------------------------------------------------------------------
+# Print summary
+# ---------------------------------------------------------------------------
+
+echo "=== mwan3 load balancing distribution test ==="
+echo
+echo "Policy          : $POLICY"
+echo "MMX mask        : $MMX_MASK"
+echo "IP family       : $([ "$IPV6" -eq 1 ] && echo IPv6 || echo IPv4)"
+echo "Test iterations : $NITER  (base=$BASE_N x${MULTIPLIER}, total_weight=$TOTAL_WEIGHT, GCD=$GCD_WEIGHTS)"
+if [ -n "$CUSTOM_IPS" ]; then
+	echo "Destinations    : $TRACK_IPS  (user override)"
+elif [ -n "$MWAN3_TRACKED_IPS" ]; then
+	echo "Destinations    : $TRACK_IPS  (well-known IPs, excluding mwan3 tracking IPs)"
+else
+	echo "Destinations    : $TRACK_IPS  (well-known IPs)"
+fi
+echo
+printf "%-20s %-10s %-10s %-16s %s\n" "Member" "Interface" "Weight" "Mark" "Expected hits"
+printf "%-20s %-10s %-10s %-16s %s\n" "------" "---------" "------" "----" "-------------"
+
+i=1
+for member in $MEMBERS; do
+	iface=$(echo "$MEMBER_IFACES" | tr ' ' '\n' | sed -n "${i}p")
+	weight=$(echo "$MEMBER_WEIGHTS" | tr ' ' '\n' | sed -n "${i}p")
+	mark=$(echo "$MEMBER_MARKS" | tr ' ' '\n' | sed -n "${i}p")
+	expected=$(echo "$EXPECTED_LIST" | tr ' ' '\n' | sed -n "${i}p")
+	printf "%-20s %-10s %-10s %-16s %s\n" "$member" "$iface" "$weight" "${mark:--}" "${expected:--}"
+	i=$((i + 1))
+done
+echo
+
+# ---------------------------------------------------------------------------
+# Insert diagnostic rules
+#
+# Insertion order (each insert prepends, so insert in reverse of desired order):
+#   desired: [unguarded] [guarded] [numgen] [member counters...] [last_resort]
+#   insert:  guarded first (becomes head), then unguarded (pushes guarded to #2)
+#   member counters inserted before last_resort handle using 'add rule position'
+# ---------------------------------------------------------------------------
+
+echo "Adding diagnostic rules..."
+
+# Guarded counter (mark==0) - inserted at head
+nft insert rule $TABLE "$CHAIN" meta mark \& "$MMX_MASK" == 0 counter \
+	|| die "failed to add guarded counter"
+
+GUARDED_HANDLE=$(nft -a list chain $TABLE "$CHAIN" 2>/dev/null \
+	| awk '/meta mark.*== 0x.*counter/{print $NF; exit}')
+[ -n "$GUARDED_HANDLE" ] || die "could not read guarded counter handle"
+add_handle "$GUARDED_HANDLE"
+
+# Unguarded counter - inserted at head (pushes guarded to position 2)
+nft insert rule $TABLE "$CHAIN" counter \
+	|| die "failed to add unguarded counter"
+
+UNGUARDED_HANDLE=$(nft -a list chain $TABLE "$CHAIN" 2>/dev/null \
+	| awk '/^\t\tcounter packets/{print $NF; exit}')
+[ -n "$UNGUARDED_HANDLE" ] || die "could not read unguarded counter handle"
+add_handle "$UNGUARDED_HANDLE"
+
+# Per-member counters - inserted before last_resort (last rule in chain)
+# Use 'nft add rule position <handle>' which inserts AFTER the given handle.
+# We insert after the last numgen rule handle so counters sit between numgen
+# and last_resort regardless of how many numgen lines the chain has.
+NUMGEN_HANDLE=$(nft -a list chain $TABLE "$CHAIN" 2>/dev/null \
+	| awk '/numgen/{last=$NF} END{print last}')
+[ -n "$NUMGEN_HANDLE" ] || die "could not read numgen rule handle"
+
+PREV_HANDLE="$NUMGEN_HANDLE"
+for mark in $MEMBER_MARKS; do
+	nft add rule $TABLE "$CHAIN" position "$PREV_HANDLE" \
+		meta mark \& "$MMX_MASK" == "$mark" counter \
+		|| die "failed to add per-member counter for mark $mark"
+
+	# Read handle of the rule just inserted (it follows PREV_HANDLE)
+	NEW_HANDLE=$(nft -a list chain $TABLE "$CHAIN" 2>/dev/null \
+		| awk -v prev="$PREV_HANDLE" '
+			/handle/{
+				if (found) { print $NF; exit }
+				if ($NF == prev) found=1
+			}')
+	[ -n "$NEW_HANDLE" ] || die "could not read per-member counter handle for mark $mark"
+	add_handle "$NEW_HANDLE"
+	PREV_HANDLE="$NEW_HANDLE"
+done
+
+echo "Done. Current chain state:"
+nft list chain $TABLE "$CHAIN"
+echo
+
+# ---------------------------------------------------------------------------
+# Print test command
+# ---------------------------------------------------------------------------
+
+echo "----------------------------------------------------------------------"
+echo
+echo "Run the following on a LAN client (or on the router itself to test"
+echo "the output path):"
+echo
+
+# Print DEST_LIST wrapped at 4 IPs per line with \ continuation
+printf "  for dst in"
+col=0
+for dst in $DEST_LIST; do
+	if [ "$col" -eq 0 ]; then
+		printf " \\\\\n    %s" "$dst"
+	else
+		printf " %s" "$dst"
+	fi
+	col=$(( (col + 1) % 4 ))
+done
+echo "; do"
+echo "    echo -n \"\$dst: \""
+echo "    $PING_CMD -c1 -W2 \"\$dst\" >/dev/null 2>&1 && echo ok || echo timeout"
+echo "    sleep 2"
+echo "  done"
+echo
+echo "Press Enter here when the test is complete..."
+echo
+echo "----------------------------------------------------------------------"
+read _
+
+# ---------------------------------------------------------------------------
+# Read results
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== Results ==="
+echo
+CHAIN_DUMP=$(nft list chain $TABLE "$CHAIN" 2>/dev/null)
+
+TOTAL=$(echo "$CHAIN_DUMP" \
+	| awk '/^\t\tcounter packets/{for(i=1;i<=NF;i++) if($i=="packets"){print $(i+1); exit}}')
+NEW=$(echo "$CHAIN_DUMP" \
+	| awk '/meta mark.*== 0x.*counter/{for(i=1;i<=NF;i++) if($i=="packets"){print $(i+1); exit}}')
+
+# Read per-member counts. The member counter rules match 'meta mark & X == MARK counter'.
+# They appear after the numgen rule. Extract in mark order.
+MEMBER_ACTUALS=""
+for mark in $MEMBER_MARKS; do
+	count=$(echo "$CHAIN_DUMP" \
+		| awk -v mark="$mark" '
+			/meta mark.*== .*counter/{
+				for(i=1;i<=NF;i++){
+					if($i=="==" && strtonum($(i+1))==strtonum(mark) && strtonum(mark)!=0){
+						for(j=i;j<=NF;j++){
+							if($j=="packets"){print $(j+1); exit}
+						}
+					}
+				}
+			}')
+	MEMBER_ACTUALS="$MEMBER_ACTUALS ${count:-0}"
+done
+MEMBER_ACTUALS="${MEMBER_ACTUALS# }"
+
+# ---------------------------------------------------------------------------
+# Report
+# ---------------------------------------------------------------------------
+
+echo "--- Summary ---"
+echo
+printf "%-40s %s\n" "Total packets entering chain:" "${TOTAL:-unknown}"
+printf "%-40s %s\n" "New-connection packets (mark=0):" "${NEW:-unknown}"
+printf "%-40s %s\n" "Test iterations:" "$NITER"
+echo
+
+CONTAMINATED=0
+if [ -n "$TOTAL" ] && [ -n "$NEW" ]; then
+	if [ "$TOTAL" -gt "$NEW" ] 2>/dev/null; then
+		STALE=$((TOTAL - NEW))
+		warn "$STALE packets had mark != 0 when entering the chain."
+		warn "Established-connection packets should not reach this chain."
+		warn "Per-member counts below may be inflated - check for prerouting early-exit bugs."
+		echo
+		CONTAMINATED=1
+	fi
+fi
+
+echo "--- Per-member distribution ---"
+echo
+printf "%-20s %-10s %-10s %-10s %-10s\n" "Member" "Interface" "Expected" "Actual" "Deviation"
+printf "%-20s %-10s %-10s %-10s %-10s\n" "------" "---------" "--------" "------" "---------"
+
+PASS=1
+i=1
+for member in $MEMBERS; do
+	iface=$(echo "$MEMBER_IFACES" | tr ' ' '\n' | sed -n "${i}p")
+	expected=$(echo "$EXPECTED_LIST" | tr ' ' '\n' | sed -n "${i}p")
+	actual=$(echo "$MEMBER_ACTUALS" | tr ' ' '\n' | sed -n "${i}p")
+	[ -z "$actual" ] && actual=0
+	deviation=$((actual - expected))
+	dev_str="$deviation"
+	[ "$deviation" -gt 0 ] && dev_str="+$deviation"
+	abs_dev=$deviation
+	[ "$abs_dev" -lt 0 ] && abs_dev=$((-abs_dev))
+	[ "$abs_dev" -gt 2 ] && PASS=0
+	printf "%-20s %-10s %-10s %-10s %-10s\n" "$member" "$iface" "$expected" "$actual" "$dev_str"
+	i=$((i + 1))
+done
+echo
+
+if [ -n "$NEW" ] && [ "$NEW" -ne "$NITER" ] 2>/dev/null; then
+	EXTRA=$((NEW - NITER))
+	if [ "$EXTRA" -gt 0 ]; then
+		echo "FAIL: $EXTRA extra new-connection hits beyond $NITER test iterations."
+		echo "      Something other than your test flows is reaching this policy chain."
+		echo "      Check whether another rule also sends traffic to this policy, or"
+		echo "      whether a process on the router is generating connections to the test IPs."
+		PASS=0
+	else
+		echo "NOTE: Fewer hits than expected ($NEW/$NITER)."
+		echo "      Some test flows may have timed out or been routed by a higher-priority rule."
+	fi
+	echo
+fi
+
+if [ "$PASS" -eq 1 ] && [ "$CONTAMINATED" -eq 0 ]; then
+	echo "PASS: distribution matches expected weights within tolerance (+/-2 per member)."
+	echo "      Load balancing is working according to configured policy."
+else
+	echo "FAIL: distribution is outside tolerance."
+	echo "      Actual counts deviate from expected by more than 2 for at least one member."
+fi
+
+echo
+echo "Cleaning up diagnostic rules..."
+cleanup
+echo "Chain restored."
