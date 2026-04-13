@@ -413,6 +413,35 @@ function interfaces_status(request) {
 }
 
 const methods = {
+	nftset_info: {
+		args: {},
+		call: function(request) {
+			const nft = popen('nft -j list sets inet fw4 2>/dev/null', 'r');
+			if (!nft)
+				return { sets: {} };
+			const raw = nft.read('all');
+			nft.close();
+			if (!raw || length(raw) == 0)
+				return { sets: {} };
+			let data;
+			try {
+				data = json(raw);
+			} catch(e) {
+				return { sets: {} };
+			}
+			const sets = {};
+			if (data?.nftables) {
+				for (let item in data.nftables) {
+					if (item?.set) {
+						const s = item.set;
+						if (s.table == 'fw4' && !match(s.name, /^mwan3_/))
+							sets[s.name] = { type: s.type };
+					}
+				}
+			}
+			return { sets: sets };
+		}
+	},
 	nftset_members: {
 		args: { set: 'set' },
 		call: function(request) {
