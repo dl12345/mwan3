@@ -101,18 +101,21 @@ function get_nftset_members(setname) {
 }
 
 function get_ip_rules() {
-	const proc = popen('ip -j rule list 2>/dev/null', 'r');
-	if (!proc)
-		return [];
-	const raw = proc.read('all');
-	proc.close();
-	if (!raw || length(raw) == 0)
-		return [];
-	try {
-		return json(raw) || [];
-	} catch(e) {
-		return [];
+	const rules = [];
+	for (let family in ['-4', '-6']) {
+		const proc = popen(sprintf('ip %s -j rule list 2>/dev/null', family), 'r');
+		if (!proc) continue;
+		const raw = proc.read('all');
+		proc.close();
+		if (!raw || length(raw) == 0) continue;
+		try {
+			const parsed = json(raw);
+			if (type(parsed) == 'array')
+				for (let r in parsed)
+					push(rules, r);
+		} catch(e) {}
 	}
+	return rules;
 }
 
 function get_table_routes(table_id) {
