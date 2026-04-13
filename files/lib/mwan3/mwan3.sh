@@ -804,6 +804,25 @@ mwan3_create_policies_nft()
 
 mwan3_set_policies_nft()
 {
+	# Delete orphaned mwan3_policy_* chains - chains that exist in nft but
+	# have no corresponding UCI policy config. These accumulate when a policy
+	# is removed from config without a fw4 reload to flush the full table.
+	local valid_policies="" chain policy_name
+
+	collect_valid_policy() { valid_policies="$valid_policies ${1} "; }
+	config_foreach collect_valid_policy policy
+
+	for chain in $($NFT list chains inet 2>/dev/null \
+			| awk '/mwan3_policy_/{gsub(/.*mwan3_policy_/,""); gsub(/ \{.*/,""); print}'); do
+		case "$valid_policies" in
+			*" ${chain} "*) ;;
+			*)
+				LOG debug "Deleting orphaned policy chain mwan3_policy_${chain}"
+				$NFT delete chain inet fw4 "mwan3_policy_${chain}" 2>/dev/null
+				;;
+		esac
+	done
+
 	config_foreach mwan3_create_policies_nft policy
 }
 
