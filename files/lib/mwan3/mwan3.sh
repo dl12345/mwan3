@@ -268,6 +268,11 @@ mwan3_set_general_nft()
 	mwan3_nft_push "flush chain inet fw4 mwan3_prerouting"
 	# IPv6 RA bypass
 	mwan3_nft_push "add rule inet fw4 mwan3_prerouting icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, nd-redirect } accept"
+	# Skip all mwan3 processing for traffic destined for the router itself.
+	# Without this, inbound packets from the internet (e.g. port scanners hitting
+	# the WAN IP) pass through mwan3_rules with mark=0, fall to the default policy,
+	# and increment numgen counters — corrupting the load balancing distribution.
+	mwan3_nft_push "add rule inet fw4 mwan3_prerouting fib daddr type local return"
 	# Restore mark from conntrack — non-destructive in unmasked bits.
 	# A direct compound "meta mark set (meta mark & ~MMX) | (ct mark & MMX)"
 	# is rejected by the kernel (a set-statement expression tree may reference
@@ -299,6 +304,12 @@ mwan3_set_general_nft()
 
 	# Populate mwan3_output hook chain
 	mwan3_nft_push "flush chain inet fw4 mwan3_output"
+	# Skip reply-direction traffic — the router responding to inbound connections
+	# (e.g. ICMP echo replies, TCP responses to inbound sessions) does not need
+	# WAN selection. Without this guard, those packets have ct mark=0 (the inbound
+	# request was skipped by the fib-local return in prerouting) and fall through
+	# to the policy chain, firing numgen and corrupting the load-balance counters.
+	mwan3_nft_push "add rule inet fw4 mwan3_output ct direction reply return"
 	# Restore mark from conntrack (see prerouting comment above)
 	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 ct mark & $MMX_MASK vmap { $restore_vmap }"
 	# Jump to interface classification
@@ -1031,6 +1042,19 @@ mwan3_set_user_nft_rule()
 		local nft_dest_port
 		nft_dest_port=$(echo "$dest_port" | sed 's/,/, /g')
 		nft_match="$nft_match th dport { $nft_dest_port }"
+	fi
+
+	# If family is explicitly ipv4 or ipv6 but nft_match has no implicit family
+	# qualifier (i.e. no src_ip/dest_ip/ipset match to anchor it to a specific
+	# protocol version), add an explicit meta nfproto guard. Without this, a rule
+	# like default_rule (family ipv4, no saddr/daddr) generates a bare
+	# "meta mark ... jump policy" that matches IPv6 traffic too.
+	if [ -z "$src_ip" ] && [ -z "$dest_ip" ] && [ -z "$ipset_name" ]; then
+		if [ "$family" = "ipv4" ]; then
+			nft_match="${nft_match:+$nft_match }meta nfproto ipv4"
+		elif [ "$family" = "ipv6" ]; then
+			nft_match="${nft_match:+$nft_match }meta nfproto ipv6"
+		fi
 	fi
 
 	local policy_action
