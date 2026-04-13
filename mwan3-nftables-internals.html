@@ -95,7 +95,7 @@
 <h1>mwan3 nftables Implementation</h1>
 <p><strong>Developer Reference</strong> &mdash; OpenWrt 25.12+<br>
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
-<em>Package version: 3.2.3</em></p>
+<em>Package version: 3.3.1</em></p>
 
 <nav class="toc">
 <strong>Contents</strong>
@@ -119,6 +119,7 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
       <li><a href="#file-fw-rebuild">5.11 mwan3-fw-rebuild.sh</a></li>
       <li><a href="#file-uci-firewall">5.12 mwan3-firewall-include (UCI defaults)</a></li>
       <li><a href="#file-mwan3track">5.13 mwan3track</a></li>
+      <li><a href="#file-lb-test">5.14 mwan3-lb-test</a></li>
     </ul>
   </li>
   <li><a href="#functions">6. Function Reference</a>
@@ -157,10 +158,13 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
       <li><a href="#enh-snat4">15.4 Postrouting SNAT for Rerouted Router-Originated Traffic</a></li>
       <li><a href="#enh-snat6">15.5 Opt-in IPv6 SNAT via Per-Interface snat6</a></li>
       <li><a href="#enh-diagnostic-tabs">15.6 Diagnostic Tabs: Simulator, Configuration Checker, and Routing Health</a></li>
+      <li><a href="#enh-lb-test">15.7 mwan3-lb-test: Load Balancing Distribution Verifier</a></li>
+      <li><a href="#enh-ipset-src">15.8 Source NFT Set Matching (ipset_src)</a></li>
     </ul>
   </li>
   <li><a href="#changelog">16. Changelog</a>
     <ul>
+      <li><a href="#version-3-3-1">Version 3.3.1</a></li>
       <li><a href="#version-3-3">Version 3.3</a></li>
       <li><a href="#version-3-2-3">Version 3.2.3</a></li>
       <li><a href="#version-3-2-2">Version 3.2.2</a></li>
@@ -233,15 +237,14 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
 <p>mwan3 uses a configurable bitmask (<code>MMX_MASK</code>, default <code>0x3F00</code>) within the 32-bit packet mark to encode routing decisions. The mask determines how many interfaces can be supported and which mark values are reserved.</p>
 
 <h3>Mark Layout (default 0x3F00)</h3>
-<pre>
-Bit:   31 ...... 14 13 12 11 10  9  8  7 ...... 0
-       [  unused  ] [    MMX_MASK    ] [ unused  ]
-                     0  0  1  1  1  1
-                     ^  ^  ^  ^  ^  ^
-                     |  |  +--+--+--+-- 6 bits = values 0..63
-                     |  +-- bit 13
-                     +-- bit 14
-</pre>
+<table>
+<tr><th>Bits</th><th>Mask</th><th>Owner</th><th>Purpose</th></tr>
+<tr><td>0-7</td><td><code>0x000000FF</code></td><td>free</td><td>-</td></tr>
+<tr><td>8-13</td><td><code>0x00003F00</code></td><td>mwan3</td><td>interface/policy marks</td></tr>
+<tr><td>14-15</td><td><code>0x0000C000</code></td><td>free</td><td>-</td></tr>
+<tr><td>16-23</td><td><code>0x00FF0000</code></td><td>pbr</td><td>policy routing marks</td></tr>
+<tr><td>24-31</td><td><code>0xFF000000</code></td><td>free</td><td>-</td></tr>
+</table>
 
 <table>
 <tr><th>Value</th><th>Meaning</th><th>With 0x3F00</th></tr>
@@ -580,12 +583,19 @@ mwan3_init()
 
 <!-- 5.8 -->
 <h3 id="file-rpcd">5.8 <span class="file-path">usr/share/rpcd/ucode/mwan3</span></h3>
-<p>ucode RPC service providing the <code>mwan3.status</code> ubus method. Used by LuCI for the web interface. Returns JSON data for interfaces, connected networks, and policies.</p>
+<p>ucode RPC service exposing four ubus methods under the <code>mwan3</code> object. Used by LuCI for the web interface.</p>
 <p>Uses <code>nft -j</code> (JSON output mode) for reliable parsing instead of text scraping. Key changes from the iptables version:</p>
 <ul>
-  <li><strong>Connected IPs</strong>: Parses <code>nft -j list set inet fw4 mwan3_connected_v4/v6</code>. Handles JSON element types: plain strings, prefix objects (<code>{prefix: {addr, len}}</code>), and range objects.</li>
-  <li><strong>Policies</strong>: Reads policy membership from UCI config and cross-references with mwan3track <code>STATUS</code> files to determine which metric tier is active and the traffic share for each member. Every member is always reported&mdash;100% for a sole active member, proportional share for equal-priority active members, 0% for standby or offline members. (Earlier revisions enumerated live nft policy chains instead, which made standby members invisible.)</li>
-  <li><strong>Interfaces</strong>: Reads interface status from <code>/var/run/mwan3track/</code> status files and queries procd/netifd via ubus. Tracking IPs are discovered by globbing the <code>TRACK_*</code> files that mwan3track writes (covering both UCI-configured IPs and the dynamically added gateway IP when <code>track_gateway=1</code>). Per-IP <code>latency</code> and <code>packetloss</code> fields are populated when <code>check_quality=1</code>. A <code>check_quality</code> field is returned per interface so the UI can suppress latency/loss display when quality checking is disabled.</li>
+  <li><strong><code>mwan3.status</code></strong>: Returns JSON data for interfaces, connected networks, and policies.
+    <ul>
+      <li><strong>Connected IPs</strong>: Parses <code>nft -j list set inet fw4 mwan3_connected_v4/v6</code>. Handles JSON element types: plain strings, prefix objects (<code>{prefix: {addr, len}}</code>), and range objects.</li>
+      <li><strong>Policies</strong>: Reads policy membership from UCI config and cross-references with mwan3track <code>STATUS</code> files to determine which metric tier is active and the traffic share for each member. Every member is always reported&mdash;100% for a sole active member, proportional share for equal-priority active members, 0% for standby or offline members. (Earlier revisions enumerated live nft policy chains instead, which made standby members invisible.)</li>
+      <li><strong>Interfaces</strong>: Reads interface status from <code>/var/run/mwan3track/</code> status files and queries procd/netifd via ubus. Tracking IPs are discovered by globbing the <code>TRACK_*</code> files that mwan3track writes (covering both UCI-configured IPs and the dynamically added gateway IP when <code>track_gateway=1</code>). Per-IP <code>latency</code> and <code>packetloss</code> fields are populated when <code>check_quality=1</code>. The <code>check_quality</code> field is derived from the presence and content of <code>LATENCY_*</code> files (not UCI) so it reflects actual mwan3track runtime state. A <code>check_quality</code> field is returned per interface so the UI can suppress latency/loss display when quality checking is disabled.</li>
+    </ul>
+  </li>
+  <li><strong><code>mwan3.nftset_members { set: "&lt;name&gt;" }</code></strong>: Returns the current members of a named nft set in <code>table inet fw4</code>. The set name is validated against <code>^[a-zA-Z0-9_-]+$</code>. Used by the Simulator tab for ipset rule matching and connected-network bypass detection via <code>mwan3_connected_v4</code>/<code>mwan3_connected_v6</code>.</li>
+  <li><strong><code>mwan3.routing_health {}</code></strong>: Compares UCI configuration against live kernel state. For each configured interface, checks ip rules at priorities <code>IIF_BASE + N</code> (iif lookup) and <code>FWMARK_BASE + N</code> (fwmark lookup), and checks routing table N for a default route. Reads mwan3track <code>STATUS</code> files and reports stale ip rules (rules in mwan3's priority range with no matching UCI interface). Built-in blackhole and unreachable rules are excluded from stale detection. IPv6 ip rules are checked separately from IPv4. Used by the Routing Health diagnostic tab.</li>
+  <li><strong><code>mwan3.nftset_info {}</code></strong>: Returns the name and address-family type (<code>ipv4_addr</code>/<code>ipv6_addr</code>) of all non-mwan3 sets in <code>table inet fw4</code>. Used by the rule editor UI to annotate the nftset dropdown and validate family consistency.</li>
 </ul>
 
 <!-- 5.9 -->
@@ -608,8 +618,10 @@ mwan3_init()
   <li><code>10-mwan3.nft</code> to <code>$(1)/usr/share/nftables.d/table-post/</code></li>
   <li><code>mwan3-fw-include.sh</code> and <code>mwan3-fw-rebuild.sh</code> to <code>$(1)/lib/mwan3/</code></li>
   <li><code>mwan3-firewall-include</code> UCI defaults to <code>$(1)/etc/uci-defaults/</code></li>
+  <li><code>mwan3-lb-test</code> to <code>$(1)/usr/sbin/</code></li>
 </ul>
 <p>The <code>+nftables-json</code> package provides the <code>nft</code> binary with JSON output support, needed by the rpcd ucode module.</p>
+<p>The <code>postinst</code> script handles migration from older versions: flushes and deletes any mwan3 chains still at <code>mangle - 1</code> priority (the v3.1.4 pbr workaround position), removes legacy <code>mwan3_sticky_v[46]_*</code> maps if present, then runs <code>fw4 -q reload</code> and <code>rpcd restart</code> to activate the updated framework.</p>
 
 <!-- 5.10 -->
 <h3 id="file-fw-include">5.10 <span class="file-path">lib/mwan3/mwan3-fw-include.sh</span> <span class="tag tag-new">new</span></h3>
@@ -676,6 +688,24 @@ firewall.mwan3_reload.fw4_compatible=1</code></pre>
 <h4>Signal handling</h4>
 <p>procd sends <code>SIGUSR1</code> (ifdown event) and <code>SIGUSR2</code> (ifup event) to trigger immediate state transitions without waiting for the next probe interval.</p>
 
+<!-- 5.14 -->
+<h3 id="file-lb-test">5.14 <span class="file-path">usr/sbin/mwan3-lb-test</span></h3>
+
+<p>Load balancing distribution verifier. Usage: <code>mwan3-lb-test [-6] &lt;policy_name&gt; [ip1 ip2 ...]</code></p>
+
+<p>Verifies that numgen-based load balancing produces the expected traffic distribution across policy members. Key design:</p>
+
+<ul>
+  <li><strong>Iteration count (<code>NITER</code>)</strong>: computed from member weights as <code>base_N = total_weight / GCD(weights)</code>, <code>NITER = base_N * ceil(30 / base_N)</code>. Ensures per-member expected counts are whole numbers and <code>NITER &gt;= 30</code> always.</li>
+  <li><strong>Test rule</strong>: inserts a temporary ICMP-only rule into <code>mwan3_rules</code> matching a nft address set. Using ICMP prevents TCP/UDP traffic to the same IPs (DNS forwarders, Android clients bypassing local DNS, etc.) from contaminating the counter.</li>
+  <li><strong>Destination pool</strong>: well-known public IPs. Excludes any IPs already configured as mwan3 <code>track_ip</code> values&mdash;mwan3track pings those via <code>mwan3_output &rarr; mwan3_rules</code>, which would match the test rule and inflate counts.</li>
+  <li><strong>IPv6 mode (<code>-6</code>)</strong>: uses <code>meta l4proto ipv6-icmp ip6 daddr @set</code>, <code>ping6</code>, and a separate pool of well-known public IPv6 IPs.</li>
+  <li><strong>IP overrides</strong>: <code>mwan3-lb-test &lt;policy&gt; ip1 ip2 ...</code> for sites where defaults are unreachable or fully tracked.</li>
+  <li><strong>Cleanup</strong>: removes test set and rule on exit (normal, SIGINT, SIGTERM, SIGPIPE). Startup sweep removes any stale <code>mwan3_lb_test_*</code> sets and rules left by aborted prior runs.</li>
+</ul>
+
+<p>See <a href="#enh-lb-test">§15.7</a> for context on why this tool was added and the numgen contamination issues it was designed to detect.</p>
+
 <hr>
 
 <!-- ================================================================== -->
@@ -730,7 +760,7 @@ firewall.mwan3_reload.fw4_compatible=1</code></pre>
 <table>
 <tr><th>Function</th><th>Purpose</th></tr>
 <tr><td class="func-sig">mwan3_set_general_rules</td><td>Adds <code>ip rule</code> entries for blackhole and unreachable marks (both IPv4 and IPv6). These are ip policy rules, not nftables rules&mdash;unchanged from the iptables version.</td></tr>
-<tr><td class="func-sig">mwan3_set_general_nft</td><td>Populates all hook chain rules: connmark restore/save, jumps to ifaces_in/custom/connected/dynamic/rules chains, IPv6 RA bypass, and post-rules connected re-check. Idempotent: checks if rules already exist before adding. Uses a single batch for all operations.</td></tr>
+<tr><td class="func-sig">mwan3_set_general_nft</td><td>Builds the per-mark OR setter chains via <code>mwan3_build_or_chains_nft()</code>, flushes <code>mwan3_postrouting</code>, then populates all hook chain rules: IPv6 RA bypass, <code>fib daddr type local return</code> (prerouting only), <code>ct direction reply return</code> (output only), vmap-dispatched connmark restore/save, jumps to ifaces_in/custom/connected/dynamic/rules chains, and post-rules connected re-check. Idempotent: checks if rules already exist before adding. Uses a single batch for all operations.</td></tr>
 </table>
 
 <h4>Rules added by <code>mwan3_set_general_nft()</code></h4>
@@ -738,6 +768,8 @@ firewall.mwan3_reload.fw4_compatible=1</code></pre>
 <p>For the prerouting and output hook chains, adds (in order):</p>
 <ol>
   <li>[prerouting only] IPv6 RA bypass (accept ICMPv6 types: nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, nd-redirect)</li>
+  <li>[prerouting only] <code>fib daddr type local return</code> &mdash; packets destined for the router's own IP return immediately. Prevents inbound internet traffic (port scans, probes) from reaching the policy chain and advancing numgen counters pointlessly.</li>
+  <li>[output only] <code>ct direction reply return</code> &mdash; reply-direction packets (ICMP echo replies, TCP responses to inbound connections) return immediately. These lack an mwan3 ct mark because their conntrack entries were never processed by prerouting (the <code>fib</code> return bypassed that path), so restoring from ct mark would find zero and let them fall through to the policy chain.</li>
   <li>Connmark restore via vmap-dispatch (if <code>meta mark &amp; MMX_MASK == 0</code>): dispatches <code>ct mark &amp; MMX_MASK</code> into the matching <code>mwan3_or_meta_&lt;imm&gt;</code> setter chain, which ORs only the mwan3 bits into <code>meta mark</code> non-destructively</li>
   <li>Jump to <code>mwan3_ifaces_in</code> (if still 0)</li>
   <li>Jump to custom, connected, dynamic chains (if still 0)</li>
@@ -780,7 +812,7 @@ done</code></pre>
 <tr><th>Function</th><th>Purpose</th></tr>
 <tr><td class="func-sig">mwan3_set_policy member_config</td><td>Callback per policy member. Tracks lowest metric and accumulates online members as <code>iface:id:weight</code> tuples into <code>$policy_members</code>. Tracks offline devices into <code>$policy_offline_devices</code>. Uses caller's variables (dynamic scoping).</td></tr>
 <tr><td class="func-sig">mwan3_create_policies_nft policy</td><td>Creates/flushes the <code>mwan3_policy_&lt;name&gt;</code> chain. Iterates members via <code>mwan3_set_policy</code>, then builds the chain: single member gets a direct mark-set rule; multiple members get a <code>numgen</code> rule; offline devices get out-device fallback rules; last-resort rule (unreachable/blackhole/default) is appended.</td></tr>
-<tr><td class="func-sig">mwan3_set_policies_nft</td><td>Iterates all policy configs and calls <code>mwan3_create_policies_nft</code> for each.</td></tr>
+<tr><td class="func-sig">mwan3_set_policies_nft</td><td>Before creating policy chains, enumerates all existing <code>mwan3_policy_*</code> chains in <code>inet fw4</code> and deletes any whose name is not in the current UCI policy config (orphaned chain sweep &mdash; prevents stale chains accumulating after a policy is removed from UCI). Then iterates all policy configs and calls <code>mwan3_create_policies_nft</code> for each.</td></tr>
 </table>
 
 <!-- 6.6 -->
@@ -797,7 +829,7 @@ done</code></pre>
 
 <table>
 <tr><th>Function</th><th>Purpose</th></tr>
-<tr><td class="func-sig">mwan3_set_user_nft_rule rule ipv</td><td>Builds and adds a single nft rule to <code>mwan3_rules</code>. Translates UCI config options (proto, src_ip, dest_ip, src_port, dest_port, src_iface, ipset) into nft match expressions. For sticky rules, calls <code>mwan3_get_policy_members_for_family()</code> and builds a <code>mwan3_rule_&lt;name&gt;</code> chain with per-member address sets and OR-immediate restore/save (see §8). Handles logging rules. Pre-creates missing nft sets (e.g., dnsmasq nftsets that haven't started yet) to prevent batch failures.</td></tr>
+<tr><td class="func-sig">mwan3_set_user_nft_rule rule ipv</td><td>Builds and adds a single nft rule to <code>mwan3_rules</code>. Translates UCI config options (proto, src_ip, dest_ip, src_port, dest_port, src_iface, ipset, ipset_src) into nft match expressions. For sticky rules, calls <code>mwan3_get_policy_members_for_family()</code> and builds a <code>mwan3_rule_&lt;name&gt;</code> chain with per-member address sets and OR-immediate restore/save (see §8). Handles logging rules. Pre-creates missing nft sets (e.g., dnsmasq nftsets that haven't started yet) to prevent batch failures. When <code>family</code> is explicitly <code>ipv4</code> or <code>ipv6</code> but none of <code>src_ip</code>, <code>dest_ip</code>, <code>ipset</code>, or <code>ipset_src</code> are set, prepends <code>meta nfproto ipv4/ipv6</code> to prevent a bare rule from matching both address families. Also translates <code>proto icmp</code> to <code>meta l4proto ipv6-icmp</code> when <code>family</code> is <code>ipv6</code>.</td></tr>
 <tr><td class="func-sig">mwan3_set_user_rules</td><td>Flushes <code>mwan3_rules</code> chain, then iterates all rule configs for both ipv4 and ipv6, calling <code>mwan3_set_user_nft_rule</code> for each. Uses a single batch.</td></tr>
 <tr><td class="func-sig">mwan3_set_user_iface_rules iface device</td><td>Called on ifup to check if the rules chain needs rebuilding (if this interface is a <code>src_iface</code> in any rule).</td></tr>
 </table>
@@ -812,12 +844,13 @@ done</code></pre>
 <tr><td><code>src_port 80,443</code></td><td><code>th sport { 80, 443 }</code></td></tr>
 <tr><td><code>dest_port 8080</code></td><td><code>th dport { 8080 }</code></td></tr>
 <tr><td><code>ipset my_set</code></td><td><code>ip daddr @my_set</code></td></tr>
+<tr><td><code>ipset_src my_set</code></td><td><code>ip saddr @my_set</code></td></tr>
 <tr><td><code>use_policy balanced</code></td><td><code>jump mwan3_policy_balanced</code></td></tr>
 <tr><td><code>use_policy default</code></td><td><code>meta mark set ... | MMX_DEFAULT</code></td></tr>
 </table>
 
 <h4>Missing nft Set Pre-creation</h4>
-<p>When a user rule references an <code>ipset</code> (nft set) that doesn't exist yet (e.g., a dnsmasq <code>nftset</code> that will be created when dnsmasq starts, which is later at START=60+), the batch file would fail atomically since <code>nft -f</code> rolls back the entire batch if any referenced set is missing. To prevent this, <code>mwan3_set_user_nft_rule()</code> checks for the set's existence and pre-creates it with the appropriate type if missing.</p>
+<p>When a user rule references an <code>ipset</code> (destination nft set) or <code>ipset_src</code> (source nft set) that doesn't exist yet (e.g., a dnsmasq <code>nftset</code> that will be created when dnsmasq starts, which is later at START=60+), the batch file would fail atomically since <code>nft -f</code> rolls back the entire batch if any referenced set is missing. To prevent this, <code>mwan3_set_user_nft_rule()</code> checks for the set's existence and pre-creates it with the appropriate type if missing. The same pre-creation logic applies to both <code>ipset</code> and <code>ipset_src</code>.</p>
 
 <!-- 6.8 -->
 <h3 id="fn-reporting">6.8 Status Reporting</h3>
@@ -1164,12 +1197,12 @@ uci show firewall.mwan3_reload
 <!-- 13.1 -->
 <h3 id="luci-rule-js">13.1 <span class="file-path">rule.js</span> &mdash; Rule Editor UI</h3>
 
-<p>The LuCI rule editor view allows users to configure mwan3 traffic classification rules. It populates a dropdown of available sets for the "ipset" UCI option (the UCI option name is unchanged for backwards compatibility).</p>
+<p>The LuCI rule editor view allows users to configure mwan3 traffic classification rules. It populates dropdowns of available nft sets for the <code>ipset</code> (destination) and <code>ipset_src</code> (source) UCI options.</p>
 
-<h4>Changes</h4>
+<h4>iptables-to-nftables Changes</h4>
 <table>
 <tr><th>Aspect</th><th>Old (iptables)</th><th>New (nftables)</th></tr>
-<tr><td>Data fetch</td><td><code>fs.exec_direct('/usr/libexec/luci-mwan3', ['ipset', 'dump'])</code></td><td><code>fs.exec_direct('/usr/libexec/luci-mwan3', ['nftset', 'dump'])</code></td></tr>
+<tr><td>Data fetch</td><td><code>fs.exec_direct('/usr/libexec/luci-mwan3', ['ipset', 'dump'])</code></td><td><code>ubus.call('mwan3', 'nftset_info', {})</code></td></tr>
 <tr><td>Field label</td><td><code>_('IPset')</code></td><td><code>_('NFT set')</code></td></tr>
 <tr><td>Help text</td><td><code>Name of IPset rule. Requires IPset rule in /etc/dnsmasq.conf (eg "ipset=/youtube.com/youtube")</code></td><td><code>Name of nft set. Requires nftset rule in /etc/dnsmasq.conf (eg "nftset=/youtube.com/4#inet#fw4#youtube")</code></td></tr>
 <tr><td>Variable names</td><td><code>ipsets</code>, <code>ips</code></td><td><code>nftsets</code>, <code>s_name</code></td></tr>
@@ -1182,6 +1215,13 @@ uci show firewall.mwan3_reload
 <div class="note">
 <strong>UCI option name preserved:</strong> The underlying UCI option remains <code>ipset</code> (not renamed to <code>nftset</code>) to maintain backwards compatibility with existing configurations. The mwan3 shell code reads <code>config_get ipset_name "$1" ipset</code> regardless of the firewall backend. Only the UI labels and help text were updated to reflect the nftables terminology.
 </div>
+
+<h4>v3.3.1 Enhancements</h4>
+<p><strong>nftset dropdown via rpcd:</strong> The nftset dropdown is now populated via the <code>mwan3.nftset_info</code> rpcd ubus method instead of the <code>luci-mwan3 nftset dump</code> helper script. Sets are annotated with <code>(IPv4)</code> or <code>(IPv6)</code> in the dropdown label based on the address-family type returned by <code>nftset_info</code>.</p>
+
+<p><strong>Source NFT set field (<code>ipset_src</code>):</strong> A new "Source NFT set" field is shown before the existing "Destination NFT set" field in the rule modal. It sets the <code>ipset_src</code> UCI option. Both source and destination sets can be set on the same rule and are ANDed together. The grid listing shows the nftset name in the Source or Destination column when no IP address is configured, preventing the rule from appearing as a wildcard match in the listing.</p>
+
+<p><strong>Address family validation:</strong> <code>src_ip</code> and <code>dest_ip</code> fields validate against the selected address family on blur - an error is shown if an IPv4 address is entered when family is set to IPv6 or vice versa. Family consistency is also validated on save: a destination nftset must match the selected family, and combining a destination nftset with <code>dest_ip</code> (or source nftset with <code>src_ip</code>) is flagged as an error since both constrain the same traffic dimension.</p>
 
 <!-- 13.2 -->
 <h3 id="luci-mwan3-helper">13.2 <span class="file-path">luci-mwan3</span> &mdash; Helper Script</h3>
@@ -1197,21 +1237,29 @@ uci show firewall.mwan3_reload
 <tr><td>Help text</td><td><code>dump: show all configured ipset names</code></td><td><code>dump: show all non-mwan3 nft set names in inet fw4</code></td></tr>
 </table>
 
-<p>The <code>nftset_dump()</code> function lists all sets in <code>table inet fw4</code>, extracts set names using awk (matching lines that start with a tab followed by <code>set</code>), filters out mwan3's own internal sets (prefixed with <code>mwan3_</code>), and returns the sorted unique names. This provides the dropdown list of available nft sets in the rule editor UI.</p>
+<p>The <code>nftset_dump()</code> function lists all sets in <code>table inet fw4</code>, extracts set names using awk (matching lines that start with a tab followed by <code>set</code>), filters out mwan3's own internal sets (prefixed with <code>mwan3_</code>), and returns the sorted unique names.</p>
+
+<p>In v3.3.1, rule.js switched from calling <code>luci-mwan3 nftset dump</code> to the <code>mwan3.nftset_info</code> rpcd ubus method. The <code>nftset dump</code> subcommand is therefore no longer called by the rule editor&mdash;it remains in the script but is effectively unused.</p>
 
 <p>The <code>diag</code> subcommand and its functions (<code>diag_gateway</code>, <code>diag_tracking</code>, <code>diag_rules</code>, <code>diag_routes</code>) are unchanged&mdash;they use <code>ip rule</code>/<code>ip route</code> and the <code>mwan3 use</code> command, none of which depend on the firewall backend.</p>
 
 <!-- 13.3 -->
 <h3 id="luci-acl">13.3 <span class="file-path">luci-app-mwan3.json</span> &mdash; ACL Permissions</h3>
 
-<p>The rpcd ACL file controls which commands the LuCI frontend is permitted to execute. The permission entry was updated to match the renamed subcommand:</p>
+<p>The rpcd ACL file controls which commands the LuCI frontend is permitted to execute. It contains two ACL groups with separate permission sets.</p>
+
+<p><strong><code>luci-app-mwan3</code></strong> (configuration access): The <code>read.file</code> exec entry was updated to match the renamed subcommand:</p>
 
 <table>
 <tr><th>Old</th><th>New</th></tr>
 <tr><td><code>"/usr/libexec/luci-mwan3 ipset dump": ["exec"]</code></td><td><code>"/usr/libexec/luci-mwan3 nftset dump": ["exec"]</code></td></tr>
 </table>
 
-<p>This entry appears under the <code>luci-app-mwan3</code> ACL group in the <code>read.file</code> section. Without this change, the LuCI frontend would receive a permission denied error when trying to populate the nft set dropdown in the rule editor.</p>
+<p>In v3.3.1, rule.js switched from calling the helper script via <code>fs.exec_direct('/usr/libexec/luci-mwan3', ['nftset', 'dump'])</code> to the <code>mwan3.nftset_info</code> rpcd ubus method. The <code>read.file</code> exec entry for <code>luci-mwan3 nftset dump</code> is therefore no longer exercised by the rule editor. It is retained in the ACL file for compatibility but is effectively obsolete.</p>
+
+<p>The <code>read.ubus</code> section for this group grants permission to call: <code>mwan3.status</code>, <code>mwan3.nftset_members</code> (both added in v3.3), and <code>mwan3.nftset_info</code> (added in v3.3.1 so the rule editor can query available nft sets with address-family annotations).</p>
+
+<p><strong><code>luci-app-mwan3-status</code></strong> (status/diagnostic access): The <code>read.ubus</code> section grants permission to call: <code>mwan3.status</code>, <code>mwan3.nftset_members</code>, and <code>mwan3.routing_health</code> (the last added in v3.3 for the Routing Health diagnostic tab). The <code>write.file</code> section grants exec permission for the <code>diag</code> subcommands (<code>diag gateway</code>, <code>diag tracking</code>, <code>diag rules</code>, <code>diag routes</code>), <code>mwan3 internal</code>, <code>mwan3 ifup</code>, and <code>mwan3 ifdown</code>.</p>
 
 <!-- 13.4 -->
 <h3 id="luci-interface-js">13.4 <span class="file-path">interface.js</span> &mdash; Interface Settings UI</h3>
@@ -1481,13 +1529,123 @@ uci show firewall.mwan3_reload
 
 <hr>
 
+<!-- ================================================================== -->
+<h3 id="enh-lb-test">15.7 mwan3-lb-test: Load Balancing Distribution Verifier</h3>
+
+<p>A new diagnostic tool <code>/usr/sbin/mwan3-lb-test</code> verifies that load balancing is distributing traffic across policy members in the expected proportions.</p>
+
+<h4>Usage</h4>
+<pre><code>mwan3-lb-test [-6] &lt;policy_name&gt; [ip1 ip2 ...]</code></pre>
+<p><code>-6</code> selects IPv6 mode. Optional IP arguments override the default destination pool.</p>
+
+<h4>Design</h4>
+<ul>
+  <li><strong>NITER computation:</strong> The number of test iterations is computed from member weights using GCD: <code>base_N = total_weight / GCD(weights)</code>, <code>NITER = base_N * ceil(30 / base_N)</code>. This ensures per-member expected hit counts are whole numbers and that NITER is always at least 30.</li>
+  <li><strong>ICMP-only test rule:</strong> A temporary <code>meta l4proto icmp ip daddr @mwan3_lb_test_&lt;policy&gt;</code> counter rule is inserted into <code>mwan3_rules</code> ahead of user rules. The ICMP restriction prevents DNS queries, TCP connections, and other traffic from contaminating the count. <code>-6</code> mode uses <code>meta l4proto ipv6-icmp ip6 daddr @set</code>.</li>
+  <li><strong>Tracking IP exclusion:</strong> The default destination pool excludes IPs already configured as mwan3 <code>track_ip</code> values. mwan3track pings those IPs via <code>mwan3_output -&gt; mwan3_rules</code>, which would match the test rule and inflate the count.</li>
+  <li><strong>Cleanup:</strong> Removes the temporary set and rule on normal exit, SIGINT, SIGTERM, and SIGPIPE. A startup sweep removes stale <code>mwan3_lb_test_*</code> sets and rules from any aborted previous run.</li>
+</ul>
+
+<p><strong>Files changed:</strong> <code>usr/sbin/mwan3-lb-test</code> (new), <code>Makefile</code></p>
+
+<hr>
+
+<!-- ================================================================== -->
+<h3 id="enh-ipset-src">15.8 Source NFT Set Matching (<code>ipset_src</code>)</h3>
+
+<p>A new <code>ipset_src</code> UCI option on rule sections enables source address matching via nft sets, complementing the existing <code>ipset</code> option (destination address matching).</p>
+
+<h4>UCI Example</h4>
+<pre><code>config rule 'corp_to_wan2'
+    option ipset_src corp_clients
+    option ipset     blocked_dests
+    option use_policy wan2_policy</code></pre>
+
+<p>This generates:</p>
+<pre><code>ip saddr @corp_clients ip daddr @blocked_dests meta mark &amp; MMX == 0 jump mwan3_policy_wan2_policy</code></pre>
+
+<p>Both <code>ipset_src</code> and <code>ipset</code> can be set on the same rule and are ANDed together. The existing <code>ipset</code> option (destination) is unchanged for backward compatibility with existing configurations.</p>
+
+<p>The same pre-creation logic used for <code>ipset</code> applies to <code>ipset_src</code>: if the named set does not yet exist in <code>table inet fw4</code>, <code>mwan3_set_user_nft_rule()</code> pre-creates it with the appropriate type to prevent the nft batch from failing atomically. A present <code>ipset_src</code> is treated as an implicit family qualifier by the <code>meta nfproto</code> guard condition in <code>mwan3_set_user_nft_rule()</code>, consistent with <code>src_ip</code>, <code>dest_ip</code>, and <code>ipset</code>.</p>
+
+<p><strong>Files changed:</strong> <code>lib/mwan3/mwan3.sh</code></p>
+
+<hr>
+
 <p style="text-align:center; color:#6b7280; font-size:0.85em; margin-top:3rem;">
-mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-12
+mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-13
 </p>
 
 <hr>
 
 <h1 id="changelog">Changelog</h1>
+
+<h2 id="version-3-3-1">Version 3.3.1</h2>
+
+<p>Fixes three numgen counter contamination bugs, adds the <code>mwan3-lb-test</code> load balancing verifier, fixes icmp/ipv6-icmp protocol translation for IPv6 rules, adds the <code>nftset_info</code> rpcd ubus method and <code>ipset_src</code> UCI option for source nft set matching, and updates the luci-app-mwan3 rule editor to support all new options with family consistency validation.</p>
+
+<h3>mwan3: fix routing_health ip rule detection for IPv6 interfaces</h3>
+<p><code>get_ip_rules()</code> called <code>ip -j rule list</code> (IPv4-only), making ip rules added for IPv6 interfaces via <code>ip -6 rule add</code> invisible to the routing health check. All IPv6 interface ip rules were therefore always reported as missing regardless of actual state. Fixed by querying both <code>ip -4 -j rule list</code> and <code>ip -6 -j rule list</code> and merging the results.</p>
+<p><strong>Files changed:</strong> <code>files/usr/share/rpcd/ucode/mwan3</code></p>
+
+<hr>
+
+<h3>mwan3: sweep orphaned policy chains on startup</h3>
+<p>When a policy is removed from UCI config and mwan3 is restarted, the old <code>mwan3_policy_&lt;name&gt;</code> chain persisted in nftables because <code>mwan3_set_policies_nft()</code> only created chains it knew about from the current config. Fixed by enumerating all <code>mwan3_policy_*</code> chains present in <code>inet fw4</code> at the start of <code>mwan3_set_policies_nft()</code> and deleting any whose name is not in the current UCI policy list before rebuilding.</p>
+<p><strong>Files changed:</strong> <code>files/lib/mwan3/mwan3.sh</code></p>
+
+<hr>
+
+<h3>mwan3: fix numgen counter contamination from inbound and reply traffic</h3>
+<p>Three related bugs caused <code>numgen inc mod N</code> load balancing counters to be advanced by traffic that should never reach a policy chain, producing non-strict alternation and a skewed distribution.</p>
+<ul>
+  <li>Bug 1: inbound internet traffic destined for the router's own WAN IP traversed <code>mwan3_prerouting</code> with mark=0 and fell to the default policy. Fix: <code>fib daddr type local return</code> added early in <code>mwan3_prerouting</code>.</li>
+  <li>Bug 2: router replies to inbound connections passed through <code>mwan3_output</code> with ct mark=0 and fell to the policy chain. Fix: <code>ct direction reply return</code> as the first rule in <code>mwan3_output</code>.</li>
+  <li>Bug 3: a UCI rule with <code>family ipv4</code> or <code>ipv6</code> but no address criteria generated a bare rule with no IP version restriction. Fix: prepend <code>meta nfproto ipv4/ipv6</code> in <code>mwan3_set_user_nft_rule()</code> when no address-based qualifier is present.</li>
+</ul>
+<p><strong>Files changed:</strong> <code>files/lib/mwan3/mwan3.sh</code> (<code>mwan3_set_general_nft()</code>, <code>mwan3_set_user_nft_rule()</code>)</p>
+
+<hr>
+
+<h3>mwan3: add mwan3-lb-test load balancing distribution verifier</h3>
+<p>New <code>/usr/sbin/mwan3-lb-test</code> diagnostic tool. Inserts a temporary ICMP-only nft counter rule into the policy chain, pings destination IPs for NITER rounds, and reports per-member actual vs expected hit counts with PASS/FAIL. NITER is computed from member weights via GCD so expected counts are always whole numbers. Default destination pool excludes mwan3 tracking IPs. <code>-6</code> flag for IPv6 mode. Cleans up on exit and signals. See <a href="#enh-lb-test">§15.7</a>.</p>
+<p><strong>Files changed:</strong> <code>files/usr/sbin/mwan3-lb-test</code> (new), <code>Makefile</code></p>
+
+<hr>
+
+<h3>mwan3: translate icmp to ipv6-icmp for IPv6 family rules</h3>
+<p>In nftables inet tables, <code>meta l4proto icmp</code> matches protocol 1 (ICMPv4) only. A UCI rule with <code>proto=icmp</code> and <code>family=ipv6</code> previously generated <code>meta nfproto ipv6 meta l4proto icmp</code> - a contradiction that silently matched nothing. In the iptables version, separate <code>iptables</code> and <code>ip6tables</code> invocations handled this implicitly. Fixed by translating <code>proto icmp</code> to <code>meta l4proto ipv6-icmp</code> (protocol 58) in <code>mwan3_set_user_nft_rule()</code> when <code>family</code> is <code>ipv6</code>.</p>
+<p><strong>Files changed:</strong> <code>files/lib/mwan3/mwan3.sh</code></p>
+
+<hr>
+
+<h3>mwan3: add nftset_info rpcd ubus method</h3>
+<p>New <code>mwan3.nftset_info {}</code> ubus method. Returns the name and address-family type of all non-mwan3 nftables sets in <code>table inet fw4</code>:</p>
+<pre><code>{"sets": {"youtube": {"type": "ipv4_addr"}, "netflix6": {"type": "ipv6_addr"}}}</code></pre>
+<p>Used by the luci-app-mwan3 rule editor to annotate the nftset dropdown with <code>(IPv4)</code>/<code>(IPv6)</code> labels and validate family consistency.</p>
+<p><strong>Files changed:</strong> <code>files/usr/share/rpcd/ucode/mwan3</code>, <code>root/usr/share/rpcd/acl.d/luci-app-mwan3.json</code></p>
+
+<hr>
+
+<h3>mwan3: add ipset_src option for source nftset matching in rules</h3>
+<p>New <code>ipset_src</code> UCI option on rule sections. Generates <code>ip saddr @setname</code> / <code>ip6 saddr @setname</code> match for source address filtering via nft sets. The existing <code>ipset</code> option (destination) is unchanged for backward compatibility. Both can be set on the same rule and are ANDed together. Same pre-creation and family handling logic as the destination set. See <a href="#enh-ipset-src">§15.8</a>.</p>
+<p><strong>Files changed:</strong> <code>files/lib/mwan3/mwan3.sh</code></p>
+
+<hr>
+
+<h3>luci-app-mwan3: improve rule modal family consistency and nftset support</h3>
+<p>Several enhancements to the rule editor modal and grid listing:</p>
+<ul>
+  <li><code>src_ip</code> and <code>dest_ip</code> fields validate against the selected address family on blur (error shown if an IPv4 address is entered with family=IPv6 or vice versa).</li>
+  <li>The nftset dropdown is now populated via the <code>mwan3.nftset_info</code> rpcd method. Sets are annotated with <code>(IPv4)</code> or <code>(IPv6)</code> in the dropdown label. Family consistency is validated on save.</li>
+  <li>Combining a destination nftset with <code>dest_ip</code>, or a source nftset with <code>src_ip</code>, is flagged as an error.</li>
+  <li>New "Source NFT set" field (<code>ipset_src</code>) shown before the existing "Destination NFT set" in the modal.</li>
+  <li>Grid listing: Source and Destination columns now show the nftset name when no IP address is configured, preventing a rule from appearing as a wildcard match in the listing.</li>
+  <li><code>nftset_info</code> added to ACL ubus permissions.</li>
+</ul>
+<p><strong>Files changed:</strong> <code>htdocs/luci-static/resources/view/mwan3/network/rule.js</code>, <code>root/usr/share/rpcd/acl.d/luci-app-mwan3.json</code></p>
+
+<hr>
 
 <h2 id="version-3-3">Version 3.3</h2>
 
