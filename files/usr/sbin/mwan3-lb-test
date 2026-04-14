@@ -7,9 +7,19 @@
 # generates a test command using mwan3 tracking IPs, waits for the user to
 # run it, then reports per-member actual vs expected hit counts.
 #
-# Usage: mwan3-lb-test [-6] <policy_name> [ip1 ip2 ...]
+# Usage: mwan3-lb-test [-6] -c <client_ip> <policy_name> [ip1 ip2 ...]
+#        mwan3-lb-test cleanup
 #
 # -6            Test IPv6 traffic distribution instead of IPv4 (default).
+#
+# -c <client_ip>
+#               IP address of the LAN client that will run the test pings
+#               (required). Used to add isolation rules that block pings to
+#               the test destination IPs from all other LAN clients and from
+#               the router itself, preventing counter contamination.
+#
+# cleanup       Remove any stale mwan3_lb_test_* sets and associated rules
+#               left behind by a run that was killed before it could clean up.
 #
 # Optional IP arguments override the default set of well-known public IPs
 # used as ping destinations. Provide at least two distinct IPs. Use this
@@ -24,8 +34,11 @@ MWAN3TRACK_STATUS_DIR="/var/run/mwan3track"
 MMX_MASK=$(uci -q get mwan3.globals.mmx_mask 2>/dev/null || echo "0x3f00")
 HANDLES=""
 TEST_RULE_HANDLE=""
+FORWARD_BLOCK_HANDLE=""
+OUTPUT_ISOLATION_HANDLE=""
 TEST_SET="mwan3_lb_test_$$"
 IPV6=0
+CLIENT_IP=""
 POLICY=""
 MEMBERS=""
 MEMBER_MARKS=""
@@ -47,6 +60,15 @@ warn() {
 }
 
 cleanup() {
+	# Remove isolation rules
+	if [ -n "$OUTPUT_ISOLATION_HANDLE" ]; then
+		nft delete rule $TABLE mwan3_output handle "$OUTPUT_ISOLATION_HANDLE" 2>/dev/null
+		OUTPUT_ISOLATION_HANDLE=""
+	fi
+	if [ -n "$FORWARD_BLOCK_HANDLE" ]; then
+		nft delete rule $TABLE forward handle "$FORWARD_BLOCK_HANDLE" 2>/dev/null
+		FORWARD_BLOCK_HANDLE=""
+	fi
 	# Remove temporary test rule from mwan3_rules
 	if [ -n "$TEST_RULE_HANDLE" ]; then
 		nft delete rule $TABLE mwan3_rules handle "$TEST_RULE_HANDLE" 2>/dev/null
@@ -77,15 +99,60 @@ add_handle() {
 # Argument check
 # ---------------------------------------------------------------------------
 
-if [ "$1" = "-6" ]; then
-	IPV6=1
-	shift
+# ---------------------------------------------------------------------------
+# Cleanup-only invocation: mwan3-lb-test cleanup
+#
+# Removes any stale mwan3_lb_test_* sets and associated rules left behind by
+# an aborted run (e.g. killed with SIGKILL before cleanup() could run).
+# ---------------------------------------------------------------------------
+
+if [ "$1" = "cleanup" ]; then
+	found=0
+	for stale_set in $(nft list sets inet 2>/dev/null \
+			| awk '/mwan3_lb_test_/{gsub(/.*mwan3_lb_test_/,"mwan3_lb_test_"); gsub(/ \{.*/,""); print}'); do
+		found=1
+		echo "Removing stale set: $stale_set"
+		stale_fwd=$(nft -a list chain $TABLE forward 2>/dev/null \
+			| awk "/@${stale_set}.*drop/{print \$NF; exit}")
+		[ -n "$stale_fwd" ] && {
+			echo "  Removing forward isolation rule (handle $stale_fwd)"
+			nft delete rule $TABLE forward handle "$stale_fwd" 2>/dev/null
+		}
+		stale_out=$(nft -a list chain $TABLE mwan3_output 2>/dev/null \
+			| awk "/@${stale_set}.*return/{print \$NF; exit}")
+		[ -n "$stale_out" ] && {
+			echo "  Removing output isolation rule (handle $stale_out)"
+			nft delete rule $TABLE mwan3_output handle "$stale_out" 2>/dev/null
+		}
+		stale_handle=$(nft -a list chain $TABLE mwan3_rules 2>/dev/null \
+			| awk "/@${stale_set}/{print \$NF; exit}")
+		[ -n "$stale_handle" ] && {
+			echo "  Removing mwan3_rules test rule (handle $stale_handle)"
+			nft delete rule $TABLE mwan3_rules handle "$stale_handle" 2>/dev/null
+		}
+		nft delete set $TABLE "$stale_set" 2>/dev/null
+	done
+	[ "$found" -eq 0 ] && echo "Nothing to clean up."
+	exit 0
 fi
 
+while true; do
+	case "$1" in
+		-6) IPV6=1; shift ;;
+		-c)
+			[ -z "$2" ] && { echo "ERROR: -c requires an IP address argument" >&2; exit 1; }
+			CLIENT_IP="$2"; shift 2 ;;
+		*) break ;;
+	esac
+done
+
 if [ -z "$1" ]; then
-	echo "Usage: $0 [-6] <policy_name> [ip1 ip2 ...]"
+	echo "Usage: $0 [-6] -c <client_ip> <policy_name> [ip1 ip2 ...]"
+	echo "       $0 cleanup"
 	echo
-	echo "  -6    Test IPv6 traffic distribution (default: IPv4)"
+	echo "  -6              Test IPv6 traffic distribution (default: IPv4)"
+	echo "  -c <client_ip>  IP address of the LAN client running the test pings (required)"
+	echo "  cleanup         Remove stale rules/sets from an aborted run"
 	echo
 	echo "  Optional IP arguments override the default well-known public IPs."
 	echo
@@ -99,6 +166,8 @@ if [ -z "$1" ]; then
 		done
 	exit 1
 fi
+
+[ -z "$CLIENT_IP" ] && die "client IP is required - use -c <ip>"
 
 POLICY="$1"
 shift
@@ -188,6 +257,14 @@ MEMBER_MARKS="${MEMBER_MARKS_NORM# }"
 
 for stale_set in $(nft list sets inet 2>/dev/null \
 		| awk '/mwan3_lb_test_/{gsub(/.*mwan3_lb_test_/,"mwan3_lb_test_"); gsub(/ \{.*/,""); print}'); do
+	stale_fwd=$(nft -a list chain $TABLE forward 2>/dev/null \
+		| awk "/@${stale_set}.*drop/{print \$NF; exit}")
+	[ -n "$stale_fwd" ] && \
+		nft delete rule $TABLE forward handle "$stale_fwd" 2>/dev/null
+	stale_out=$(nft -a list chain $TABLE mwan3_output 2>/dev/null \
+		| awk "/@${stale_set}.*return/{print \$NF; exit}")
+	[ -n "$stale_out" ] && \
+		nft delete rule $TABLE mwan3_output handle "$stale_out" 2>/dev/null
 	stale_handle=$(nft -a list chain $TABLE mwan3_rules 2>/dev/null \
 		| awk "/@${stale_set}/{print \$NF; exit}")
 	[ -n "$stale_handle" ] && \
@@ -279,6 +356,17 @@ else
 fi
 TRACK_COUNT=$(echo "$TRACK_IPS" | wc -w)
 
+# Compute Windows cmd.exe delay between pings.
+# Windows ping uses a fixed ICMP identifier (id=1) so repeated pings to the
+# same destination reuse the same conntrack entry. The ct mark from the first
+# ping is restored on the second, bypassing the test rule (mark != 0 guard).
+# The full cycle through TRACK_COUNT IPs (each taking up to 2s for the ping
+# plus WIN_DELAY seconds) must exceed the 30s ICMP conntrack timeout so the
+# entry expires before we revisit each IP.
+# Formula: WIN_DELAY such that TRACK_COUNT * (2 + WIN_DELAY) > 30.
+# Using WIN_DELAY = 30/TRACK_COUNT + 3 gives comfortable margin.
+WIN_DELAY=$(( 30 / TRACK_COUNT + 3 ))
+
 # Build the rotated destination array for the generated command.
 # Each iteration pings TRACK_IPS[i % TRACK_COUNT].
 # Expand to exactly N destinations, rotating through the pool.
@@ -313,17 +401,21 @@ EXPECTED_LIST="${EXPECTED_LIST# }"
 # removed by cleanup().
 # ---------------------------------------------------------------------------
 
-echo "Adding temporary test rule to mwan3_rules..."
+echo "Adding temporary test set, isolation rules, and test rule..."
 echo
 
 if [ "$IPV6" -eq 1 ]; then
 	SET_TYPE="ipv6_addr"
 	PROTO_MATCH="meta l4proto ipv6-icmp ip6 daddr"
 	PING_CMD="ping6"
+	FORWARD_BLOCK="ip6 saddr != $CLIENT_IP ip6 daddr @$TEST_SET meta l4proto ipv6-icmp icmpv6 type echo-request"
+	OUTPUT_ISOLATION="meta l4proto ipv6-icmp icmpv6 type echo-request ip6 daddr @$TEST_SET"
 else
 	SET_TYPE="ipv4_addr"
 	PROTO_MATCH="meta l4proto icmp ip daddr"
 	PING_CMD="ping"
+	FORWARD_BLOCK="ip saddr != $CLIENT_IP ip daddr @$TEST_SET meta l4proto icmp icmp type echo-request"
+	OUTPUT_ISOLATION="meta l4proto icmp icmp type echo-request ip daddr @$TEST_SET"
 fi
 
 # The rule matches ICMP/ICMPv6 only - not DNS, TCP, or other traffic to these
@@ -335,6 +427,26 @@ nft add set $TABLE "$TEST_SET" { type "$SET_TYPE" \; } \
 for ip in $TRACK_IPS; do
 	nft add element $TABLE "$TEST_SET" { "$ip" } 2>/dev/null
 done
+
+# Insert forward isolation rule: drop pings to test IPs from all LAN clients
+# except the nominated test client. Scoped to the test set so other LAN traffic
+# is unaffected.
+nft insert rule $TABLE forward $FORWARD_BLOCK drop \
+	|| die "failed to insert forward isolation rule"
+FORWARD_BLOCK_HANDLE=$(nft -a list chain $TABLE forward 2>/dev/null \
+	| awk "/@${TEST_SET}.*drop/{print \$NF; exit}")
+[ -n "$FORWARD_BLOCK_HANDLE" ] || die "could not read forward isolation rule handle"
+
+# Insert output isolation rule: return (skip mwan3 marking) for any router
+# process pinging test IPs. mwan3track IPs are already excluded from the test
+# set, so this only affects unrelated processes. 'return' in a base chain is
+# equivalent to accept - the pings still work, they just don't hit the policy
+# chain.
+nft insert rule $TABLE mwan3_output $OUTPUT_ISOLATION return \
+	|| die "failed to insert output isolation rule"
+OUTPUT_ISOLATION_HANDLE=$(nft -a list chain $TABLE mwan3_output 2>/dev/null \
+	| awk "/@${TEST_SET}.*return/{print \$NF; exit}")
+[ -n "$OUTPUT_ISOLATION_HANDLE" ] || die "could not read output isolation rule handle"
 
 nft insert rule $TABLE mwan3_rules \
 	$PROTO_MATCH @"$TEST_SET" meta mark \& "$MMX_MASK" == 0 \
@@ -462,6 +574,33 @@ echo "    echo -n \"\$dst: \""
 echo "    $PING_CMD -c1 -W2 \"\$dst\" >/dev/null 2>&1 && echo ok || echo timeout"
 echo "    sleep 2"
 echo "  done"
+echo
+echo "If testing from a Windows client cmd.exe (uses fixed ICMP id - requires"
+echo "longer inter-ping delay so conntrack entries expire between revisits):"
+echo
+if [ "$IPV6" -eq 1 ]; then
+	WIN_PING="ping -6 -n 1 -w 2000"
+else
+	WIN_PING="ping -n 1 -w 2000"
+fi
+# Print Windows FOR loop with ^ continuation at 4 IPs per line
+printf "  for %%i in (^\n"
+col=0
+total_dsts=$(echo "$DEST_LIST" | wc -w)
+cur=0
+for dst in $DEST_LIST; do
+	cur=$((cur + 1))
+	if [ "$col" -eq 0 ]; then
+		printf "    %s" "$dst"
+	else
+		printf " %s" "$dst"
+	fi
+	col=$(( (col + 1) % 4 ))
+	if [ "$col" -eq 0 ] && [ "$cur" -lt "$total_dsts" ]; then
+		printf " ^\n"
+	fi
+done
+printf ") do (%s %%i & timeout /t %d /nobreak >nul)\n" "$WIN_PING" "$WIN_DELAY"
 echo
 echo "Press Enter here when the test is complete..."
 echo
