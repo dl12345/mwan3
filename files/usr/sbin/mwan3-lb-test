@@ -646,10 +646,20 @@ MEMBER_ACTUALS="${MEMBER_ACTUALS# }"
 
 echo "--- Summary ---"
 echo
+printf "%-40s %s\n" "Completed:" "$(date '+%Y-%m-%d %H:%M:%S')"
 printf "%-40s %s\n" "Total packets entering chain:" "${TOTAL:-unknown}"
 printf "%-40s %s\n" "New-connection packets (mark=0):" "${NEW:-unknown}"
 printf "%-40s %s\n" "Test iterations:" "$NITER"
 echo
+
+FW4_RELOADED=0
+if [ -z "$TOTAL" ]; then
+	FW4_RELOADED=1
+	warn "Counter rules are absent from $CHAIN."
+	warn "fw4 reload likely occurred during the test, wiping all dynamic nft rules."
+	warn "Re-run the test and return before fw4 triggers (e.g. within a few minutes)."
+	echo
+fi
 
 CONTAMINATED=0
 if [ -n "$TOTAL" ] && [ -n "$NEW" ]; then
@@ -701,7 +711,10 @@ if [ -n "$NEW" ] && [ "$NEW" -ne "$NITER" ] 2>/dev/null; then
 	echo
 fi
 
-if [ "$PASS" -eq 1 ] && [ "$CONTAMINATED" -eq 0 ]; then
+if [ "$FW4_RELOADED" -eq 1 ]; then
+	echo "FAIL: test invalidated - fw4 reload wiped counter rules during the wait."
+	echo "      Re-run the test and do not leave it unattended for more than a few minutes."
+elif [ "$PASS" -eq 1 ] && [ "$CONTAMINATED" -eq 0 ]; then
 	echo "PASS: distribution matches expected weights within tolerance (+/-2 per member)."
 	echo "      Load balancing is working according to configured policy."
 else
