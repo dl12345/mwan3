@@ -982,7 +982,10 @@ mwan3_set_user_nft_rule()
 	local nft_match=""
 
 	# Protocol
+	# 'icmp' in UCI means ICMPv4 (proto 1). For IPv6 rules, translate to
+	# 'ipv6-icmp' (proto 58) so the generated nftables match is not inert.
 	if [ "$proto" != "all" ]; then
+		[ "$proto" = "icmp" ] && [ "$family" = "ipv6" ] && proto="ipv6-icmp"
 		nft_match="$nft_match meta l4proto $proto"
 	fi
 
