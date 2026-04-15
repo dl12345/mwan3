@@ -25,6 +25,7 @@ procd_lock
 LOG notice "Rebuilding mwan3 rules after fw4 reload"
 mwan3_set_connected_sets
 mwan3_set_custom_sets
+mwan3_set_dynamic_sets
 mwan3_set_general_nft
 config_foreach mwan3_rebuild_iface_nft interface
 mwan3_set_policies_nft

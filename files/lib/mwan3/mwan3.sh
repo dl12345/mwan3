@@ -197,11 +197,27 @@ mwan3_set_connected_sets()
 	mwan3_set_connected_ipv6
 }
 
+mwan3_set_dynamic_network()
+{
+	local network="$1"
+	case "$network" in
+		*:*) [ $NO_IPV6 -eq 0 ] && {
+			LOG notice "Adding bypass_network $network to mwan3_dynamic_v6 set"
+			mwan3_nft_push "add element inet fw4 mwan3_dynamic_v6 { $network }"
+		} ;;
+		*.*) LOG notice "Adding bypass_network $network to mwan3_dynamic_v4 set"
+			mwan3_nft_push "add element inet fw4 mwan3_dynamic_v4 { $network }" ;;
+	esac
+}
+
 mwan3_set_dynamic_sets()
 {
 	mwan3_nft_batch_start
 	mwan3_nft_push "flush set inet fw4 mwan3_dynamic_v4"
 	[ $NO_IPV6 -eq 0 ] && mwan3_nft_push "flush set inet fw4 mwan3_dynamic_v6"
+
+	config_list_foreach "globals" "bypass_network" mwan3_set_dynamic_network
+
 	mwan3_nft_batch_commit
 }
 
