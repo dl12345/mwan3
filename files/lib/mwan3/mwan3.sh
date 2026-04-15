@@ -907,7 +907,7 @@ mwan3_get_policy_members_for_family()
 
 mwan3_set_user_nft_rule()
 {
-	local ipset_name family proto policy src_ip src_port src_iface src_dev
+	local ipset_name ipset_src family proto policy src_ip src_port src_iface src_dev
 	local sticky dest_ip dest_port use_policy timeout policy
 	local global_logging rule_logging loglevel rule_policy rule ipv
 
@@ -917,6 +917,7 @@ mwan3_set_user_nft_rule()
 	config_get sticky "$1" sticky 0
 	config_get timeout "$1" timeout 600
 	config_get ipset_name "$1" ipset
+	config_get ipset_src "$1" ipset_src
 	config_get proto "$1" proto all
 	config_get src_ip "$1" src_ip
 	config_get src_iface "$1" src_iface
@@ -956,6 +957,7 @@ mwan3_set_user_nft_rule()
 	[ -z "$dest_ip" ] && unset dest_ip
 	[ -z "$src_ip" ] && unset src_ip
 	[ -z "$ipset_name" ] && unset ipset_name
+	[ -z "$ipset_src" ] && unset ipset_src
 	[ -z "$src_port" ] && unset src_port
 	[ -z "$dest_port" ] && unset dest_port
 	if [ "$proto" != 'tcp' ] && [ "$proto" != 'udp' ]; then
@@ -1012,7 +1014,7 @@ mwan3_set_user_nft_rule()
 		fi
 	fi
 
-	# ipset/nft set match
+	# ipset/nft set destination match
 	if [ -n "$ipset_name" ]; then
 		# Pre-create the set if it doesn't exist yet (e.g. dnsmasq nftset
 		# hasn't started). nft -f batch fails atomically if any referenced
@@ -1029,6 +1031,23 @@ mwan3_set_user_nft_rule()
 			nft_match="$nft_match ip daddr @$ipset_name"
 		else
 			nft_match="$nft_match ip6 daddr @$ipset_name"
+		fi
+	fi
+
+	# nft set source match
+	if [ -n "$ipset_src" ]; then
+		if ! $NFT list set inet fw4 "$ipset_src" &>/dev/null; then
+			LOG notice "Creating missing nft set '$ipset_src' for rule $rule"
+			if [ "$ipv" = "ipv4" ]; then
+				mwan3_nft_push "add set inet fw4 $ipset_src { type ipv4_addr; flags interval; auto-merge; }"
+			else
+				mwan3_nft_push "add set inet fw4 $ipset_src { type ipv6_addr; flags interval; auto-merge; }"
+			fi
+		fi
+		if [ "$ipv" = "ipv4" ]; then
+			nft_match="$nft_match ip saddr @$ipset_src"
+		else
+			nft_match="$nft_match ip6 saddr @$ipset_src"
 		fi
 	fi
 
@@ -1052,7 +1071,7 @@ mwan3_set_user_nft_rule()
 	# protocol version), add an explicit meta nfproto guard. Without this, a rule
 	# like default_rule (family ipv4, no saddr/daddr) generates a bare
 	# "meta mark ... jump policy" that matches IPv6 traffic too.
-	if [ -z "$src_ip" ] && [ -z "$dest_ip" ] && [ -z "$ipset_name" ]; then
+	if [ -z "$src_ip" ] && [ -z "$dest_ip" ] && [ -z "$ipset_name" ] && [ -z "$ipset_src" ]; then
 		if [ "$family" = "ipv4" ]; then
 			nft_match="${nft_match:+$nft_match }meta nfproto ipv4"
 		elif [ "$family" = "ipv6" ]; then
