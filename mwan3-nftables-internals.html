@@ -164,6 +164,7 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
   </li>
   <li><a href="#changelog">16. Changelog</a>
     <ul>
+      <li><a href="#version-3-3-2">Version 3.3.2</a></li>
       <li><a href="#version-3-3-1">Version 3.3.1</a></li>
       <li><a href="#version-3-3">Version 3.3</a></li>
       <li><a href="#version-3-2-3">Version 3.2.3</a></li>
@@ -691,17 +692,23 @@ firewall.mwan3_reload.fw4_compatible=1</code></pre>
 <!-- 5.14 -->
 <h3 id="file-lb-test">5.14 <span class="file-path">usr/sbin/mwan3-lb-test</span></h3>
 
-<p>Load balancing distribution verifier. Usage: <code>mwan3-lb-test [-6] &lt;policy_name&gt; [ip1 ip2 ...]</code></p>
+<p>Load balancing distribution verifier.</p>
+
+<pre><code>mwan3-lb-test [-6] -c &lt;client_ip&gt; &lt;policy_name&gt; [ip1 ip2 ...]
+mwan3-lb-test cleanup</code></pre>
 
 <p>Verifies that numgen-based load balancing produces the expected traffic distribution across policy members. Key design:</p>
 
 <ul>
   <li><strong>Iteration count (<code>NITER</code>)</strong>: computed from member weights as <code>base_N = total_weight / GCD(weights)</code>, <code>NITER = base_N * ceil(30 / base_N)</code>. Ensures per-member expected counts are whole numbers and <code>NITER &gt;= 30</code> always.</li>
   <li><strong>Test rule</strong>: inserts a temporary ICMP-only rule into <code>mwan3_rules</code> matching a nft address set. Using ICMP prevents TCP/UDP traffic to the same IPs (DNS forwarders, Android clients bypassing local DNS, etc.) from contaminating the counter.</li>
+  <li><strong>Client isolation (<code>-c &lt;client_ip&gt;</code>, required)</strong>: inserts a <code>forward</code> chain drop rule blocking pings to the test set from all LAN clients except the nominated test client, and an <code>mwan3_output</code> return rule bypassing mwan3 marking for any router process pinging the same IPs. Both rules are scoped to the test set and removed by cleanup.</li>
   <li><strong>Destination pool</strong>: well-known public IPs. Excludes any IPs already configured as mwan3 <code>track_ip</code> values&mdash;mwan3track pings those via <code>mwan3_output &rarr; mwan3_rules</code>, which would match the test rule and inflate counts.</li>
   <li><strong>IPv6 mode (<code>-6</code>)</strong>: uses <code>meta l4proto ipv6-icmp ip6 daddr @set</code>, <code>ping6</code>, and a separate pool of well-known public IPv6 IPs.</li>
-  <li><strong>IP overrides</strong>: <code>mwan3-lb-test &lt;policy&gt; ip1 ip2 ...</code> for sites where defaults are unreachable or fully tracked.</li>
-  <li><strong>Cleanup</strong>: removes test set and rule on exit (normal, SIGINT, SIGTERM, SIGPIPE). Startup sweep removes any stale <code>mwan3_lb_test_*</code> sets and rules left by aborted prior runs.</li>
+  <li><strong>IP overrides</strong>: <code>mwan3-lb-test -c &lt;client_ip&gt; &lt;policy&gt; ip1 ip2 ...</code> for sites where defaults are unreachable or fully tracked.</li>
+  <li><strong>Windows command</strong>: outputs a <code>cmd.exe</code> <code>for</code> loop alongside the Linux shell loop. Windows <code>ping</code> uses a fixed ICMP identifier (id=1), causing conntrack entry reuse on repeated pings to the same destination; the Windows command uses an inter-ping delay of <code>30/TRACK_COUNT + 3</code> seconds so the full cycle exceeds the 30s ICMP conntrack timeout. The IP list is formatted with <code>^</code> line continuation at 4 IPs per line.</li>
+  <li><strong><code>cleanup</code> subcommand</strong>: removes stale <code>mwan3_lb_test_*</code> sets and rules left by a run that was killed before cleanup could execute.</li>
+  <li><strong>Cleanup on exit</strong>: removes test set and rules on normal exit, SIGINT, SIGTERM, and SIGPIPE. Startup sweep removes stale artifacts from aborted prior runs.</li>
 </ul>
 
 <p>See <a href="#enh-lb-test">§15.7</a> for context on why this tool was added and the numgen contamination issues it was designed to detect.</p>
@@ -1532,18 +1539,21 @@ uci show firewall.mwan3_reload
 <!-- ================================================================== -->
 <h3 id="enh-lb-test">15.7 mwan3-lb-test: Load Balancing Distribution Verifier</h3>
 
-<p>A new diagnostic tool <code>/usr/sbin/mwan3-lb-test</code> verifies that load balancing is distributing traffic across policy members in the expected proportions.</p>
+<p>A diagnostic tool <code>/usr/sbin/mwan3-lb-test</code> verifies that load balancing is distributing traffic across policy members in the expected proportions.</p>
 
 <h4>Usage</h4>
-<pre><code>mwan3-lb-test [-6] &lt;policy_name&gt; [ip1 ip2 ...]</code></pre>
-<p><code>-6</code> selects IPv6 mode. Optional IP arguments override the default destination pool.</p>
+<pre><code>mwan3-lb-test [-6] -c &lt;client_ip&gt; &lt;policy_name&gt; [ip1 ip2 ...]
+mwan3-lb-test cleanup</code></pre>
+<p><code>-6</code> selects IPv6 mode. <code>-c &lt;client_ip&gt;</code> is mandatory and specifies the LAN client that will run the test pings. Optional IP arguments override the default destination pool. The <code>cleanup</code> subcommand removes stale sets and rules from an aborted run.</p>
 
 <h4>Design</h4>
 <ul>
   <li><strong>NITER computation:</strong> The number of test iterations is computed from member weights using GCD: <code>base_N = total_weight / GCD(weights)</code>, <code>NITER = base_N * ceil(30 / base_N)</code>. This ensures per-member expected hit counts are whole numbers and that NITER is always at least 30.</li>
-  <li><strong>ICMP-only test rule:</strong> A temporary <code>meta l4proto icmp ip daddr @mwan3_lb_test_&lt;policy&gt;</code> counter rule is inserted into <code>mwan3_rules</code> ahead of user rules. The ICMP restriction prevents DNS queries, TCP connections, and other traffic from contaminating the count. <code>-6</code> mode uses <code>meta l4proto ipv6-icmp ip6 daddr @set</code>.</li>
+  <li><strong>ICMP-only test rule:</strong> A temporary <code>meta l4proto icmp ip daddr @mwan3_lb_test_&lt;PID&gt;</code> counter rule is inserted into <code>mwan3_rules</code> ahead of user rules. The ICMP restriction prevents DNS queries, TCP connections, and other traffic from contaminating the count. <code>-6</code> mode uses <code>meta l4proto ipv6-icmp ip6 daddr @set</code>.</li>
+  <li><strong>Client isolation:</strong> A <code>forward</code> chain drop rule blocks pings to the test destination set from all LAN clients except the nominated test client (<code>-c</code>). An <code>mwan3_output</code> return rule bypasses mwan3 marking for any router process pinging the same IPs. Both rules are scoped to the test set and removed on exit.</li>
   <li><strong>Tracking IP exclusion:</strong> The default destination pool excludes IPs already configured as mwan3 <code>track_ip</code> values. mwan3track pings those IPs via <code>mwan3_output -&gt; mwan3_rules</code>, which would match the test rule and inflate the count.</li>
-  <li><strong>Cleanup:</strong> Removes the temporary set and rule on normal exit, SIGINT, SIGTERM, and SIGPIPE. A startup sweep removes stale <code>mwan3_lb_test_*</code> sets and rules from any aborted previous run.</li>
+  <li><strong>Windows command:</strong> A <code>cmd.exe</code> <code>for</code> loop is output alongside the Linux shell loop. Windows <code>ping</code> uses a fixed ICMP identifier (id=1), causing conntrack entry reuse on repeated pings to the same destination. The Windows command uses an inter-ping delay of <code>30/TRACK_COUNT + 3</code> seconds so the full cycle through all test IPs exceeds the 30s ICMP conntrack timeout, ensuring each revisit generates a fresh conntrack entry. The IP list is formatted with <code>^</code> line continuation at 4 IPs per line.</li>
+  <li><strong>Cleanup:</strong> Removes the temporary set and rules on normal exit, SIGINT, SIGTERM, and SIGPIPE. A startup sweep removes stale <code>mwan3_lb_test_*</code> sets and rules from any aborted previous run.</li>
 </ul>
 
 <p><strong>Files changed:</strong> <code>usr/sbin/mwan3-lb-test</code> (new), <code>Makefile</code></p>
@@ -1579,6 +1589,57 @@ mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-13
 <hr>
 
 <h1 id="changelog">Changelog</h1>
+
+<h2 id="version-3-3-2">Version 3.3.2</h2>
+
+<p>Enhances <code>mwan3-lb-test</code> with mandatory client isolation, a <code>cleanup</code> subcommand, and a Windows <code>cmd.exe</code> test command with automatic conntrack-safe inter-ping delay. Fixes a bug where the <code>mwan3track</code> ping output temp file matched the <code>TRACK_*</code> glob used by rpcd to enumerate tracking IPs, causing <code>OUTPUT</code> to appear as a spurious tracked IP in status output. Extends the luci-app-mwan3 Configuration tab rule-shadowing check to cover IPv6 CIDRs, adds <code>ipset_src</code> support to the Simulator tab, shows source NFT set in the Overview rules table, fixes the Routing Health tab incorrectly labelling ip rules as "Present (unexpected)" during interface bring-up, and fixes missing cross-field family consistency validation in the rule editor.</p>
+
+<h3>mwan3: enhance mwan3-lb-test with client isolation and Windows test command</h3>
+<p>Add mandatory <code>-c &lt;client_ip&gt;</code> parameter. Inserts a <code>forward</code> chain drop rule blocking pings to the test destination set from all LAN clients except the nominated test client, and an <code>mwan3_output</code> return rule bypassing mwan3 marking for router processes pinging the same IPs. Both rules are scoped to the test set and removed by cleanup.</p>
+<p>Add <code>cleanup</code> subcommand to remove stale sets and rules left by a run killed before cleanup could execute.</p>
+<p>Add a <code>cmd.exe</code> <code>for</code> loop output alongside the existing Linux shell loop. Windows <code>ping</code> uses a fixed ICMP identifier (id=1), causing conntrack entry reuse on repeated pings to the same destination; the Windows command uses an inter-ping delay of <code>30/TRACK_COUNT + 3</code> seconds so the full cycle through all test IPs exceeds the 30s ICMP conntrack timeout. The IP list is formatted with <code>^</code> line continuation at 4 IPs per line.</p>
+<p><strong>Files changed:</strong> <code>files/usr/sbin/mwan3-lb-test</code></p>
+
+<hr>
+
+<h3>mwan3: rename TRACK_OUTPUT temp file to PING_OUTPUT</h3>
+<p>The rpcd status module globs <code>TRACK_*</code> files in the mwan3track status directory to enumerate per-interface tracking IPs. The per-process temp file used by <code>mwan3track</code> to capture <code>ping</code> stdout was also named <code>TRACK_OUTPUT</code>, so it matched the glob. The string <code>OUTPUT</code> was then passed to the IP address parsing logic, causing it to appear as a spurious tracked IP in <code>ubus call mwan3 status</code> output.</p>
+<p>Fixed by renaming the temp file to <code>PING_OUTPUT</code> so it no longer matches the <code>TRACK_*</code> glob.</p>
+<p><strong>Files changed:</strong> <code>files/usr/sbin/mwan3track</code></p>
+
+<hr>
+
+<h3>luci-app-mwan3: extend rule-shadowing check to cover IPv6 CIDRs</h3>
+<p>The Configuration tab's rule-shadowing analysis previously skipped all IPv6 addresses, treating every IPv6 pair as "may shadow". Added proper IPv6 CIDR containment using BigInt arithmetic (<code>expandIPv6</code>, <code>ipv6ToBigInt</code>, <code>ipv6CidrContains</code>) so shadowed IPv6 rules are correctly identified. Refactored the IPv4 path into <code>ipv4CidrContains</code> to match the new structure.</p>
+<p><strong>Files changed:</strong> <code>htdocs/luci-static/resources/view/mwan3/network/configuration.js</code></p>
+
+<hr>
+
+<h3>luci-app-mwan3: add ipset_src support to traffic path simulator</h3>
+<p>Extended the Simulator tab rule matching to handle the <code>ipset_src</code> source NFT set option alongside the existing <code>ipset</code> destination option. Updates <code>ruleMatches()</code> to check <code>src_ip</code> membership in the source set, <code>matchSummary()</code> to display it, and the set fetch loop to collect <code>ipset_src</code> names.</p>
+<p><strong>Files changed:</strong> <code>htdocs/luci-static/resources/view/mwan3/network/simulator.js</code></p>
+
+<hr>
+
+<h3>luci-app-mwan3: add src ipset to overview rules match column</h3>
+<p>Display <code>ipset_src</code> (source NFT set) in the Match column of the rules table on the Overview tab. Relabelled the existing <code>ipset:</code> entry to <code>dst ipset:</code> to distinguish it from the new <code>src ipset:</code> label.</p>
+<p><strong>Files changed:</strong> <code>htdocs/luci-static/resources/view/mwan3/status/overview.js</code></p>
+
+<hr>
+
+<h3>luci-app-mwan3: fix routing health showing Present (unexpected) during interface bring-up</h3>
+<p>During interface bring-up, mwan3 adds ip rules on the <code>connected</code> hotplug event before mwan3track has confirmed <code>STATUS=online</code>. The routing health page derived <code>expectedPresent</code> from <code>online</code> (a boolean), so rules present while the status was not yet <code>online</code> were labelled "Present (unexpected)" even though their presence is normal in this transitional state.</p>
+<p>Fixed by introducing a tri-state <code>expectedPresent</code> parameter to <code>renderStatusBadge</code>: <code>true</code> (expected present - green/red judgement), <code>false</code> (expected absent - warns if present), <code>null</code> (no expectation - reports presence neutrally in muted colour). The badge calls now pass <code>true</code> when online and <code>null</code> otherwise. The card border colour already conveys health for non-online interfaces.</p>
+<p><strong>Files changed:</strong> <code>htdocs/luci-static/resources/view/mwan3/status/routing.js</code></p>
+
+<hr>
+
+<h3>luci-app-mwan3: fix missing cross-field family consistency checks in rule editor</h3>
+<p><code>nftset_validate()</code> only checked set type against the explicit <code>family</code> field and returned <code>true</code> immediately when <code>family</code> was unset. This allowed invalid combinations such as an IPv6 source NFT set paired with an IPv4 destination address to pass validation silently.</p>
+<p>Added cross-field checks: <code>ipset_src</code> type vs <code>dest_ip</code> address family; <code>ipset</code> type vs <code>src_ip</code> address family; <code>ipset_src</code> type vs <code>ipset</code> type (mixed families on the same rule). Added <code>ip_family()</code> helper to derive <code>ipv4</code>/<code>ipv6</code> from an IP address string.</p>
+<p><strong>Files changed:</strong> <code>htdocs/luci-static/resources/view/mwan3/network/rule.js</code></p>
+
+<hr>
 
 <h2 id="version-3-3-1">Version 3.3.1</h2>
 
