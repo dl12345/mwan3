@@ -620,7 +620,7 @@ mwan3_delete_iface_rules()
 		return
 	fi
 
-	for rule_id in $(ip rule list | awk -F : '$1 % 1000 == '$id' && $1 > 1000 && $1 < 4000 {print $1}'); do
+	for rule_id in $($IP rule list | awk -F : '$1 % 1000 == '$id' && $1 > 1000 && $1 < 4000 {print $1}'); do
 		$IP rule del pref $rule_id
 	done
 }
