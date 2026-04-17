@@ -95,7 +95,7 @@
 <h1>mwan3 nftables Implementation</h1>
 <p><strong>Developer Reference</strong> &mdash; OpenWrt 25.12+<br>
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
-<em>Package version: 3.3.1</em></p>
+<em>Package version: 3.3.3</em></p>
 
 <nav class="toc">
 <strong>Contents</strong>
@@ -164,6 +164,7 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
   </li>
   <li><a href="#changelog">16. Changelog</a>
     <ul>
+      <li><a href="#version-3-3-3">Version 3.3.3</a></li>
       <li><a href="#version-3-3-2">Version 3.3.2</a></li>
       <li><a href="#version-3-3-1">Version 3.3.1</a></li>
       <li><a href="#version-3-3">Version 3.3</a></li>
@@ -365,10 +366,10 @@ chain mwan3_or_ct_0x0100 { ct mark set ct mark | 0x0100 ; return }
 <tr><th>Object</th><th>Type</th><th>Purpose</th></tr>
 <tr><td><code>mwan3_connected_v4</code></td><td>set (ipv4_addr, interval, auto-merge)</td><td>Directly connected IPv4 networks</td></tr>
 <tr><td><code>mwan3_connected_v6</code></td><td>set (ipv6_addr, interval, auto-merge)</td><td>Directly connected IPv6 networks</td></tr>
-<tr><td><code>mwan3_custom_v4</code></td><td>set (ipv4_addr, interval, auto-merge)</td><td>Networks from custom routing tables</td></tr>
-<tr><td><code>mwan3_custom_v6</code></td><td>set (ipv6_addr, interval, auto-merge)</td><td>Networks from custom routing tables</td></tr>
-<tr><td><code>mwan3_dynamic_v4</code></td><td>set (ipv4_addr, interval, auto-merge)</td><td>Dynamically managed networks</td></tr>
-<tr><td><code>mwan3_dynamic_v6</code></td><td>set (ipv6_addr, interval, auto-merge)</td><td>Dynamically managed networks</td></tr>
+<tr><td><code>mwan3_custom_v4</code></td><td>set (ipv4_addr, interval, auto-merge)</td><td>Networks from routing tables in UCI <code>globals.rt_table_lookup</code> &mdash; traffic to these bypasses policy routing</td></tr>
+<tr><td><code>mwan3_custom_v6</code></td><td>set (ipv6_addr, interval, auto-merge)</td><td>Networks from routing tables in UCI <code>globals.rt_table_lookup</code> &mdash; traffic to these bypasses policy routing</td></tr>
+<tr><td><code>mwan3_dynamic_v4</code></td><td>set (ipv4_addr, interval, auto-merge)</td><td>IPv4 CIDRs from UCI <code>globals.bypass_network</code> &mdash; populated at startup, may also be updated at runtime by external processes</td></tr>
+<tr><td><code>mwan3_dynamic_v6</code></td><td>set (ipv6_addr, interval, auto-merge)</td><td>IPv6 CIDRs from UCI <code>globals.bypass_network</code> &mdash; populated at startup, may also be updated at runtime by external processes</td></tr>
 <tr><td><code>mwan3_prerouting</code></td><td>chain (filter, prerouting, mangle+1)</td><td>Entry point for forwarded/incoming traffic</td></tr>
 <tr><td><code>mwan3_output</code></td><td>chain (route, output, mangle+1)</td><td>Entry point for locally-originated traffic</td></tr>
 <tr><td><code>mwan3_postrouting</code></td><td>chain (nat, postrouting, srcnat-1)</td><td>Opt-in IPv6 SNAT for router-originated traffic rerouted by mwan3 &mdash; see <a href="#enh-snat6">§15.5</a></td></tr>
@@ -450,12 +451,27 @@ Packet enters mwan3_prerouting (or mwan3_output)
 </pre>
 </div>
 
+<h3>The Three Bypass Set Groups</h3>
+<p>mwan3 maintains three parallel groups of destination-bypass sets. Each group has a v4 and v6 set, a corresponding regular chain (jumped from both <code>mwan3_prerouting</code> and <code>mwan3_output</code>), and matching rules in every <code>mwan3_iface_in_*</code> chain. They differ only in how their sets are populated:</p>
+<table>
+<tr><th>Set group</th><th>Populated by</th><th>Source</th></tr>
+<tr><td><code>mwan3_connected_v4/v6</code></td><td><code>mwan3rtmon</code> (continuous) and <code>mwan3_set_connected_sets()</code> at startup</td><td>CIDR routes in the kernel's main routing table</td></tr>
+<tr><td><code>mwan3_custom_v4/v6</code></td><td><code>mwan3_set_custom_sets()</code> at startup</td><td>Prefixes from routing tables listed in UCI <code>globals.rt_table_lookup</code></td></tr>
+<tr><td><code>mwan3_dynamic_v4/v6</code></td><td><code>mwan3_set_dynamic_sets()</code> at startup; also writable at runtime via <code>nft add element</code></td><td>UCI <code>globals.bypass_network</code> CIDR list</td></tr>
+</table>
+<p>Each group appears in <strong>two distinct contexts</strong> with different match directions:</p>
+<p><strong>Destination match &mdash; <code>mwan3_connected</code> / <code>mwan3_custom</code> / <code>mwan3_dynamic</code> chains:</strong><br>
+These chains are jumped from <code>mwan3_prerouting</code> and <code>mwan3_output</code> before the user rules chain. Rules match <code>ip daddr @set</code> / <code>ip6 daddr @set</code>. If the packet's destination falls in one of the sets, the packet is stamped <code>MMX_DEFAULT</code> (mwan3 mark bits cleared to zero) and returned &mdash; the user rules chain is never reached. Traffic destined for directly-connected, custom-table, or explicitly listed bypass networks is not policy-routed.</p>
+<p><strong>Source match &mdash; <code>mwan3_iface_in_*</code> chains:</strong><br>
+Each per-interface chain includes source-match rules against all three set groups (<code>ip saddr @set</code>, scoped to the interface's address family). If an inbound WAN packet's source address is in any of the sets, it is stamped <code>MMX_DEFAULT</code>. Traffic arriving on a WAN interface from a connected or bypassed address does not get the WAN's interface mark, so replies to it use the main routing table rather than the WAN-specific policy route.</p>
+
 <h3>Per-Interface Chain Detail</h3>
-<p>Each <code>mwan3_iface_in_&lt;name&gt;</code> chain:</p>
+<p>Each <code>mwan3_iface_in_&lt;name&gt;</code> chain handles packets arriving on a specific WAN device:</p>
 <ol>
-  <li>Matches on <code>iifname</code> (device name) and address family</li>
-  <li>If source address is in connected/custom/dynamic sets &rarr; mark as <code>MMX_DEFAULT</code> (don't route through this WAN for local-origin traffic)</li>
-  <li>Otherwise &rarr; mark with the interface's unique mark (classify as "arrived via this WAN")</li>
+  <li><strong><code>iifname</code> and <code>meta nfproto</code> match</strong> &mdash; only processes packets arriving on the correct physical device and address family. The <code>meta nfproto ipv4</code>/<code>meta nfproto ipv6</code> guard is critical when two mwan3 interfaces share the same physical device (e.g. dual-stack PPPoE): without it, an IPv4 interface's catchall would misclassify incoming IPv6 packets.</li>
+  <li><strong>Source in bypass sets &rarr; <code>MMX_DEFAULT</code></strong> &mdash; if the arriving packet's source is in <code>mwan3_connected_v4/v6</code>, <code>mwan3_custom_v4/v6</code>, or <code>mwan3_dynamic_v4/v6</code>, the packet is marked <code>MMX_DEFAULT</code>. This connection will use the main routing table for replies rather than being pinned to this WAN's policy route.</li>
+  <li><strong>Otherwise &rarr; interface mark</strong> &mdash; the packet is stamped with the interface's unique fwmark. The conntrack save step in the calling prerouting/output chain records this mark so subsequent packets in the same connection have their mark restored from ct mark.</li>
+  <li><strong>Address-family-scoped catchall</strong> &mdash; the rule that marks unmatched packets with the interface fwmark carries a <code>meta nfproto</code> guard matching the interface's configured family, completing the dual-stack isolation begun in step 1.</li>
 </ol>
 
 <hr>
@@ -754,7 +770,8 @@ mwan3-lb-test cleanup</code></pre>
 <tr><td class="func-sig">mwan3_set_connected_sets</td><td>Calls both <code>_ipv4</code> and <code>_ipv6</code> functions.</td></tr>
 <tr><td class="func-sig">mwan3_set_custom_set table_id</td><td>Callback for <code>config_list_foreach</code>. Adds routes from the given table to custom sets. Pushes to an existing batch (does not start/commit).</td></tr>
 <tr><td class="func-sig">mwan3_set_custom_sets</td><td>Flushes and repopulates custom sets from all <code>rt_table_lookup</code> entries in globals config.</td></tr>
-<tr><td class="func-sig">mwan3_set_dynamic_sets</td><td>Flushes dynamic sets (they start empty; populated externally).</td></tr>
+<tr><td class="func-sig">mwan3_set_dynamic_network network</td><td>Callback for <code>config_list_foreach</code>. Classifies a single <code>bypass_network</code> CIDR as IPv4 (contains <code>.</code>) or IPv6 (contains <code>:</code>) and pushes the appropriate <code>add element</code> command to the current batch.</td></tr>
+<tr><td class="func-sig">mwan3_set_dynamic_sets</td><td>Flushes <code>mwan3_dynamic_v4/v6</code> then repopulates from <code>bypass_network</code> entries in globals UCI config. Called at startup and in both fw4 reload recovery paths.</td></tr>
 </table>
 
 <div class="note">
@@ -798,7 +815,7 @@ mwan3-lb-test cleanup</code></pre>
 <tr><td class="func-sig">mwan3_delete_iface_nft iface</td><td>Removes all jump rules for this interface from <code>mwan3_ifaces_in</code> (while loop over handle lookups &mdash; handles the case where duplicate rules accumulated due to repeated fw4 reload cycles), then flushes and deletes the interface chain. Also removes the per-interface SNAT rules from <code>mwan3_postrouting</code> (matched by comment tag <code>mwan3_snat_&lt;iface&gt;</code>).</td></tr>
 <tr><td class="func-sig">mwan3_delete_iface_map_entries iface</td><td>Iterates all <code>mwan3_sticky_v[46]_*</code> sets in the <code>inet</code> family, finds sets whose name ends with <code>_&lt;id&gt;</code> (this interface's id), and flushes them. Sets are flushed rather than deleted because rule chains may still reference the set name.</td></tr>
 <tr><td class="func-sig">mwan3_create_iface_rules iface device</td><td>Adds <code>ip rule</code> entries: pref id+1000 (iif lookup), pref id+2000 (fwmark lookup), pref id+3000 (fwmark unreachable). <em>Unchanged from iptables version.</em></td></tr>
-<tr><td class="func-sig">mwan3_delete_iface_rules iface</td><td>Removes ip rules matching this interface's ID range. <em>Unchanged.</em></td></tr>
+<tr><td class="func-sig">mwan3_delete_iface_rules iface</td><td>Removes ip rules matching this interface's ID range using <code>$IP rule list</code> (correct address family for IPv4 or IPv6).</td></tr>
 <tr><td class="func-sig">mwan3_create_iface_route iface device</td><td>Copies routes from main table into the per-interface table. <em>Unchanged.</em></td></tr>
 <tr><td class="func-sig">mwan3_delete_iface_route iface</td><td>Flushes the per-interface routing table. <em>Unchanged.</em></td></tr>
 </table>
@@ -828,7 +845,6 @@ done</code></pre>
 <table>
 <tr><th>Function</th><th>Purpose</th></tr>
 <tr><td class="func-sig">mwan3_get_policy_members_for_family policy family</td><td>Iterates the members of a policy config via <code>config_list_foreach</code>. For each member whose interface matches the requested family, resolves the interface id and computes its mark, and accumulates <code>&lt;id&gt;:&lt;mark&gt;</code> tuples into <code>$_policy_member_marks</code>. Used by the sticky path in <code>mwan3_set_user_nft_rule()</code> to enumerate per-member sets.</td></tr>
-<tr><td class="func-sig">mwan3_set_sticky_nft rule ipv</td><td>Defined in <code>mwan3.sh</code> but <strong>never called</strong>. Dead code. The sticky rule logic is handled inline within <code>mwan3_set_user_nft_rule()</code>.</td></tr>
 </table>
 
 <!-- 6.7 -->
@@ -1583,12 +1599,90 @@ mwan3-lb-test cleanup</code></pre>
 <hr>
 
 <p style="text-align:center; color:#6b7280; font-size:0.85em; margin-top:3rem;">
-mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-13
+mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-15
 </p>
 
 <hr>
 
 <h1 id="changelog">Changelog</h1>
+
+<h2 id="version-3-3-3">Version 3.3.3</h2>
+
+<p>Adds the <code>bypass_network</code> UCI option under globals, providing a direct CIDR list interface to the existing <code>mwan3_dynamic_v4/v6</code> nft sets. Improves the <code>rt_table_lookup</code> globals UI label, description, and datatype. Adds fw4 reload detection and completion timestamp to <code>mwan3-lb-test</code>. Fixes DNAT reply routing broken by the v3.3.1 misplaced fib-local return rule. Fixes dnsmasq SIGHUP not being sent after fw4 reload due to incorrect boolean comparison. Fixes three shell bugs: bare <code>ip rule list</code> causing IPv6 ip rule accumulation on every ifdown, unquoted <code>$IPv4_REGEX</code> in grep, and unquoted <code>$cmdline</code> in process validation. Removes dead <code>mwan3_set_sticky_nft</code> stub and duplicate <code>mwan3_count_one_bits</code> definition. Adds <code>mwan3_postrouting</code> to the <code>stop_service</code> skeleton chain exclusion and safety-flush lists.</p>
+
+<h3>mwan3: add bypass_network UCI option to populate dynamic sets from globals config</h3>
+<p>The <code>mwan3_dynamic_v4/v6</code> nft sets and <code>mwan3_dynamic</code> chain existed since the initial nftables port but were only accessible by directly injecting nft elements from external processes, requiring knowledge of internal set names and nftables syntax.</p>
+<p>Add a <code>bypass_network</code> list option under the globals UCI section. Entries are IPv4 or IPv6 CIDRs. At startup (and after fw4 reload), <code>mwan3_set_dynamic_sets()</code> flushes the sets and repopulates them from this list via a new <code>mwan3_set_dynamic_network()</code> callback. Classification as IPv4 or IPv6 is by pattern match (<code>.</code> vs <code>:</code>); nft validates the CIDR syntax atomically when the batch commits.</p>
+<p><code>mwan3_set_dynamic_sets</code> is added to the fw4 reload rebuild sequence in both <code>25-mwan3</code> and <code>mwan3-fw-rebuild.sh</code> so bypass_network entries are restored after fw4 reload alongside connected and custom sets.</p>
+<div class="note">The bypass applies to traffic with these networks as the <strong>destination</strong>. The <code>mwan3_dynamic</code> chain matches <code>ip daddr @mwan3_dynamic_v4</code> / <code>ip6 daddr @mwan3_dynamic_v6</code>. Source-based bypass (exempting traffic from specific source IPs) requires a different mechanism and is not implemented.</div>
+<p><strong>Files changed:</strong> <code>files/lib/mwan3/mwan3.sh</code>, <code>files/lib/mwan3/mwan3-fw-rebuild.sh</code>, <code>files/etc/hotplug.d/iface/25-mwan3</code></p>
+
+<hr>
+
+<h3>luci-app-mwan3: add Bypass networks field to globals page and improve rt_table_lookup UI</h3>
+<p>Add a <em>Bypass networks</em> DynamicList field (<code>bypass_network</code>) to the globals page. Accepts IPv4 and IPv6 CIDRs directly with <code>cidr</code> datatype validation. Validation fires on blur only (keyup suppressed) using a capture-phase event delegation listener on the container, covering dynamically added items.</p>
+<p>Improve <code>rt_table_lookup</code>: rename label to "Routing table bypass", update the description to explain the bypass effect and that both table numbers and names are accepted. Remove the incorrect <code>uinteger</code> datatype constraint &mdash; <code>ip route list table</code> accepts names, but the UI previously rejected them.</p>
+<p><strong>Files changed:</strong> <code>htdocs/luci-static/resources/view/mwan3/network/globals.js</code></p>
+
+<hr>
+
+<h3>mwan3: add fw4 reload detection and timestamp to mwan3-lb-test</h3>
+<p>When fw4 reload occurs during the test wait period, the 25-mwan3 hotplug rebuilds the policy chain without the injected counter rules. Previously this produced <code>TOTAL=unknown</code> and a generic FAIL. Now detects missing counter rules explicitly and reports "fw4 reload likely occurred during the test". Also adds a human-readable completion timestamp to the summary output.</p>
+<p><strong>Files changed:</strong> <code>files/usr/sbin/mwan3-lb-test</code></p>
+
+<hr>
+
+<h3>mwan3: fix DNAT reply routing broken by misplaced fib-local return rule</h3>
+<p>The v3.3.1 numgen contamination fix added an unguarded <code>fib daddr type local return</code> as the first substantive rule in <code>mwan3_prerouting</code>. Because <code>mwan3_prerouting</code> runs at priority <code>mangle+1</code> (-149), before the nat/prerouting DNAT hook (-100), this rule fires on the original packet of a DNAT connection while its destination is still the router's own WAN IP. The packet is returned immediately with no ct mark saved. When the DNAT reply arrives from the internal host on the LAN interface, the ct mark restore finds zero, the packet falls to the policy chain, numgen assigns a random WAN mark, and the reply exits via whichever interface numgen picks rather than the one the original packet arrived on.</p>
+<p>Fix: remove the unguarded fib-local return from before the ifaces_in dispatch and reinsert it after, guarded by <code>meta mark &amp; MMX_MASK == 0</code>. Traffic arriving on a mwan3 WAN interface is already marked by the iface_in catchall before reaching this rule, so the guard makes it a no-op for WAN traffic while still blocking non-WAN local-destined traffic from reaching the policy chain. DNAT original packets are now marked by the iface_in catchall, ct mark is saved correctly, and DNAT replies restore it and route back via the correct interface.</p>
+<p>Also removes <code>ct direction reply return</code> from <code>mwan3_output</code>. That rule was added to compensate for ct mark being zero (a consequence of the misplaced fib-local return). With the fib-local return correctly placed and guarded, ct mark is non-zero for inbound WAN connections, the ct mark restore in <code>mwan3_output</code> works correctly, and router-level service replies route back via the correct WAN table.</p>
+<p><strong>Files changed:</strong> <code>files/lib/mwan3/mwan3.sh</code></p>
+
+<hr>
+
+<h3>mwan3: fix dnsmasq_hup running check - json_get_var returns 1 not "true" for boolean true</h3>
+<p><code>mwan3_dnsmasq_hup()</code> queries procd via <code>ubus call service list</code> to find running dnsmasq instances before sending SIGHUP. The check used <code>[ "$running" = "true" ]</code>, but <code>json_get_var</code> stores JSON boolean <code>true</code> as integer <code>1</code>, not as the string <code>"true"</code>. The condition never matched, so SIGHUP was never sent and the DNS cache was never cleared after fw4 reloads, causing clients to continue using stale DNS entries that bypassed nftsets.</p>
+<p>Fixed by changing the comparison to <code>[ "$running" -eq 1 ]</code>.</p>
+<p><strong>Files changed:</strong> <code>files/lib/mwan3/mwan3.sh</code></p>
+
+<hr>
+
+<h3>mwan3: fix IPv6 ip rule leak in mwan3_delete_iface_rules</h3>
+<p><code>mwan3_delete_iface_rules()</code> correctly sets <code>IP="$IP6"</code> for IPv6 interfaces but used bare <code>ip rule list</code> (which defaults to IPv4) to find rule priorities to delete. No IPv6 rules were found, so all three ip rules (at priorities IIF_BASE+id, FWMARK_BASE+id, and 3000+id) were leaked on every IPv6 interface ifdown. On the next ifup, <code>mwan3_create_iface_rules</code> calls <code>mwan3_delete_iface_rules</code> before adding new rules, but the delete fails for the same reason, causing stale rules to accumulate on each ifdown/ifup cycle.</p>
+<p>Fixed by changing <code>ip rule list</code> to <code>$IP rule list</code>.</p>
+<p><strong>Files changed:</strong> <code>files/lib/mwan3/mwan3.sh</code></p>
+
+<hr>
+
+<h3>mwan3: quote $IPv4_REGEX in mwan3_set_user_nft_rule</h3>
+<p><code>$IPv4_REGEX</code> was unquoted in a <code>grep -qE</code> call while the adjacent <code>$IPv6_REGEX</code> on the preceding line was correctly quoted. The IPv4 regex contains <code>?</code> and <code>[...]</code> characters that the shell interprets as glob patterns before passing to grep if unquoted.</p>
+<p><strong>Files changed:</strong> <code>files/lib/mwan3/mwan3.sh</code></p>
+
+<hr>
+
+<h3>mwan3: quote $cmdline in mwan3_get_mwan3track_status</h3>
+<p><code>$cmdline</code> was unquoted in the <code>[ $cmdline != ... ]</code> test in <code>common.sh</code>. If <code>readfile</code> returns nothing (narrow race where the tracked process exits between the PID file read and the <code>/proc/$pid/cmdline</code> read), the empty expansion produces a malformed two-argument test expression that happens to evaluate correctly in busybox ash but is fragile.</p>
+<p><strong>Files changed:</strong> <code>files/lib/mwan3/common.sh</code></p>
+
+<hr>
+
+<h3>mwan3: remove dead mwan3_set_sticky_nft function</h3>
+<p><code>mwan3_set_sticky_nft()</code> was an incomplete stub from an earlier sticky routing design that was superseded by the current per-member ip-only set and OR-immediate vmap-dispatch implementation in <code>mwan3_set_user_nft_rule()</code>. The stub had a no-op loop body and was never called. <code>mwan3_get_policy_members_for_family()</code> is retained &mdash; it is called by the active sticky implementation.</p>
+<p><strong>Files changed:</strong> <code>files/lib/mwan3/mwan3.sh</code></p>
+
+<hr>
+
+<h3>mwan3: remove duplicate mwan3_count_one_bits from mwan3.sh</h3>
+<p>An identical copy of <code>mwan3_count_one_bits()</code> existed in both <code>mwan3.sh</code> and <code>common.sh</code>. Since <code>mwan3.sh</code> sources <code>common.sh</code>, the <code>mwan3.sh</code> copy shadowed the canonical definition without any functional difference. The duplicate is removed; all call sites use the <code>common.sh</code> definition.</p>
+<p><strong>Files changed:</strong> <code>files/lib/mwan3/mwan3.sh</code></p>
+
+<hr>
+
+<h3>mwan3: add mwan3_postrouting to stop_service skeleton chain lists</h3>
+<p><code>mwan3_postrouting</code> is defined in the static <code>10-mwan3.nft</code> skeleton alongside the other skeleton chains, but was absent from both the deletion exclusion list and the safety-flush list in <code>stop_service()</code>. This caused it to be deleted on stop rather than preserved, relying on <code>mwan3_ensure_nft_framework</code> to recreate it on next start. Added to both lists for consistency with the other skeleton chains.</p>
+<p><strong>Files changed:</strong> <code>files/etc/init.d/mwan3</code></p>
+
+<hr>
 
 <h2 id="version-3-3-2">Version 3.3.2</h2>
 
