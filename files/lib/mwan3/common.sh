@@ -309,7 +309,7 @@ mwan3_get_mwan3track_status()
 		return
 	fi
 	readfile cmdline /proc/$pid/cmdline 2>/dev/null
-	if [ $cmdline != "/bin/sh/usr/sbin/mwan3track${interface}" ]; then
+	if [ "$cmdline" != "/bin/sh/usr/sbin/mwan3track${interface}" ]; then
 		export -n "$1=down"
 		return
 	fi
