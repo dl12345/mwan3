@@ -34,7 +34,7 @@ mwan3_dnsmasq_hup()
 			json_select "$key"
 			json_get_var pid "pid"
 			json_get_var running "running"
-			[ "$running" = "true" ] && /bin/kill -s HUP $pid 2>/dev/null
+			[ "$running" -eq 1 ] && /bin/kill -s HUP $pid 2>/dev/null
 			json_select ".."
 		done
 	fi
