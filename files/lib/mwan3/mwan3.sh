@@ -849,52 +849,6 @@ mwan3_set_policies_nft()
 	config_foreach mwan3_create_policies_nft policy
 }
 
-mwan3_set_sticky_nft()
-{
-	local interface="$1"
-	local rule="$2"
-	local ipv="$3"
-	local policy="$4"
-
-	local id iface mark
-
-	# Check which interfaces are in the policy chain (by examining policy_members)
-	for iface in $($NFT list chain inet fw4 "mwan3_policy_$policy" 2>/dev/null | \
-			grep "numgen\|meta mark set" | grep -oE '0x[0-9a-f]+' | sort -u); do
-		# This is complex; for sticky we need to check if the interface is online
-		:
-	done
-
-	# For each online interface in the policy, add sticky restore rules
-	mwan3_get_iface_id id "$interface"
-	[ -n "$id" ] || return 0
-	mark=$(mwan3_id2mask id MMX_MASK)
-
-	# Check that interface chain exists (meaning interface is up)
-	$NFT list chain inet fw4 "mwan3_iface_in_${interface}" &>/dev/null || return 0
-
-	local sticky_map_name
-	if [ "$ipv" = "ipv4" ]; then
-		sticky_map_name="mwan3_sticky_v4_${rule}"
-	else
-		sticky_map_name="mwan3_sticky_v6_${rule}"
-	fi
-
-	# Insert rules at beginning of rule chain:
-	# If mark matches this interface AND source NOT in sticky map -> clear mark (force re-evaluation)
-	# If mark is 0 AND source in sticky map for this interface -> set mark
-	# (These are inserted in reverse order since we use 'insert' to prepend)
-
-	# Insert: if mark is zero, try to restore from sticky map
-	mwan3_nft_push "insert rule inet fw4 mwan3_rule_$rule meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $mark $MMX_MASK)"
-	# Insert before that: if mark matches this iface and src not in sticky, clear mark
-	if [ "$ipv" = "ipv4" ]; then
-		mwan3_nft_push "insert rule inet fw4 mwan3_rule_$rule meta mark & $MMX_MASK == $mark ip saddr != @$sticky_map_name $(mwan3_nft_mark_expr 0 $MMX_MASK)"
-	else
-		mwan3_nft_push "insert rule inet fw4 mwan3_rule_$rule meta mark & $MMX_MASK == $mark ip6 saddr != @$sticky_map_name $(mwan3_nft_mark_expr 0 $MMX_MASK)"
-	fi
-}
-
 # Enumerate the iface members of a policy whose family matches $2 (ipv4|ipv6).
 # Sets _policy_member_marks to a space-separated list of "id:mark" tuples.
 # Used by the sticky implementation to size the per-member sticky set fan-out.
