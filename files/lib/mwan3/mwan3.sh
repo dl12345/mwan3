@@ -948,7 +948,7 @@ mwan3_set_user_nft_rule()
 
 	for ipaddr in "$src_ip" "$dest_ip"; do
 		if [ -n "$ipaddr" ] && { { [ "$ipv" = "ipv4" ] && echo "$ipaddr" | grep -qE "$IPv6_REGEX"; } ||
-						 { [ "$ipv" = "ipv6" ] && echo "$ipaddr" | grep -qE $IPv4_REGEX; } }; then
+						 { [ "$ipv" = "ipv6" ] && echo "$ipaddr" | grep -qE "$IPv4_REGEX"; } }; then
 			if [ "$family" = "any" ]; then
 				# family "ipv4 and ipv6": silently skip the non-matching pass
 				return
