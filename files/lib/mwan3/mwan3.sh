@@ -99,20 +99,6 @@ mwan3_route_line_dev()
 	done
 }
 
-# counts how many bits are set to 1
-# n&(n-1) clears the lowest bit set to 1
-mwan3_count_one_bits()
-{
-	local count n
-	count=0
-	n=$(($1))
-	while [ "$n" -gt "0" ]; do
-		n=$((n&(n-1)))
-		count=$((count+1))
-	done
-	echo $count
-}
-
 mwan3_get_iface_id()
 {
 	local _tmp
