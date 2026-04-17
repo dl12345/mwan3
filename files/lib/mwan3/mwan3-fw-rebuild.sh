@@ -17,10 +17,10 @@ initscript=/etc/init.d/mwan3
 SCRIPTNAME="mwan3-fw-rebuild"
 mwan3_init
 
-# Only rebuild if rules are actually missing (chain exists but empty)
-$NFT list chain inet fw4 mwan3_prerouting 2>/dev/null | grep -q "meta mark" && exit 0
-
 procd_lock
+
+# Re-check under lock: 25-mwan3 may have rebuilt while we were waiting.
+$NFT list chain inet fw4 mwan3_prerouting 2>/dev/null | grep -q "meta mark" && exit 0
 
 LOG notice "Rebuilding mwan3 rules after fw4 reload"
 mwan3_set_connected_sets
@@ -32,7 +32,13 @@ mwan3_set_policies_nft
 mwan3_set_user_rules
 
 # Signal dnsmasq to clear cache - next client queries will trigger
-# fresh upstream resolution which re-populates nft sets via nftset option
+# fresh upstream resolution which re-populates nft sets via nftset option.
+# Multiple rebuild paths (fw4 include and 25-mwan3 hotplug) can both call
+# mwan3_dnsmasq_hup in close succession. A ubus event coalescing daemon
+# (analogous to mwan3rtmon's debounce pattern) could eliminate this, but
+# the bootstrapping dependency, silent-failure risk, and the fact that
+# dnsmasq_hup is currently the only candidate make it premature. Revisit
+# if a second coalesceable operation emerges.
 mwan3_dnsmasq_hup
 
 exit 0
