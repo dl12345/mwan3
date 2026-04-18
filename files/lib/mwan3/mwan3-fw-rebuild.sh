@@ -40,5 +40,6 @@ mwan3_set_user_rules
 # dnsmasq_hup is currently the only candidate make it premature. Revisit
 # if a second coalesceable operation emerges.
 mwan3_dnsmasq_hup
+mwan3_flush_stale_conntrack
 
 exit 0

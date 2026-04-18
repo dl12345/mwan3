@@ -42,6 +42,23 @@ mwan3_dnsmasq_hup()
 	json_set_namespace "$old_ns"
 }
 
+mwan3_flush_stale_conntrack()
+{
+	# After an fw4 rebuild or mwan3 restart, conntrack entries created during
+	# the rule-rebuild window have ct mark=0 (iface_in chains were absent).
+	# WireGuard persistent-keepalive and similar long-lived UDP traffic can
+	# keep these zero-mark entries alive indefinitely, causing persistent
+	# misrouting. Flush only zero-mark entries; correctly-marked connections
+	# are untouched. Requires conntrack-tools; logs a warning if absent.
+	[ -e "$CONNTRACK_FILE" ] || return
+	if command -v conntrack >/dev/null 2>&1; then
+		conntrack -D --mark 0x0/"$MMX_MASK" 2>/dev/null
+		LOG notice "Flushed zero-mark conntrack entries"
+	else
+		LOG notice "conntrack not installed; stale zero-mark conntrack entries may persist - install conntrack"
+	fi
+}
+
 mwan3_update_dev_to_table()
 {
 	local _tid

@@ -49,6 +49,7 @@ start_service() {
 	wait $hotplug_pids
 	mwan3_set_policies_nft
 	mwan3_set_user_rules
+	mwan3_flush_stale_conntrack
 
 	# If software flow offloading is active, flush all conntrack entries so
 	# existing flows re-establish under the new policy rules immediately rather
