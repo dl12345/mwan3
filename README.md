@@ -2,7 +2,7 @@
 
 **Developer Reference** — OpenWrt 25.12+
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.
-*Package version: 3.3.3*
+*Package version: 3.3.4*
 
 ---
 
@@ -59,6 +59,7 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.
     - [15.7 mwan3-lb-test: Load Balancing Distribution Verifier](#157-mwan3-lb-test-load-balancing-distribution-verifier)
     - [15.8 Source NFT Set Matching (`ipset_src`)](#158-source-nft-set-matching-ipset_src)
 16. [Changelog](#changelog)
+    - [Version 3.3.4](#version-334)
     - [Version 3.3.3](#version-333)
     - [Version 3.3.2](#version-332)
     - [Version 3.3.1](#version-331)
@@ -787,6 +788,7 @@ When a user rule references an `ipset` (destination nft set) or `ipset_src` (sou
 | `mwan3_update_peer_track_ip iface` | If `track_gateway` is enabled for the interface, queries `ifstatus` for the point-to-point peer address and writes it to `$MWAN3TRACK_STATUS_DIR/<iface>/GATEWAY`. Called from `start_tracker()` and on `ifup` hotplug events. |
 | `mwan3_track_clean iface` | Removes track status directory for the interface. |
 | `mwan3_dnsmasq_hup` | Sends `SIGHUP` to running dnsmasq instances. Queries procd via `ubus call service list`, finds PIDs for the dnsmasq service, and signals only instances where procd reports `running: true`. Instances mid-startup are skipped to avoid the race where SIGHUP received during initialisation causes dnsmasq to exit. Uses `json_set_namespace` to protect the caller's jshn state. Called after fw4 reload recovery to clear the DNS cache and force fresh queries that re-populate nftset-based sets. |
+| `mwan3_flush_stale_conntrack` | Flushes conntrack entries with no mwan3 mark (`0x0/MMX_MASK`) after an fw4 rebuild or mwan3 restart. During the brief rebuild window, new connections can be established with ct mark=0 (iface_in chains not yet present). For most protocols the bad entry expires within 2 minutes and self-heals; WireGuard with `persistent-keepalive` refreshes the entry indefinitely, making the misrouting permanent until a reboot. Called from `start_service` in `init.d/mwan3` (covers boot and `service mwan3 restart`), from `25-mwan3`, and from `mwan3-fw-rebuild.sh` after fw4 reload recovery. Correctly marked entries (0x100, 0x200 etc.) are untouched. If `conntrack` is not installed, logs a notice suggesting installation of the `conntrack` package. |
 
 ---
 
@@ -1517,6 +1519,34 @@ The same pre-creation logic used for `ipset` applies to `ipset_src`: if the name
 ---
 
 # Changelog
+
+## Version 3.3.4
+
+Fixes a double-rebuild race in `mwan3-fw-rebuild.sh`. Flushes zero-mark conntrack entries after fw4 rebuild and mwan3 restart to prevent stale entries misrouting persistent connections such as WireGuard with `persistent-keepalive`.
+
+### mwan3: flush zero-mark conntrack entries after fw4 rebuild and restart
+
+When fw4 reloads it wipes `table inet fw4` entirely. The `25-mwan3` hotplug and `mwan3-fw-rebuild.sh` both detect the empty `mwan3_prerouting` chain and rebuild all mwan3 nft rules. During the brief window between the table being wiped and the rebuild completing, the per-interface `mwan3_iface_in_*` chains do not yet exist. A new connection arriving during this window is not marked by the iface_in catchall; the conntrack entry is created with ct mark=0. Subsequent packets restore 0, numgen fires, and the connection is routed to the wrong interface.
+
+For most protocols the bad entry expires within 2 minutes (UDP stream conntrack timeout) and self-heals without intervention. WireGuard with `persistent-keepalive` refreshes the conntrack entry every 25-60 seconds - well within the 120-second timeout - keeping the bad entry alive indefinitely. This is a common OpenWrt use case. The failure is silent: `service mwan3 restart` rebuilds the nft rules but does not clear conntrack, so the misrouting persists until a reboot.
+
+Fix: add `mwan3_flush_stale_conntrack()` to `mwan3.sh`. Called from `start_service` in `init.d/mwan3` (covering both boot and `service mwan3 restart`), and at the end of the fw4 rebuild sequence in both `25-mwan3` and `mwan3-fw-rebuild.sh`. If the `conntrack` tool is available, runs `conntrack -D --mark 0x0/MMX_MASK` to delete only entries with no mwan3 mark. Correctly marked entries are untouched. If `conntrack` is not installed, logs a `notice`-level message suggesting installation of the `conntrack` package.
+
+**Files changed:** `files/lib/mwan3/mwan3.sh`, `files/lib/mwan3/mwan3-fw-rebuild.sh`, `files/etc/hotplug.d/iface/25-mwan3`, `files/etc/init.d/mwan3`
+
+---
+
+### mwan3: fix double rebuild race in mwan3-fw-rebuild.sh
+
+There are two fw4 reload recovery paths: `mwan3-fw-rebuild.sh` (forked by `mwan3-fw-include.sh` during the reload itself) and the `25-mwan3` hotplug (which detects an empty `mwan3_prerouting` chain on the next interface event). Both use `procd_lock` to serialize against each other.
+
+Previously `mwan3-fw-rebuild.sh` checked whether `mwan3_prerouting` was empty before acquiring `procd_lock`. If `25-mwan3` was already holding the lock and rebuilding, `mwan3-fw-rebuild.sh` could pass the pre-lock check, then wait for the lock, and proceed to run the full rebuild sequence and call `mwan3_dnsmasq_hup` a second time after the lock was released - performing redundant work and sending an unnecessary SIGHUP to dnsmasq.
+
+Fix: move the `nft list chain` check to after `procd_lock` in `mwan3-fw-rebuild.sh`, so the second path always finds rules already present and exits cleanly.
+
+**Files changed:** `files/lib/mwan3/mwan3-fw-rebuild.sh`
+
+---
 
 ## Version 3.3.3
 
