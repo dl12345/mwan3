@@ -2,7 +2,7 @@
 
 **Developer Reference** — OpenWrt 25.12+
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.
-*Package version: 3.3.4*
+*Package version: 3.3.5*
 
 ---
 
@@ -59,6 +59,7 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.
     - [15.7 mwan3-lb-test: Load Balancing Distribution Verifier](#157-mwan3-lb-test-load-balancing-distribution-verifier)
     - [15.8 Source NFT Set Matching (`ipset_src`)](#158-source-nft-set-matching-ipset_src)
 16. [Changelog](#changelog)
+    - [Version 3.3.5](#version-335)
     - [Version 3.3.4](#version-334)
     - [Version 3.3.3](#version-333)
     - [Version 3.3.2](#version-332)
@@ -1519,6 +1520,20 @@ The same pre-creation logic used for `ipset` applies to `ipset_src`: if the name
 ---
 
 # Changelog
+
+## Version 3.3.5
+
+Fixes `conntrack -D` output flooding the console during mwan3 start and fw4 reload.
+
+### mwan3: suppress conntrack -D output to console
+
+`conntrack -D` prints each deleted entry to stdout. The call in `mwan3_flush_stale_conntrack()` redirected only stderr, causing all deleted zero-mark conntrack entries to appear on the console whenever mwan3 start or fw4 reload triggered the flush.
+
+Fix: redirect stdout to `/dev/null` alongside stderr.
+
+**Files changed:** `files/lib/mwan3/mwan3.sh`
+
+---
 
 ## Version 3.3.4
 

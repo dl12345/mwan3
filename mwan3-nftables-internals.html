@@ -95,7 +95,7 @@
 <h1>mwan3 nftables Implementation</h1>
 <p><strong>Developer Reference</strong> &mdash; OpenWrt 25.12+<br>
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
-<em>Package version: 3.3.4</em></p>
+<em>Package version: 3.3.5</em></p>
 
 <nav class="toc">
 <strong>Contents</strong>
@@ -164,6 +164,7 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
   </li>
   <li><a href="#changelog">16. Changelog</a>
     <ul>
+      <li><a href="#version-3-3-5">Version 3.3.5</a></li>
       <li><a href="#version-3-3-4">Version 3.3.4</a></li>
       <li><a href="#version-3-3-3">Version 3.3.3</a></li>
       <li><a href="#version-3-3-2">Version 3.3.2</a></li>
@@ -1607,6 +1608,17 @@ mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-15
 <hr>
 
 <h1 id="changelog">Changelog</h1>
+
+<h2 id="version-3-3-5">Version 3.3.5</h2>
+
+<p>Fixes <code>conntrack -D</code> output flooding the console during mwan3 start and fw4 reload.</p>
+
+<h3>mwan3: suppress conntrack -D output to console</h3>
+<p><code>conntrack -D</code> prints each deleted entry to stdout. The call in <code>mwan3_flush_stale_conntrack()</code> redirected only stderr, causing all deleted zero-mark conntrack entries to appear on the console whenever mwan3 start or fw4 reload triggered the flush.</p>
+<p>Fix: redirect stdout to <code>/dev/null</code> alongside stderr.</p>
+<p><strong>Files changed:</strong> <code>files/lib/mwan3/mwan3.sh</code></p>
+
+<hr>
 
 <h2 id="version-3-3-4">Version 3.3.4</h2>
 
