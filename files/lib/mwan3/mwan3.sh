@@ -52,7 +52,7 @@ mwan3_flush_stale_conntrack()
 	# are untouched. Requires conntrack-tools; logs a warning if absent.
 	[ -e "$CONNTRACK_FILE" ] || return
 	if command -v conntrack >/dev/null 2>&1; then
-		conntrack -D --mark 0x0/"$MMX_MASK" 2>/dev/null
+		conntrack -D --mark 0x0/"$MMX_MASK" >/dev/null 2>&1
 		LOG notice "Flushed zero-mark conntrack entries"
 	else
 		LOG notice "conntrack not installed; stale zero-mark conntrack entries may persist - install conntrack"
