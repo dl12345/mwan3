@@ -1,0 +1,10 @@
+{
+	"mwan3evtd": {
+		"description": "mwan3evtd event debounce daemon - diagnostics",
+		"read": {
+			"ubus": {
+				"mwan3evtd": [ "list", "status" ]
+			}
+		}
+	}
+}

@@ -1,0 +1,52 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+#
+# mwan3evtd-push <event> - push an event to mwan3evtd, fall back to direct
+# execution of the configured handler command when mwan3evtd is unreachable.
+
+set -u
+
+event="${1:-}"
+caller="${2:-}"
+if [ -z "$event" ]; then
+	printf 'usage: %s <event> [<caller>]\n' "$0" >&2
+	exit 2
+fi
+
+# Fast path: ubus call mwan3evtd push
+if command -v ubus >/dev/null 2>&1; then
+	if [ -n "$caller" ]; then
+		json="{\"event\":\"$event\",\"caller\":\"$caller\"}"
+	else
+		json="{\"event\":\"$event\"}"
+	fi
+	if ubus -t 1 call mwan3evtd push "$json" >/dev/null 2>&1; then
+		exit 0
+	fi
+fi
+
+# Slow path: mwan3evtd unreachable.  Look up the handler command directly
+# in /etc/config/mwan3evtd and exec it.  This keeps the canonical action in
+# one place so callers do not carry stale per-site fallbacks.
+
+cmd=""
+config_load() { :; }   # dummy, in case /lib/functions.sh is sourced elsewhere
+
+# Iterate handler sections with uci, pick the matching event.
+for sec in $(uci -q show mwan3evtd 2>/dev/null \
+		| awk -F'[.=]' '/^mwan3evtd\.[^.]+=handler$/ {print $2}'); do
+	[ "$(uci -q get "mwan3evtd.${sec}.event")" = "$event" ] || continue
+	cmd=$(uci -q get "mwan3evtd.${sec}.command")
+	break
+done
+
+if [ -z "$cmd" ]; then
+	logger -t mwan3evtd-push -p daemon.warning \
+		"no handler configured for event '$event'"
+	exit 1
+fi
+
+logger -t mwan3evtd-push -p daemon.info \
+	"mwan3evtd unreachable; direct execution of '$event'"
+
+exec /bin/sh -c "$cmd"

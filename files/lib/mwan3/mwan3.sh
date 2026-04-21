@@ -23,23 +23,9 @@ DEFAULT_LOWEST_METRIC=256
 
 mwan3_dnsmasq_hup()
 {
-	local old_ns
-	json_set_namespace mwan3_dnsmasq_hup old_ns
+	ubus -t 1 call mwan3evtd push '{"event":"dnsmasq-hup"}' >/dev/null 2>&1 && return
 
-	json_load "$(ubus call service list '{"name":"dnsmasq","verbose":true}')"
-	if json_select "dnsmasq"; then
-		json_select "instances"
-		json_get_keys instance_keys
-		for key in $instance_keys; do
-			json_select "$key"
-			json_get_var pid "pid"
-			json_get_var running "running"
-			[ "$running" -eq 1 ] && /bin/kill -s HUP $pid 2>/dev/null
-			json_select ".."
-		done
-	fi
-
-	json_set_namespace "$old_ns"
+	ubus call service signal '{"name":"dnsmasq","signal":1}' >/dev/null 2>&1
 }
 
 mwan3_flush_stale_conntrack()
