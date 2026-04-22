@@ -95,7 +95,7 @@
 <h1>mwan3 nftables Implementation</h1>
 <p><strong>Developer Reference</strong> &mdash; OpenWrt 25.12+<br>
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
-<em>Package version: 3.3.5</em></p>
+<em>Package version: 3.4</em></p>
 
 <nav class="toc">
 <strong>Contents</strong>
@@ -120,6 +120,7 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
       <li><a href="#file-uci-firewall">5.12 mwan3-firewall-include (UCI defaults)</a></li>
       <li><a href="#file-mwan3track">5.13 mwan3track</a></li>
       <li><a href="#file-lb-test">5.14 mwan3-lb-test</a></li>
+      <li><a href="#file-mwan3evtd">5.15 mwan3evtd files</a></li>
     </ul>
   </li>
   <li><a href="#functions">6. Function Reference</a>
@@ -143,10 +144,10 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
   <li><a href="#diagnostics">12. Diagnostic Commands</a></li>
   <li><a href="#luci-app">13. luci-app-mwan3 Changes</a>
     <ul>
-      <li><a href="#luci-rule-js">13.1 rule.js (Rule Editor UI)</a></li>
-      <li><a href="#luci-mwan3-helper">13.2 luci-mwan3 (Helper Script)</a></li>
+      <li><a href="#luci-rule-js">13.1 rule.js - Rule Editor UI</a></li>
+      <li><a href="#luci-mwan3-helper">13.2 luci-mwan3 - Helper Script</a></li>
       <li><a href="#luci-acl">13.3 ACL Permissions</a></li>
-      <li><a href="#luci-interface-js">13.4 interface.js (Interface Settings UI)</a></li>
+      <li><a href="#luci-interface-js">13.4 interface.js - Interface Settings UI</a></li>
     </ul>
   </li>
   <li><a href="#porting-notes">14. Iptables-to-nftables Porting Notes</a></li>
@@ -159,11 +160,13 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
       <li><a href="#enh-snat6">15.5 Opt-in IPv6 SNAT via Per-Interface snat6</a></li>
       <li><a href="#enh-diagnostic-tabs">15.6 Diagnostic Tabs: Simulator, Configuration Checker, and Routing Health</a></li>
       <li><a href="#enh-lb-test">15.7 mwan3-lb-test: Load Balancing Distribution Verifier</a></li>
-      <li><a href="#enh-ipset-src">15.8 Source NFT Set Matching (ipset_src)</a></li>
+      <li><a href="#enh-ipset-src">15.8 Source NFT Set Matching - ipset_src</a></li>
+      <li><a href="#enh-mwan3evtd">15.9 mwan3evtd: Event Debouncing Daemon</a></li>
     </ul>
   </li>
   <li><a href="#changelog">16. Changelog</a>
     <ul>
+      <li><a href="#version-3-4">Version 3.4</a></li>
       <li><a href="#version-3-3-5">Version 3.3.5</a></li>
       <li><a href="#version-3-3-4">Version 3.3.4</a></li>
       <li><a href="#version-3-3-3">Version 3.3.3</a></li>
@@ -230,6 +233,7 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.<br>
  RPC:           rpcd/ucode/mwan3  --calls-->  nft -j (JSON output)
  Rtmon:         mwan3rtmon  --uses-->   ucode-mod-rtnl (netlink) + nft
  fw4 include:   mwan3-fw-include.sh  --forks-->  mwan3-fw-rebuild.sh
+ Evtd:          mwan3evtd  --receives-->  ubus push  --fires-->  UCI-configured handlers
 </pre>
 </div>
 
@@ -631,7 +635,7 @@ mwan3_init()
 <tr><td></td><td><code>+ucode-mod-ubus</code></td></tr>
 <tr><td></td><td><code>+ucode-mod-fs</code></td></tr>
 </table>
-<p>The ucode dependencies are required by the reimplemented <code>mwan3rtmon</code> route monitor daemon.</p>
+<p>The ucode dependencies are required by the reimplemented <code>mwan3rtmon</code> route monitor daemon and by <code>mwan3evtd</code>.</p>
 <p>Also installs:</p>
 <ul>
   <li><code>10-mwan3.nft</code> to <code>$(1)/usr/share/nftables.d/table-post/</code></li>
@@ -730,6 +734,28 @@ mwan3-lb-test cleanup</code></pre>
 </ul>
 
 <p>See <a href="#enh-lb-test">§15.7</a> for context on why this tool was added and the numgen contamination issues it was designed to detect.</p>
+
+<!-- 5.15 -->
+<h3 id="file-mwan3evtd">5.15 mwan3evtd files <span class="tag tag-new">new</span></h3>
+<p>mwan3evtd is a standalone ucode event debouncing daemon that debounces bursts of named ubus events into single handler invocations. See <a href="#enh-mwan3evtd">§15.9</a> for design rationale.</p>
+<table>
+<thead><tr><th>File</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><code>/usr/sbin/mwan3evtd</code></td><td>ucode daemon. Registers the <code>mwan3evtd</code> ubus object and event loop.</td></tr>
+<tr><td><code>/usr/sbin/mwan3evtd-push</code></td><td>Shell wrapper. Calls <code>ubus call mwan3evtd push</code>; falls back to executing the handler command directly from <code>/etc/config/mwan3evtd</code> if mwan3evtd is unreachable.</td></tr>
+<tr><td><code>/etc/init.d/mwan3evtd</code></td><td>procd service script. Enabled and started at package install via postinst; stopped and disabled at package removal via postrm.</td></tr>
+<tr><td><code>/etc/config/mwan3evtd</code></td><td>UCI configuration. One <code>handler</code> section per event: <code>event</code>, <code>command</code>, <code>window_ms</code>, <code>max_window_ms</code>, <code>handler_timeout_ms</code>, <code>list supersedes</code>, <code>list superseded_by</code>. Ships with default handlers for dnsmasq, rpcd, firewall, unbound, smartdns, kresd, and named.</td></tr>
+<tr><td><code>/usr/share/rpcd/acl.d/mwan3evtd.json</code></td><td>rpcd ACL grants for <code>list</code> and <code>status</code> ubus methods. <code>push</code>, <code>flush</code>, and <code>reload</code> are root-only.</td></tr>
+<tr><td><code>/usr/share/mwan3evtd/mwan3evtd.md</code></td><td>User documentation: configuration reference, supersession model, observability commands, integration patterns, and default handler table.</td></tr>
+<tr><td><code>/usr/share/mwan3evtd/timing.md</code></td><td>Rationale for default <code>window_ms</code>, <code>max_window_ms</code>, and <code>handler_timeout_ms</code> values, with tuning guidance.</td></tr>
+<tr><td><code>/usr/share/mwan3evtd/counters.md</code></td><td>Description of all <code>ubus call mwan3evtd status</code> fields and a step-by-step tuning workflow.</td></tr>
+<tr><td><code>/usr/share/mwan3evtd/mwan3evtd-analysis.md</code></td><td>Analysis of the dnsmasq fan-in problem across the OpenWrt package ecosystem, motivating mwan3evtd's design.</td></tr>
+<tr><td><code>/usr/share/mwan3evtd/example.sh</code></td><td>Shell example: optional-mwan3evtd integration pattern.</td></tr>
+<tr><td><code>/usr/share/mwan3evtd/example.uc</code></td><td>ucode example: optional-mwan3evtd integration pattern.</td></tr>
+<tr><td><code>/usr/share/mwan3evtd/example-mwan3evtd-push.sh</code></td><td>Shell example: dependent-mwan3evtd integration pattern.</td></tr>
+<tr><td><code>/usr/share/mwan3evtd/example-mwan3evtd-push.uc</code></td><td>ucode example: dependent-mwan3evtd integration pattern.</td></tr>
+</tbody>
+</table>
 
 <hr>
 
@@ -903,7 +929,7 @@ done</code></pre>
 <tr><td class="func-sig">mwan3_flush_conntrack iface action</td><td>Flushes conntrack if configured for this interface/action pair. On <code>ifdown</code>, also selectively flushes conntrack entries matching this interface's fwmark using the <code>conntrack</code> tool (if installed), forcing stale flows to re-establish via the updated policy immediately.</td></tr>
 <tr><td class="func-sig">mwan3_update_peer_track_ip iface</td><td>If <code>track_gateway</code> is enabled for the interface, queries <code>ifstatus</code> for the point-to-point peer address and writes it to <code>$MWAN3TRACK_STATUS_DIR/&lt;iface&gt;/GATEWAY</code>. Called from <code>start_tracker()</code> and on <code>ifup</code> hotplug events.</td></tr>
 <tr><td class="func-sig">mwan3_track_clean iface</td><td>Removes track status directory for the interface.</td></tr>
-<tr><td class="func-sig">mwan3_dnsmasq_hup</td><td>Sends SIGHUP to running dnsmasq instances to clear the DNS cache. Queries procd via <code>ubus call service list</code> to find dnsmasq PIDs, and signals only those instances where procd reports <code>running: true</code>. Instances still in the startup phase are not signalled. Uses <code>json_set_namespace</code> to protect the caller's jshn state. Replaces the former <code>killall -HUP dnsmasq</code> which could kill a mid-init dnsmasq. Called from <code>25-mwan3</code> and <code>mwan3-fw-rebuild.sh</code> after fw4 reload recovery.</td></tr>
+<tr><td class="func-sig">mwan3_dnsmasq_hup</td><td>Clears the dnsmasq DNS cache after fw4 reload recovery, forcing fresh upstream resolution to re-populate nftset-based sets. Tries mwan3evtd first via <code>ubus call mwan3evtd push '{"event":"dnsmasq-hup"}'</code>; if mwan3evtd is unavailable, falls back to <code>ubus call service signal '{"name":"dnsmasq","signal":1}'</code> directly.</td></tr>
 <tr><td class="func-sig">mwan3_flush_stale_conntrack</td><td>Flushes conntrack entries with no mwan3 mark (<code>0x0/MMX_MASK</code>) after an fw4 rebuild or mwan3 restart. During the brief rebuild window, new connections can be established with ct mark=0 (iface_in chains not yet present). For most protocols the bad entry expires within 2 minutes and self-heals; WireGuard with <code>persistent-keepalive</code> refreshes the entry indefinitely, making the misrouting permanent until a reboot. Called from <code>start_service</code> in <code>init.d/mwan3</code> (covers boot and <code>service mwan3 restart</code>), from <code>25-mwan3</code>, and from <code>mwan3-fw-rebuild.sh</code> after fw4 reload recovery. Correctly marked entries (0x100, 0x200 etc.) are untouched. If <code>conntrack</code> is not installed, logs a notice suggesting installation of the <code>conntrack</code> package.</td></tr>
 </table>
 
@@ -1018,6 +1044,13 @@ chain mwan3_rule_https {
   +--> start mwan3rtmon (ipv4)         route monitor (ucode)
   +--> start mwan3rtmon (ipv6)         route monitor (ucode)</pre>
 </div>
+<p>mwan3evtd runs as a separate procd service, enabled and started at package install:</p>
+<div class="chain-box">
+<pre>/etc/init.d/mwan3evtd start
+  +--> starts mwan3evtd ucode daemon
+  +--> registers ubus object 'mwan3evtd'
+  +--> loads handlers from /etc/config/mwan3evtd</pre>
+</div>
 
 <h3>Interface Up (hotplug)</h3>
 <div class="chain-box">
@@ -1065,6 +1098,7 @@ chain mwan3_rule_https {
 Result: skeleton chains and empty sets remain (harmless).
         Removed on fw4 restart or package removal.</pre>
 </div>
+<p>mwan3evtd is not stopped when mwan3 stops. It is stopped and disabled at package removal via postrm.</p>
 
 <hr>
 
@@ -1116,7 +1150,7 @@ Result: skeleton chains and empty sets remain (harmless).
 </div>
 
 <h3>dnsmasq nftset Recovery</h3>
-<p>When fw4 reloads, it also destroys any nft sets populated by dnsmasq (via the <code>nftset</code> option). These sets are dynamically populated as DNS queries arrive. The rebuild process calls <code>mwan3_dnsmasq_hup()</code> to send SIGHUP to running dnsmasq instances, clearing their DNS cache. This forces fresh upstream resolution on next client queries, thereby re-populating the nft sets. The function signals only instances that procd reports as <code>running: true</code>, avoiding the race where a mid-init dnsmasq receives SIGHUP and exits. User rules that reference external nft sets also pre-create them if missing (see <a href="#fn-userrules">Section 6.7</a>).</p>
+<p>When fw4 reloads, it also destroys any nft sets populated by dnsmasq (via the <code>nftset</code> option). These sets are dynamically populated as DNS queries arrive. The rebuild process calls <code>mwan3_dnsmasq_hup()</code> to clear the dnsmasq DNS cache, forcing fresh upstream resolution on next client queries and re-populating the nft sets. <code>mwan3_dnsmasq_hup()</code> first tries mwan3evtd via ubus - mwan3evtd debounces bursts of pushes from concurrent fw4 rebuild paths into a single <code>ubus call service signal</code> SIGHUP, so at most one signal fires per rebuild event regardless of how many interfaces flapped. If mwan3evtd is unavailable, it falls back to calling <code>ubus call service signal</code> directly. User rules that reference external nft sets also pre-create them if missing (see <a href="#fn-userrules">Section 6.7</a>).</p>
 
 <hr>
 
@@ -1601,13 +1635,61 @@ mwan3-lb-test cleanup</code></pre>
 
 <hr>
 
+<!-- 15.9 -->
+<h3 id="enh-mwan3evtd">15.9 mwan3evtd: Event Debouncing Daemon</h3>
+
+<p>mwan3evtd is a small ucode event debouncing daemon that solves the fan-in coordination problem: multiple independent packages each signal or restart the same shared system services (dnsmasq, rpcd, firewall) when network state changes. Without coordination, a single interface event can trigger redundant restarts in rapid succession, wasting CPU, reducing service availability, disrupting active connections, and producing unnecessary log noise.</p>
+
+<h4>The problem</h4>
+<p>On a router running several packages that depend on dnsmasq state, a single interface flap can produce multiple dnsmasq HUP and restart cycles over a minute or so. The rebuild sequence was observed to span around 10 seconds per interface in one case. With N interfaces flapping, this produces O(N) signals from mwan3 alone, before counting signals from other packages.</p>
+
+<h4>How mwan3evtd solves it</h4>
+<p>mwan3evtd receives named events over ubus and debounces bursts of identical pushes: each push resets a trailing timer (<code>window_ms</code>), and the handler fires only after <code>window_ms</code> of silence. A hard deadline (<code>max_window_ms</code>) ensures the handler fires even under sustained pushing. The result is O(N) &rarr; O(1): regardless of how many interfaces flap or how many callers push, the handler fires at most once per burst.</p>
+<p>Handlers run sequentially. If a push arrives while a handler is running, mwan3evtd queues a single deferred invocation rather than stacking concurrent runs.</p>
+
+<h4>Supersession</h4>
+<p>Related events can declare a severity hierarchy. For example, <code>dnsmasq-restart</code> supersedes <code>dnsmasq-hup</code>: if a restart is pending, new HUP pushes are silently discarded; if a HUP is pending and a restart push arrives, the pending HUP timer is cancelled and the restart takes over. Supersession operates only on pending timers, never on handlers already running.</p>
+
+<h4>Integration with mwan3</h4>
+<p><code>mwan3_dnsmasq_hup()</code> in <code>mwan3.sh</code> tries mwan3evtd first:</p>
+<pre><code>mwan3_dnsmasq_hup()
+{
+    ubus -t 1 call mwan3evtd push '{"event":"dnsmasq-hup"}' &gt;/dev/null 2&gt;&amp;1 &amp;&amp; return
+    ubus call service signal '{"name":"dnsmasq","signal":1}' &gt;/dev/null 2&gt;&amp;1
+}</code></pre>
+<p>If mwan3evtd is unavailable (disabled or not yet started), the fallback calls <code>ubus call service signal</code> directly, preserving the pre-mwan3evtd behaviour. Users who need to conserve memory can disable mwan3evtd with no loss of correctness.</p>
+
+<h4>Default handlers</h4>
+<p>The default <code>/etc/config/mwan3evtd</code> ships handlers for the most common fan-in scenarios. See <code>/usr/share/mwan3evtd/mwan3evtd.md</code> for the full handler table and configuration reference, <code>/usr/share/mwan3evtd/timing.md</code> for timing rationale, and <code>/usr/share/mwan3evtd/counters.md</code> for the tuning workflow.</p>
+
+<h4>General use of mwan3evtd</h4>
+<p>Any package can avail itself of mwan3evtd. The more that do so, the better optimised are the restarts and HUPs of dnsmasq (and any other package whose restarts and HUPs are controlled by mwan3evtd). Packages needing synchronous restarts of dnsmasq will still need to perform inline restarts.</p>
+
+<p><strong>Files changed:</strong> <code>usr/sbin/mwan3evtd</code> (new), <code>usr/sbin/mwan3evtd-push</code> (new), <code>etc/init.d/mwan3evtd</code> (new), <code>etc/config/mwan3evtd</code> (new), <code>usr/share/rpcd/acl.d/mwan3evtd.json</code> (new), <code>usr/share/mwan3evtd/</code> (new), <code>lib/mwan3/mwan3.sh</code>, <code>Makefile</code></p>
+
+<hr>
+
 <p style="text-align:center; color:#6b7280; font-size:0.85em; margin-top:3rem;">
-mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-15
+mwan3 nftables port &mdash; OpenWrt 25.12 &mdash; Updated 2026-04-22
 </p>
 
 <hr>
 
 <h1 id="changelog">Changelog</h1>
+
+<h2 id="version-3-4">Version 3.4</h2>
+
+<p>Adds mwan3evtd, an event debouncing daemon that reduces redundant dnsmasq SIGHUP and restart signals from O(N) to O(1) when N interfaces flap concurrently. Replaces the jshn-based dnsmasq HUP fallback with a direct <code>ubus call service signal</code> call.</p>
+
+<h3>mwan3: add mwan3evtd event debouncing daemon</h3>
+<p>On a router running several packages that react to interface events, a single WAN flap triggers multiple independent packages each signalling dnsmasq in rapid succession. mwan3 signals dnsmasq once per fw4 rebuild event, and other packages add their own signals independently with no cross-package coordination. Each signal is correct in isolation but the combination produces redundant cache flushes, back-to-back restarts, and occasionally a mid-startup SIGHUP that can cause dnsmasq to exit.</p>
+<p>mwan3evtd is a standalone ucode daemon registered on ubus as <code>mwan3evtd</code>. It maintains a set of named event handlers loaded from <code>/etc/config/mwan3evtd</code>. Each handler has a trailing debounce window (<code>window_ms</code>) and a hard deadline (<code>max_window_ms</code>). Any caller pushes a named event via <code>ubus call mwan3evtd push '{"event":"&lt;name&gt;"}'</code>; mwan3evtd resets the window timer on each push and fires the handler once after the window closes, or at the deadline if pushing is continuous. Handlers run sequentially; a push arriving during a running handler queues a single deferred invocation.</p>
+<p><code>mwan3_dnsmasq_hup()</code> in <code>mwan3.sh</code> now tries mwan3evtd first and falls back to <code>ubus call service signal</code> directly if mwan3evtd is unavailable. The jshn-based fallback (which parsed <code>ubus call service list</code> output to find running instances) is removed; <code>ubus call service signal</code> sends SIGHUP to all instances without requiring that parse, and is functionally equivalent.</p>
+<p>The default <code>/etc/config/mwan3evtd</code> ships handlers for dnsmasq-hup, dnsmasq-restart, rpcd-reload, rpcd-restart, firewall-reload, firewall-restart, unbound-restart, smartdns-restart, kresd-restart, and named-restart, with supersession relationships between paired reload/restart events.</p>
+<p><code>mwan3evtd-push</code> is a shell wrapper for callers that prefer a command-line interface. It calls <code>ubus call mwan3evtd push</code> and falls back to executing the handler command directly from <code>/etc/config/mwan3evtd</code> if mwan3evtd is unreachable, ensuring the action fires even during early boot.</p>
+<p><strong>Files changed:</strong> <code>usr/sbin/mwan3evtd</code> (new), <code>usr/sbin/mwan3evtd-push</code> (new), <code>etc/init.d/mwan3evtd</code> (new), <code>etc/config/mwan3evtd</code> (new), <code>usr/share/rpcd/acl.d/mwan3evtd.json</code> (new), <code>usr/share/mwan3evtd/</code> (new), <code>lib/mwan3/mwan3.sh</code>, <code>Makefile</code></p>
+
+<hr>
 
 <h2 id="version-3-3-5">Version 3.3.5</h2>
 

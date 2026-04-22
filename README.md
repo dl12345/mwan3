@@ -1,8 +1,8 @@
 # mwan3 nftables Implementation
 
-**Developer Reference** — OpenWrt 25.12+
+**Developer Reference** - OpenWrt 25.12+
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.
-*Package version: 3.3.5*
+*Package version: 3.4*
 
 ---
 
@@ -13,30 +13,31 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.
 3. [nftables / fw4 Integration](#3-nftables--fw4-integration)
 4. [Packet Flow Through Chains](#4-packet-flow-through-chains)
 5. [File Reference](#5-file-reference)
-   - [5.1 10-mwan3.nft](#51-usrsharenftablesdtable-post10-mwan3nft)
-   - [5.2 common.sh](#52-libmwan3commonsh)
-   - [5.3 mwan3.sh](#53-libmwan3mwan3sh)
-   - [5.4 init.d/mwan3](#54-etcinitdmwan3)
-   - [5.5 25-mwan3 (hotplug)](#55-etchotplugdiface25-mwan3)
-   - [5.6 usr/sbin/mwan3 (CLI)](#56-usrsbinmwan3-cli)
-   - [5.7 mwan3rtmon](#57-usrsbinmwan3rtmon)
-   - [5.8 rpcd/ucode/mwan3](#58-usrsharerpcdуcodemwan3)
-   - [5.9 Makefile](#59-makefile)
-   - [5.10 mwan3-fw-include.sh](#510-libmwan3mwan3-fw-includesh)
-   - [5.11 mwan3-fw-rebuild.sh](#511-libmwan3mwan3-fw-rebuildsh)
-   - [5.12 mwan3-firewall-include (UCI defaults)](#512-etcuci-defaultsmwan3-firewall-include)
-   - [5.13 mwan3track](#513-usrsbinmwan3track)
-   - [5.14 mwan3-lb-test](#514-usrsbinmwan3-lb-test)
+   - 5.1 [10-mwan3.nft](#51-usrsharenftablesdtable-post10-mwan3nft)
+   - 5.2 [common.sh](#52-libmwan3commonsh)
+   - 5.3 [mwan3.sh](#53-libmwan3mwan3sh)
+   - 5.4 [init.d/mwan3](#54-etcinitdmwan3)
+   - 5.5 [25-mwan3 - hotplug](#55-etchotplugdiface25-mwan3)
+   - 5.6 [usr/sbin/mwan3 - CLI](#56-usrsbinmwan3-cli)
+   - 5.7 [mwan3rtmon](#57-usrsbinmwan3rtmon)
+   - 5.8 [rpcd/ucode/mwan3](#58-usrsharerpcducodemwan3)
+   - 5.9 [Makefile](#59-makefile)
+   - 5.10 [mwan3-fw-include.sh](#510-libmwan3mwan3-fw-includesh)
+   - 5.11 [mwan3-fw-rebuild.sh](#511-libmwan3mwan3-fw-rebuildsh)
+   - 5.12 [mwan3-firewall-include - UCI defaults](#512-etcuci-defaultsmwan3-firewall-include)
+   - 5.13 [mwan3track](#513-usrsbinmwan3track)
+   - 5.14 [mwan3-lb-test](#514-usrsbinmwan3-lb-test)
+   - 5.15 [mwan3evtd files](#515-mwan3evtd-files-new)
 6. [Function Reference](#6-function-reference)
-   - [6.1 common.sh Functions](#61-commonsh-functions)
-   - [6.2 Set Management Functions](#62-set-management-functions)
-   - [6.3 General Rule Setup](#63-general-rule-setup)
-   - [6.4 Interface Management](#64-interface-management)
-   - [6.5 Policy & Load Balancing](#65-policy--load-balancing)
-   - [6.6 Sticky Routing](#66-sticky-routing)
-   - [6.7 User Rules](#67-user-rules)
-   - [6.8 Status Reporting](#68-status-reporting)
-   - [6.9 Lifecycle & Hotplug](#69-lifecycle--hotplug)
+   - 6.1 [common.sh Functions](#61-commonsh-functions)
+   - 6.2 [Set Management Functions](#62-set-management-functions)
+   - 6.3 [General Rule Setup](#63-general-rule-setup)
+   - 6.4 [Interface Management](#64-interface-management)
+   - 6.5 [Policy & Load Balancing](#65-policy--load-balancing)
+   - 6.6 [Sticky Routing](#66-sticky-routing)
+   - 6.7 [User Rules](#67-user-rules)
+   - 6.8 [Status Reporting](#68-status-reporting)
+   - 6.9 [Lifecycle & Hotplug](#69-lifecycle--hotplug)
 7. [Load Balancing with numgen](#7-load-balancing-with-numgen)
 8. [Sticky Routing Detail](#8-sticky-routing-detail)
 9. [Service Lifecycle](#9-service-lifecycle)
@@ -44,21 +45,23 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.
 11. [Unchanged Files](#11-unchanged-files)
 12. [Diagnostic Commands](#12-diagnostic-commands)
 13. [luci-app-mwan3 Changes](#13-luci-app-mwan3-changes)
-    - [13.1 rule.js (Rule Editor UI)](#131-rulejs--rule-editor-ui)
-    - [13.2 luci-mwan3 (Helper Script)](#132-luci-mwan3--helper-script)
-    - [13.3 ACL Permissions](#133-luci-app-mwan3json--acl-permissions)
-    - [13.4 interface.js (Interface Settings UI)](#134-interfacejs--interface-settings-ui)
+    - 13.1 [rule.js - Rule Editor UI](#131-rulejs--rule-editor-ui)
+    - 13.2 [luci-mwan3 - Helper Script](#132-luci-mwan3--helper-script)
+    - 13.3 [ACL Permissions](#133-luci-app-mwan3json--acl-permissions)
+    - 13.4 [interface.js - Interface Settings UI](#134-interfacejs--interface-settings-ui)
 14. [Iptables-to-nftables Porting Notes](#14-iptables-to-nftables-porting-notes)
 15. [Enhancements](#15-enhancements)
-    - [15.1 Selective Conntrack Flush on Interface Down](#151-selective-conntrack-flush-on-interface-down)
-    - [15.2 Software Flow Offloading Co-existence](#152-software-flow-offloading-co-existence)
-    - [15.3 Automatic Gateway Tracking (track_gateway)](#153-automatic-gateway-tracking-track_gateway)
-    - [15.4 Postrouting SNAT for Rerouted Router-Originated Traffic (IPv4)](#154-postrouting-snat-for-rerouted-router-originated-traffic-ipv4)
-    - [15.5 Opt-in IPv6 SNAT via Per-Interface snat6](#155-opt-in-ipv6-snat-via-per-interface-snat6)
-    - [15.6 Diagnostic Tabs: Simulator, Configuration Checker, and Routing Health](#156-diagnostic-tabs-simulator-configuration-checker-and-routing-health)
-    - [15.7 mwan3-lb-test: Load Balancing Distribution Verifier](#157-mwan3-lb-test-load-balancing-distribution-verifier)
-    - [15.8 Source NFT Set Matching (`ipset_src`)](#158-source-nft-set-matching-ipset_src)
+    - 15.1 [Selective Conntrack Flush on Interface Down](#151-selective-conntrack-flush-on-interface-down)
+    - 15.2 [Software Flow Offloading Co-existence](#152-software-flow-offloading-co-existence)
+    - 15.3 [Automatic Gateway Tracking - track_gateway](#153-automatic-gateway-tracking-track_gateway)
+    - 15.4 [Postrouting SNAT for Rerouted Router-Originated Traffic - IPv4](#154-postrouting-snat-for-rerouted-router-originated-traffic-ipv4)
+    - 15.5 [Opt-in IPv6 SNAT via Per-Interface snat6](#155-opt-in-ipv6-snat-via-per-interface-snat6)
+    - 15.6 [Diagnostic Tabs: Simulator, Configuration Checker, and Routing Health](#156-diagnostic-tabs-simulator-configuration-checker-and-routing-health)
+    - 15.7 [mwan3-lb-test: Load Balancing Distribution Verifier](#157-mwan3-lb-test-load-balancing-distribution-verifier)
+    - 15.8 [Source NFT Set Matching - ipset_src](#158-source-nft-set-matching-ipset_src)
+    - 15.9 [mwan3evtd: Event Debouncing Daemon](#159-mwan3evtd-event-debouncing-daemon)
 16. [Changelog](#changelog)
+    - [Version 3.4](#version-34)
     - [Version 3.3.5](#version-335)
     - [Version 3.3.4](#version-334)
     - [Version 3.3.3](#version-333)
@@ -82,13 +85,13 @@ mwan3 is OpenWrt's multi-WAN policy routing framework. It classifies packets usi
 
 ### Key Design Decisions
 
-- **Lives inside `table inet fw4`** — mwan3 chains and sets are defined inside fw4's own table, not a separate table. This is how fw4 extension points (`table-post/*.nft`) work.
-- **Own-priority hook chains** — `mwan3_prerouting` and `mwan3_output` are registered at `priority mangle + 1`, running after fw4's own mangle chains but before any higher-priority processing.
-- **Non-destructive mark save/restore** — Connmark save and restore are masked to mwan3's own bit-range (`MMX_MASK`) and never touch bits owned by other packages such as pbr. This is the same property the iptables version had implicitly via `CONNMARK --restore-mark --nfmask`. The naive nftables translation cannot do it in one rule because the kernel rejects compound two-source bitwise expressions; mwan3 synthesises masked save/restore through a vmap-dispatch technique built from per-mark OR-immediate setter chains. See [Section 2 — Connmark Operations](#connmark-operations).
-- **Static skeleton + dynamic rules** — A static `.nft` file defines empty sets and chains at fw4 startup. All rules are added dynamically by shell scripts since they depend on the configurable `MMX_MASK`.
-- **inet family** — Chains handle both IPv4 and IPv6 in a single pass. Sets remain type-specific (separate v4/v6 sets) since nftables requires a single address type per set.
-- **Batch operations** — Multi-element operations (connected set rebuild, policy chain rebuild, user rules) are batched via a temp file and committed with `nft -f` for atomicity and performance.
-- **Dual fw4 reload recovery** — Since fw4 reload flushes the entire `table inet fw4`, mwan3 detects and rebuilds its dynamic rules via two complementary paths: a hotplug script (position 25, after fw4's position 20) and an fw4 script include that triggers on firewall restart. See [Section 10](#10-fw4-reload-recovery).
+- **Lives inside `table inet fw4`** - mwan3 chains and sets are defined inside fw4's own table, not a separate table. This is how fw4 extension points (`table-post/*.nft`) work.
+- **Own-priority hook chains** - `mwan3_prerouting` and `mwan3_output` are registered at `priority mangle + 1`, running after fw4's own mangle chains but before any higher-priority processing.
+- **Non-destructive mark save/restore** - Connmark save and restore are masked to mwan3's own bit-range (`MMX_MASK`) and never touch bits owned by other packages such as pbr. This is the same property the iptables version had implicitly via `CONNMARK --restore-mark --nfmask`. The naive nftables translation cannot do it in one rule because the kernel rejects compound two-source bitwise expressions; mwan3 synthesises masked save/restore through a vmap-dispatch technique built from per-mark OR-immediate setter chains. See [Section 2 - Connmark Operations](#connmark-operations).
+- **Static skeleton + dynamic rules** - A static `.nft` file defines empty sets and chains at fw4 startup. All rules are added dynamically by shell scripts since they depend on the configurable `MMX_MASK`.
+- **inet family** - Chains handle both IPv4 and IPv6 in a single pass. Sets remain type-specific (separate v4/v6 sets) since nftables requires a single address type per set.
+- **Batch operations** - Multi-element operations (connected set rebuild, policy chain rebuild, user rules) are batched via a temp file and committed with `nft -f` for atomicity and performance.
+- **Dual fw4 reload recovery** - Since fw4 reload flushes the entire `table inet fw4`, mwan3 detects and rebuilds its dynamic rules via two complementary paths: a hotplug script (position 25, after fw4's position 20) and an fw4 script include that triggers on firewall restart. See [Section 10](#10-fw4-reload-recovery).
 
 ### Component Map
 
@@ -119,6 +122,7 @@ CLI:           /usr/sbin/mwan3  --calls-->  mwan3.sh functions
 RPC:           rpcd/ucode/mwan3  --calls-->  nft -j (JSON output)
 Rtmon:         mwan3rtmon  --uses-->   ucode-mod-rtnl (netlink) + nft
 fw4 include:   mwan3-fw-include.sh  --forks-->  mwan3-fw-rebuild.sh
+Evtd:          mwan3evtd  --receives-->  ubus push  --fires-->  UCI-configured handlers
 ```
 
 ---
@@ -167,7 +171,7 @@ meta mark set meta mark & COMPLEMENT | VALUE
 where `COMPLEMENT = ~MASK & 0xFFFFFFFF`. The helper `mwan3_nft_mark_expr()` generates this expression.
 
 > [!WARNING]
-> **Operator syntax:** Always use the `&` and `|` *symbols*, not the `and`/`or` keywords. The nft parser treats keywords ambiguously after expressions like `meta mark set ct mark` — it cannot tell if `and` starts a new match or a bitwise operation. Symbols are unambiguous.
+> **Operator syntax:** Always use the `&` and `|` *symbols*, not the `and`/`or` keywords. The nft parser treats keywords ambiguously after expressions like `meta mark set ct mark` - it cannot tell if `and` starts a new match or a bitwise operation. Symbols are unambiguous.
 
 ### Connmark Operations
 
@@ -178,7 +182,7 @@ The iptables version of mwan3 used:
 -j CONNMARK --save-mark    --nfmask $MMX_MASK --ctmask $MMX_MASK
 ```
 
-The `--nfmask`/`--ctmask` arguments scope both operations to mwan3's bit-range only — bits owned by other packages (such as pbr's `0x00ff0000` range) are left untouched in both directions. This non-destructive coexistence is essential when mwan3 shares the mark register with another mark-using package.
+The `--nfmask`/`--ctmask` arguments scope both operations to mwan3's bit-range only - bits owned by other packages (such as pbr's `0x00ff0000` range) are left untouched in both directions. This non-destructive coexistence is essential when mwan3 shares the mark register with another mark-using package.
 
 The naive nftables translation would be a compound two-source bitwise:
 
@@ -197,7 +201,7 @@ meta mark set ct mark & MMX_MASK     # destructive: clobbers all non-mwan3 bits 
 ct mark   set meta mark              # destructive: clobbers all non-mwan3 bits in ct   mark
 ```
 
-Earlier port revisions used these destructive forms and worked around the resulting pbr breakage by changing chain priorities so that mwan3 ran *before* pbr (see [Changelog Version 3.1.4](#version-314)). That ordering papered over the symptom for one specific package but left the underlying behaviour broken — any second mark-using package would still have its bits zeroed.
+Earlier port revisions used these destructive forms and worked around the resulting pbr breakage by changing chain priorities so that mwan3 ran *before* pbr (see [Changelog Version 3.1.4](#version-314)). That ordering papered over the symptom for one specific package but left the underlying behaviour broken - any second mark-using package would still have its bits zeroed.
 
 #### vmap-dispatch save/restore (Version 3.2)
 
@@ -243,7 +247,7 @@ chain mwan3_or_ct_0x0100 { ct mark set ct mark | 0x0100 ; return }
 
 **Why this works where the naive form does not:** the kernel constraint is on the *expression*, not the *control flow*. The kernel will not let one rule combine two register sources, but it will happily let a vmap dispatch on a runtime register value into a chain whose body uses a literal immediate. The dispatch chain materialises at runtime exactly the value you wanted to OR, baked into a constant when the mwan3 init scripts emit the rule.
 
-**Cost:** chain count, not packet-path overhead. Each packet traverses one extra `vmap` lookup (O(log) in the kernel's set lookup) and one extra `jump`/`return` per save and per restore. The 126 setter chains add no fast-path cost — they are visited via constant-time dispatch, and most never fire on any given packet.
+**Cost:** chain count, not packet-path overhead. Each packet traverses one extra `vmap` lookup (O(log) in the kernel's set lookup) and one extra `jump`/`return` per save and per restore. The 126 setter chains add no fast-path cost - they are visited via constant-time dispatch, and most never fire on any given packet.
 
 > [!NOTE]
 > **The kernel limitation has not changed.** Compound two-source bitwise set expressions are still rejected. vmap-dispatch is a workaround built from primitives that *are* permitted; it does not require any new kernel capability.
@@ -260,13 +264,13 @@ OpenWrt's fw4 firewall includes files from `/usr/share/nftables.d/table-post/` i
 |---|---|---|
 | `mwan3_connected_v4` | set (ipv4_addr, interval, auto-merge) | Directly connected IPv4 networks |
 | `mwan3_connected_v6` | set (ipv6_addr, interval, auto-merge) | Directly connected IPv6 networks |
-| `mwan3_custom_v4` | set (ipv4_addr, interval, auto-merge) | Networks from routing tables in UCI `globals.rt_table_lookup` — traffic to these bypasses policy routing |
-| `mwan3_custom_v6` | set (ipv6_addr, interval, auto-merge) | Networks from routing tables in UCI `globals.rt_table_lookup` — traffic to these bypasses policy routing |
-| `mwan3_dynamic_v4` | set (ipv4_addr, interval, auto-merge) | IPv4 CIDRs from UCI `globals.bypass_network` — populated at startup, may also be updated at runtime by external processes |
-| `mwan3_dynamic_v6` | set (ipv6_addr, interval, auto-merge) | IPv6 CIDRs from UCI `globals.bypass_network` — populated at startup, may also be updated at runtime by external processes |
+| `mwan3_custom_v4` | set (ipv4_addr, interval, auto-merge) | Networks from routing tables in UCI `globals.rt_table_lookup` - traffic to these bypasses policy routing |
+| `mwan3_custom_v6` | set (ipv6_addr, interval, auto-merge) | Networks from routing tables in UCI `globals.rt_table_lookup` - traffic to these bypasses policy routing |
+| `mwan3_dynamic_v4` | set (ipv4_addr, interval, auto-merge) | IPv4 CIDRs from UCI `globals.bypass_network` - populated at startup, may also be updated at runtime by external processes |
+| `mwan3_dynamic_v6` | set (ipv6_addr, interval, auto-merge) | IPv6 CIDRs from UCI `globals.bypass_network` - populated at startup, may also be updated at runtime by external processes |
 | `mwan3_prerouting` | chain (filter, prerouting, mangle+1) | Entry point for forwarded/incoming traffic |
 | `mwan3_output` | chain (route, output, mangle+1) | Entry point for locally-originated traffic |
-| `mwan3_postrouting` | chain (nat, postrouting, srcnat-1) | Opt-in IPv6 SNAT for router-originated traffic rerouted by mwan3 — see [§15.5](#155-opt-in-ipv6-snat-via-per-interface-snat6) |
+| `mwan3_postrouting` | chain (nat, postrouting, srcnat-1) | Opt-in IPv6 SNAT for router-originated traffic rerouted by mwan3 - see [§15.5](#155-opt-in-ipv6-snat-via-per-interface-snat6) |
 | `mwan3_ifaces_in` | chain (regular) | Dispatches to per-interface chains |
 | `mwan3_rules` | chain (regular) | User-defined classification rules |
 | `mwan3_connected` | chain (regular) | Marks traffic to connected networks as default |
@@ -274,7 +278,7 @@ OpenWrt's fw4 firewall includes files from `/usr/share/nftables.d/table-post/` i
 | `mwan3_dynamic` | chain (regular) | Marks traffic to dynamic networks as default |
 
 > [!NOTE]
-> **auto-merge flag:** All sets include the `auto-merge` flag in addition to `interval`. This allows nftables to merge overlapping elements (e.g., a host address and a containing CIDR) automatically, preventing insertion failures. The `nft add set` command is idempotent for creation but does *not* update flags on existing sets — so `mwan3_ensure_nft_framework()` deletes and recreates sets at startup to guarantee the flag is present.
+> **auto-merge flag:** All sets include the `auto-merge` flag in addition to `interval`. This allows nftables to merge overlapping elements (e.g., a host address and a containing CIDR) automatically, preventing insertion failures. The `nft add set` command is idempotent for creation but does *not* update flags on existing sets - so `mwan3_ensure_nft_framework()` deletes and recreates sets at startup to guarantee the flag is present.
 
 ### Dynamic Objects (created at runtime)
 
@@ -283,10 +287,10 @@ OpenWrt's fw4 firewall includes files from `/usr/share/nftables.d/table-post/` i
 | `mwan3_iface_in_<name>` | chain | `mwan3_create_iface_nft()` |
 | `mwan3_policy_<name>` | chain | `mwan3_create_policies_nft()` |
 | `mwan3_rule_<name>` | chain | `mwan3_set_user_nft_rule()` (sticky rules only) |
-| `mwan3_or_meta_<mark>` | chain (×63 with default `MMX_MASK`) | `mwan3_build_or_chains_nft()` — non-destructive restore setter chains |
-| `mwan3_or_ct_<mark>` | chain (×63 with default `MMX_MASK`) | `mwan3_build_or_chains_nft()` — non-destructive save setter chains |
-| `mwan3_sticky_v4_<rule>_<id>` | set (ipv4_addr, timeout) | `mwan3_set_user_nft_rule()` — one set per policy member (id = interface id) |
-| `mwan3_sticky_v6_<rule>_<id>` | set (ipv6_addr, timeout) | `mwan3_set_user_nft_rule()` — one set per policy member (id = interface id) |
+| `mwan3_or_meta_<mark>` | chain (×63 with default `MMX_MASK`) | `mwan3_build_or_chains_nft()` - non-destructive restore setter chains |
+| `mwan3_or_ct_<mark>` | chain (×63 with default `MMX_MASK`) | `mwan3_build_or_chains_nft()` - non-destructive save setter chains |
+| `mwan3_sticky_v4_<rule>_<id>` | set (ipv4_addr, timeout) | `mwan3_set_user_nft_rule()` - one set per policy member (id = interface id) |
+| `mwan3_sticky_v6_<rule>_<id>` | set (ipv6_addr, timeout) | `mwan3_set_user_nft_rule()` - one set per policy member (id = interface id) |
 
 > [!NOTE]
 > **Why `type route` for output?** The output chain uses `type route` (not `type filter`) because changing a packet's mark on locally-originated traffic must trigger a routing re-lookup. This matches fw4's own `mangle_output` chain type.
@@ -306,7 +310,7 @@ Packet enters mwan3_prerouting (or mwan3_output)
   |     |
   |     +-- YES: Restore mwan3 bits from conntrack via vmap-dispatch
   |     |        (ct mark & MMX_MASK -> jump mwan3_or_meta_<mark>;
-  |     |         non-destructive — preserves non-mwan3 bits in meta mark)
+  |     |         non-destructive - preserves non-mwan3 bits in meta mark)
   |     |
   |     +-- Still mark == 0?
   |           |
@@ -327,7 +331,7 @@ Packet enters mwan3_prerouting (or mwan3_output)
   |-- Save mwan3 bits to conntrack via vmap-dispatch:
   |     ct mark &= MMX_MASK_COMPLEMENT          (clear only mwan3 bits)
   |     meta mark & MMX_MASK -> jump mwan3_or_ct_<mark>
-  |     (non-destructive — preserves non-mwan3 bits in ct mark)
+  |     (non-destructive - preserves non-mwan3 bits in ct mark)
   |
   |-- mark & MMX_MASK != MMX_DEFAULT?
   |     (Traffic that got a specific interface mark, not "default")
@@ -350,23 +354,23 @@ mwan3 maintains three parallel groups of destination-bypass sets. Each group has
 
 Each group appears in **two distinct contexts** with different match directions:
 
-**Destination match — `mwan3_connected` / `mwan3_custom` / `mwan3_dynamic` chains:**
-These chains are jumped from `mwan3_prerouting` and `mwan3_output` before the user rules chain. Rules match `ip daddr @set` / `ip6 daddr @set`. If the packet's destination falls in one of the sets, the packet is stamped `MMX_DEFAULT` (mwan3 mark bits cleared to zero) and returned — the user rules chain is never reached. Traffic destined for directly-connected, custom-table, or explicitly listed bypass networks is not policy-routed.
+**Destination match - `mwan3_connected` / `mwan3_custom` / `mwan3_dynamic` chains:**
+These chains are jumped from `mwan3_prerouting` and `mwan3_output` before the user rules chain. Rules match `ip daddr @set` / `ip6 daddr @set`. If the packet's destination falls in one of the sets, the packet is stamped `MMX_DEFAULT` (mwan3 mark bits cleared to zero) and returned - the user rules chain is never reached. Traffic destined for directly-connected, custom-table, or explicitly listed bypass networks is not policy-routed.
 
-**Source match — `mwan3_iface_in_*` chains:**
+**Source match - `mwan3_iface_in_*` chains:**
 Each per-interface chain includes source-match rules against all three set groups (`ip saddr @set`, scoped to the interface's address family). If an inbound WAN packet's source address is in any of the sets, it is stamped `MMX_DEFAULT`. Traffic arriving on a WAN interface from a connected or bypassed address does not get the WAN's interface mark, so replies to it use the main routing table rather than the WAN-specific policy route.
 
 ### Per-Interface Chain Detail
 
 Each `mwan3_iface_in_<name>` chain handles packets arriving on a specific WAN device:
 
-1. **`iifname` and `meta nfproto` match** — only processes packets arriving on the correct physical device and address family. The `meta nfproto ipv4`/`meta nfproto ipv6` guard is critical when two mwan3 interfaces share the same physical device (e.g. dual-stack PPPoE): without it, an IPv4 interface's catchall would misclassify incoming IPv6 packets.
+1. **`iifname` and `meta nfproto` match** - only processes packets arriving on the correct physical device and address family. The `meta nfproto ipv4`/`meta nfproto ipv6` guard is critical when two mwan3 interfaces share the same physical device (e.g. dual-stack PPPoE): without it, an IPv4 interface's catchall would misclassify incoming IPv6 packets.
 
-2. **Source in bypass sets → `MMX_DEFAULT`** — if the arriving packet's source is in `mwan3_connected_v4/v6`, `mwan3_custom_v4/v6`, or `mwan3_dynamic_v4/v6`, the packet is marked `MMX_DEFAULT`. This connection will use the main routing table for replies rather than being pinned to this WAN's policy route.
+2. **Source in bypass sets → `MMX_DEFAULT`** - if the arriving packet's source is in `mwan3_connected_v4/v6`, `mwan3_custom_v4/v6`, or `mwan3_dynamic_v4/v6`, the packet is marked `MMX_DEFAULT`. This connection will use the main routing table for replies rather than being pinned to this WAN's policy route.
 
-3. **Otherwise → interface mark** — the packet is stamped with the interface's unique fwmark. The conntrack save step in the calling prerouting/output chain then records this mark so subsequent packets in the same connection have their mark restored from ct mark.
+3. **Otherwise → interface mark** - the packet is stamped with the interface's unique fwmark. The conntrack save step in the calling prerouting/output chain then records this mark so subsequent packets in the same connection have their mark restored from ct mark.
 
-4. **Address-family-scoped catchall** — the rule that marks unmatched packets with the interface fwmark carries a `meta nfproto` guard matching the interface's configured family, completing the dual-stack isolation begun in step 1.
+4. **Address-family-scoped catchall** - the rule that marks unmatched packets with the interface fwmark carries a `meta nfproto` guard matching the interface's configured family, completing the dual-stack isolation begun in step 1.
 
 ---
 
@@ -374,13 +378,13 @@ Each `mwan3_iface_in_<name>` chain handles packets arriving on a specific WAN de
 
 ### 5.1 `usr/share/nftables.d/table-post/10-mwan3.nft` [static]
 
-The static nftables framework file. Included inside `table inet fw4 { }` by fw4 at startup. Defines 6 named sets (all empty, with `flags interval` and `auto-merge` for CIDR support with overlapping element handling) and 8 skeleton chains (all empty). No rules are present — all rules are added dynamically by the shell scripts because they depend on the configurable `MMX_MASK` value.
+The static nftables framework file. Included inside `table inet fw4 { }` by fw4 at startup. Defines 6 named sets (all empty, with `flags interval` and `auto-merge` for CIDR support with overlapping element handling) and 8 skeleton chains (all empty). No rules are present - all rules are added dynamically by the shell scripts because they depend on the configurable `MMX_MASK` value.
 
 The hook chains:
 
-- `mwan3_prerouting` — type `filter` at priority `mangle + 1`
-- `mwan3_output` — type `route` at priority `mangle + 1` (`type route` is required so mark mutations trigger a routing re-lookup for locally-originated traffic)
-- `mwan3_postrouting` — type `nat` at priority `srcnat - 1`. Opt-in IPv6 SNAT chain for router-originated traffic that mwan3 has rerouted onto a different WAN. IPv4 router-originated traffic is handled by fw4's unguarded `masquerade` and needs no explicit rule here. See [§15.5](#155-opt-in-ipv6-snat-via-per-interface-snat6).
+- `mwan3_prerouting` - type `filter` at priority `mangle + 1`
+- `mwan3_output` - type `route` at priority `mangle + 1` (`type route` is required so mark mutations trigger a routing re-lookup for locally-originated traffic)
+- `mwan3_postrouting` - type `nat` at priority `srcnat - 1`. Opt-in IPv6 SNAT chain for router-originated traffic that mwan3 has rerouted onto a different WAN. IPv4 router-originated traffic is handled by fw4's unguarded `masquerade` and needs no explicit rule here. See [§15.5](#155-opt-in-ipv6-snat-via-per-interface-snat6).
 
 ### 5.2 `lib/mwan3/common.sh`
 
@@ -392,14 +396,14 @@ Shared helper library sourced by all mwan3 shell scripts. Provides:
 - **`mwan3_nft_exec()`**: Wrapper that runs `nft` commands with error logging
 - **`mwan3_nft_mark_expr()`**: Generates nftables mark-set expressions equivalent to iptables `--set-xmark`. Outputs `meta mark set meta mark & COMPLEMENT | VALUE` using `&`/`|` symbols (not `and`/`or` keywords).
 - **`mwan3_ensure_nft_framework()`**: Guarantees all mwan3 nftables objects (sets and chains) exist with correct flags. Deletes and recreates all 6 sets to ensure the `auto-merge` flag is present (since `nft add set` is idempotent but won't update flags on existing sets). Then creates all skeleton chains, including `mwan3_postrouting`. Called early in `start_service()`.
-- **`mwan3_build_or_chains_nft()`**: Materialises the per-mark setter chains used by the non-destructive vmap-dispatch save/restore. Iterates all 63 possible non-zero values within `MMX_MASK` and emits two chains per value: `mwan3_or_meta_<imm>` (non-destructive restore from ct mark to meta mark) and `mwan3_or_ct_<imm>` (non-destructive save from meta mark to ct mark). Called from `mwan3_set_general_nft()`. Always flushes and re-populates the chain bodies — an earlier idempotency check that returned early on chain *existence* alone could leave the chain bodies empty after a partial-failure first run, which is fatal to packet flow.
+- **`mwan3_build_or_chains_nft()`**: Materialises the per-mark setter chains used by the non-destructive vmap-dispatch save/restore. Iterates all 63 possible non-zero values within `MMX_MASK` and emits two chains per value: `mwan3_or_meta_<imm>` (non-destructive restore from ct mark to meta mark) and `mwan3_or_ct_<imm>` (non-destructive save from meta mark to ct mark). Called from `mwan3_set_general_nft()`. Always flushes and re-populates the chain bodies - an earlier idempotency check that returned early on chain *existence* alone could leave the chain bodies empty after a partial-failure first run, which is fatal to packet flow.
 - **`mwan3_init()`**: Loads config, computes mask constants (`MMX_DEFAULT`, `MMX_BLACKHOLE`, `MMX_UNREACHABLE`, `MMX_MASK_COMPLEMENT`)
 - **`mwan3_id2mask()`**: Bit-spreading function that maps interface IDs onto the mask
 - **`mwan3_count_one_bits()`**: Counts set bits in a value
 - **Utility functions**: `LOG()`, `readfile()`, `mwan3_get_src_ip()`, `mwan3_get_true_iface()`, `mwan3_get_mwan3track_status()`, `get_uptime()`, `get_online_time()`
 
 > [!NOTE]
-> **Shell scoping note:** Functions like `mwan3_id2mask` and `mwan3_count_one_bits` receive *variable names* as arguments (e.g., `mwan3_id2mask mmdefault MMX_MASK`) and use arithmetic expansion `$(($1))` to resolve them. This works in busybox ash (OpenWrt's default shell) because it uses dynamic scoping — local variables from the caller are visible in called functions.
+> **Shell scoping note:** Functions like `mwan3_id2mask` and `mwan3_count_one_bits` receive *variable names* as arguments (e.g., `mwan3_id2mask mmdefault MMX_MASK`) and use arithmetic expansion `$(($1))` to resolve them. This works in busybox ash (OpenWrt's default shell) because it uses dynamic scoping - local variables from the caller are visible in called functions.
 
 ### 5.3 `lib/mwan3/mwan3.sh`
 
@@ -482,8 +486,8 @@ Key improvements over the shell version:
 
 - **Direct netlink route monitoring** via `rtnl.listener()` instead of `ip monitor route` piped to a shell read loop
 - **Structured route data** from netlink messages instead of text parsing with sed/awk
-- **O(1) per-event cost** — the refactored handler avoids per-interface ubus calls, popen subprocesses, and UCI cursor creation on each route event. Device-to-table mapping and interface state are cached and refreshed only when needed
-- **Debounced connected set rebuild** — route delete events trigger a 100ms debounce timer rather than an immediate full set rebuild, coalescing bursts of route changes (e.g., during interface flap) into a single rebuild
+- **O(1) per-event cost** - the refactored handler avoids per-interface ubus calls, popen subprocesses, and UCI cursor creation on each route event. Device-to-table mapping and interface state are cached and refreshed only when needed
+- **Debounced connected set rebuild** - route delete events trigger a 100ms debounce timer rather than an immediate full set rebuild, coalescing bursts of route changes (e.g., during interface flap) into a single rebuild
 - **Proper event loop** via `uloop.run()` instead of a shell pipe+read loop
 
 On startup, it performs an initial synchronization: dumps the current routing table via netlink, populates the connected set, and replicates routes into active per-interface tables. It then enters the uloop event loop to process route change notifications asynchronously.
@@ -499,7 +503,7 @@ Uses `nft -j` (JSON output mode) for reliable parsing instead of text scraping. 
 
 - **`mwan3.status`**: Returns JSON data for interfaces, connected networks, and policies.
   - **Connected IPs**: Parses `nft -j list set inet fw4 mwan3_connected_v4/v6`. Handles JSON element types: plain strings, prefix objects (`{prefix: {addr, len}}`), and range objects.
-  - **Policies**: Reads policy membership from UCI config and cross-references with mwan3track `STATUS` files to determine which metric tier is active and the traffic share for each member. Every member is always reported — 100% for a sole active member, proportional share for equal-priority active members, 0% for standby or offline members. (Earlier revisions enumerated live nft policy chains instead, which made standby members invisible.)
+  - **Policies**: Reads policy membership from UCI config and cross-references with mwan3track `STATUS` files to determine which metric tier is active and the traffic share for each member. Every member is always reported - 100% for a sole active member, proportional share for equal-priority active members, 0% for standby or offline members. (Earlier revisions enumerated live nft policy chains instead, which made standby members invisible.)
   - **Interfaces**: Reads interface status from `/var/run/mwan3track/` status files and queries procd/netifd via ubus. Tracking IPs are discovered by globbing the `TRACK_*` files that mwan3track writes (covering both UCI-configured IPs and the dynamically added gateway IP when `track_gateway=1`). Per-IP `latency` and `packetloss` fields are populated when `check_quality=1`. The `check_quality` field is derived from the presence and content of `LATENCY_*` files (not UCI) so it reflects actual mwan3track runtime state rather than config. A `check_quality` field is returned per interface so the UI can suppress latency/loss display when quality checking is disabled.
 - **`mwan3.nftset_members { set: "<name>" }`**: Returns the current members of a named nft set in `table inet fw4`. The set name is validated against `^[a-zA-Z0-9_-]+$`. Used by the Simulator tab for ipset rule matching and connected-network bypass detection via `mwan3_connected_v4`/`mwan3_connected_v6`.
 - **`mwan3.routing_health {}`**: Compares UCI configuration against live kernel state. For each configured interface, checks ip rules at priorities `IIF_BASE + N` (iif lookup) and `FWMARK_BASE + N` (fwmark lookup), and checks routing table N for a default route. Reads mwan3track `STATUS` files and reports stale ip rules (rules in mwan3's priority range with no matching UCI interface). Built-in blackhole and unreachable rules are excluded from stale detection. IPv6 ip rules are checked separately from IPv4. Used by the Routing Health diagnostic tab.
@@ -520,7 +524,7 @@ Package build recipe. Key dependency changes:
 | | `+ucode-mod-ubus` |
 | | `+ucode-mod-fs` |
 
-The ucode dependencies are required by the reimplemented `mwan3rtmon` route monitor daemon.
+The ucode dependencies are required by the reimplemented `mwan3rtmon` route monitor daemon and by `mwan3evtd`.
 
 Also installs:
 
@@ -537,7 +541,7 @@ The `postinst` script handles migration from older versions: flushes and deletes
 
 fw4 script include. Registered in the firewall UCI config by the `mwan3-firewall-include` UCI defaults file. Called by fw4 during the "includes" phase of a firewall reload/restart, *after* fw4 has loaded its nftables ruleset.
 
-This script checks if mwan3 is running, and if so, forks `mwan3-fw-rebuild.sh` as a background process. The forking is necessary because fw4 overrides the `config()` function in its shell environment, blocking UCI access — the rebuild script needs a clean shell to call `config_load mwan3`.
+This script checks if mwan3 is running, and if so, forks `mwan3-fw-rebuild.sh` as a background process. The forking is necessary because fw4 overrides the `config()` function in its shell environment, blocking UCI access - the rebuild script needs a clean shell to call `config_load mwan3`.
 
 ### 5.11 `lib/mwan3/mwan3-fw-rebuild.sh` [new]
 
@@ -582,7 +586,7 @@ mwan3track maintains a score counter for each interface:
 - When score reaches `up` threshold from above (on decline): fires `disconnecting` then `disconnected` hotplug events.
 - Score is clamped between 0 and `down + up`.
 
-Once the reliability threshold is met in a round, remaining unprobed IPs are marked `skipped` — they are not probed further that round.
+Once the reliability threshold is met in a round, remaining unprobed IPs are marked `skipped` - they are not probed further that round.
 
 #### Status files
 
@@ -599,7 +603,7 @@ Written to `$MWAN3TRACK_STATUS_DIR/<iface>/` (default `/var/run/mwan3track/<ifac
 
 #### check_quality
 
-When `check_quality=1`, probes capture latency (ms) and packet loss (%) per IP. Three-state evaluation: fail (`loss >= failure_loss` OR `latency >= failure_latency`), pass (`loss <= recovery_loss` AND `latency <= recovery_latency`), grey zone (neither — probe result neither increments nor decrements score). Default thresholds (1000ms/500ms/40%/10%) are conservative, suited for monitoring without frequent false failovers.
+When `check_quality=1`, probes capture latency (ms) and packet loss (%) per IP. Three-state evaluation: fail (`loss >= failure_loss` OR `latency >= failure_latency`), pass (`loss <= recovery_loss` AND `latency <= recovery_latency`), grey zone (neither - probe result neither increments nor decrements score). Default thresholds (1000ms/500ms/40%/10%) are conservative, suited for monitoring without frequent false failovers.
 
 #### Signal handling
 
@@ -619,7 +623,7 @@ Verifies that numgen-based load balancing produces the expected traffic distribu
 - **Iteration count** (`NITER`): computed from member weights as `base_N = total_weight / GCD(weights)`, `NITER = base_N * ceil(30 / base_N)`. Ensures per-member expected counts are whole numbers and `NITER >= 30` always.
 - **Test rule**: inserts a temporary ICMP-only rule into `mwan3_rules` matching a nft address set. Using ICMP prevents TCP/UDP traffic to the same IPs (DNS forwarders, Android clients bypassing local DNS, etc.) from contaminating the counter.
 - **Client isolation** (`-c <client_ip>`, required): inserts a `forward` chain drop rule blocking pings to the test set from all LAN clients except the nominated test client, and an `mwan3_output` return rule bypassing mwan3 marking for any router process pinging the same IPs. Both rules are scoped to the test set and removed by cleanup.
-- **Destination pool**: well-known public IPs. Excludes any IPs already configured as mwan3 `track_ip` values — mwan3track pings those via `mwan3_output -> mwan3_rules`, which would match the test rule and inflate counts.
+- **Destination pool**: well-known public IPs. Excludes any IPs already configured as mwan3 `track_ip` values - mwan3track pings those via `mwan3_output -> mwan3_rules`, which would match the test rule and inflate counts.
 - **IPv6 mode** (`-6`): uses `meta l4proto ipv6-icmp ip6 daddr @set`, `ping6`, and a separate pool of well-known public IPv6 IPs.
 - **IP overrides**: `mwan3-lb-test -c <client_ip> <policy> ip1 ip2 ...` for sites where defaults are unreachable or fully tracked.
 - **Windows command**: outputs a `cmd.exe` `for` loop alongside the Linux shell loop. Windows `ping` uses a fixed ICMP identifier (id=1), causing conntrack entry reuse on repeated pings to the same destination; the Windows command uses a longer inter-ping delay (`30/TRACK_COUNT + 3` seconds) so the full cycle exceeds the 30s ICMP conntrack timeout. The IP list is formatted with `^` line continuation at 4 IPs per line.
@@ -627,6 +631,26 @@ Verifies that numgen-based load balancing produces the expected traffic distribu
 - **Cleanup on exit**: removes test set and rules on normal exit, SIGINT, SIGTERM, and SIGPIPE. Startup sweep removes stale artifacts from aborted prior runs.
 
 See [§15.7](#157-mwan3-lb-test-load-balancing-distribution-verifier) for context on why this tool was added and the numgen contamination issues it was designed to detect.
+
+### 5.15 mwan3evtd files [new]
+
+mwan3evtd is a standalone ucode event debouncing daemon that debounces bursts of named ubus events into single handler invocations. See [§15.9](#159-mwan3evtd-event-debouncing-daemon) for design rationale.
+
+| File | Description |
+|---|---|
+| `/usr/sbin/mwan3evtd` | ucode daemon. Registers the `mwan3evtd` ubus object and event loop. |
+| `/usr/sbin/mwan3evtd-push` | Shell wrapper. Calls `ubus call mwan3evtd push`; falls back to executing the handler command directly from `/etc/config/mwan3evtd` if mwan3evtd is unreachable. |
+| `/etc/init.d/mwan3evtd` | procd service script. Enabled and started at package install via postinst; stopped and disabled at package removal via postrm. |
+| `/etc/config/mwan3evtd` | UCI configuration. One `handler` section per event: `event`, `command`, `window_ms`, `max_window_ms`, `handler_timeout_ms`, `list supersedes`, `list superseded_by`. Ships with default handlers for dnsmasq, rpcd, firewall, unbound, smartdns, kresd, and named. |
+| `/usr/share/rpcd/acl.d/mwan3evtd.json` | rpcd ACL grants for `list` and `status` ubus methods. `push`, `flush`, and `reload` are root-only. |
+| `/usr/share/mwan3evtd/mwan3evtd.md` | User documentation: configuration reference, supersession model, observability commands, integration patterns, and default handler table. |
+| `/usr/share/mwan3evtd/timing.md` | Rationale for default `window_ms`, `max_window_ms`, and `handler_timeout_ms` values, with tuning guidance. |
+| `/usr/share/mwan3evtd/counters.md` | Description of all `ubus call mwan3evtd status` fields and a step-by-step tuning workflow. |
+| `/usr/share/mwan3evtd/mwan3evtd-analysis.md` | Analysis of the dnsmasq fan-in problem across the OpenWrt package ecosystem, motivating mwan3evtd's design. |
+| `/usr/share/mwan3evtd/example.sh` | Shell example: optional-mwan3evtd integration pattern (try ubus call, fall back to native action). |
+| `/usr/share/mwan3evtd/example.uc` | ucode example: optional-mwan3evtd integration pattern. |
+| `/usr/share/mwan3evtd/example-mwan3evtd-push.sh` | Shell example: dependent-mwan3evtd integration pattern (add `+mwan3evtd` to DEPENDS, call `mwan3evtd-push`). |
+| `/usr/share/mwan3evtd/example-mwan3evtd-push.uc` | ucode example: dependent-mwan3evtd integration pattern. |
 
 ---
 
@@ -643,7 +667,7 @@ See [§15.7](#157-mwan3-lb-test-load-balancing-distribution-verifier) for contex
 | `mwan3_nft_batch_commit` | Executes `nft -f /tmp/mwan3_nft_batch`, logs errors, removes temp file. |
 | `mwan3_nft_mark_expr value mask` | Outputs `meta mark set meta mark & COMPLEMENT \| VALUE`. Uses `&` and `\|` symbols (not keywords). Equivalent to iptables `--set-xmark VALUE/MASK`. |
 | `mwan3_ensure_nft_framework` | Deletes all 6 mwan3 sets (to clear stale flags), then batch-creates sets with `interval` + `auto-merge` flags and all 8 skeleton chains (including `mwan3_postrouting`). Idempotent for chains (`add chain` is a no-op on existing chains). Called from `start_service()`. |
-| `mwan3_build_or_chains_nft` | Builds the 126 per-mark setter chains used by non-destructive vmap-dispatch save/restore (63 `mwan3_or_meta_<imm>` + 63 `mwan3_or_ct_<imm>` chains, each containing one OR-immediate rule and a return). Always flushes and re-populates chain bodies — never returns early on existence alone. Called from `mwan3_set_general_nft()`. See [§2 Connmark Operations](#connmark-operations). |
+| `mwan3_build_or_chains_nft` | Builds the 126 per-mark setter chains used by non-destructive vmap-dispatch save/restore (63 `mwan3_or_meta_<imm>` + 63 `mwan3_or_ct_<imm>` chains, each containing one OR-immediate rule and a return). Always flushes and re-populates chain bodies - never returns early on existence alone. Called from `mwan3_set_general_nft()`. See [§2 Connmark Operations](#connmark-operations). |
 | `mwan3_or_vmap_body reg mark...` | Builds the body string for a vmap statement that dispatches on masked mark values into the OR-immediate setter chains. `reg` is `meta` or `ct`; remaining args are the mark values to include. Outputs `0x100 : jump mwan3_or_meta_0x100, 0x200 : jump mwan3_or_meta_0x200, ...` for inline use in nft rules. Called by `mwan3_set_general_nft()` when constructing the connmark restore and save vmap statements. |
 | `mwan3_all_marks` | Enumerates every mark value that needs to appear in the restore/save vmaps: all per-interface marks (IDs 1..`MWAN3_INTERFACE_MAX` bit-spread through `MMX_MASK`) plus `MMX_DEFAULT`, `MMX_BLACKHOLE`, and `MMX_UNREACHABLE`. Echoes a space-separated list. Used by `mwan3_set_general_nft()` to build the vmap body. |
 | `mwan3_init` | Loads UCI config, creates status dirs, computes all mask constants (`MMX_MASK`, `MMX_DEFAULT`, `MMX_BLACKHOLE`, `MMX_UNREACHABLE`, `MMX_MASK_COMPLEMENT`, `MWAN3_INTERFACE_MAX`). |
@@ -675,7 +699,7 @@ See [§15.7](#157-mwan3-lb-test-load-balancing-distribution-verifier) for contex
 
 | Function | Purpose |
 |---|---|
-| `mwan3_set_general_rules` | Adds `ip rule` entries for blackhole and unreachable marks (both IPv4 and IPv6). These are ip policy rules, not nftables rules — unchanged from the iptables version. |
+| `mwan3_set_general_rules` | Adds `ip rule` entries for blackhole and unreachable marks (both IPv4 and IPv6). These are ip policy rules, not nftables rules - unchanged from the iptables version. |
 | `mwan3_set_general_nft` | Builds the per-mark OR setter chains via `mwan3_build_or_chains_nft()`, flushes `mwan3_postrouting`, then populates all hook chain rules: IPv6 RA bypass, `fib daddr type local return` (prerouting), `ct direction reply return` (output), vmap-dispatched connmark restore/save, jumps to ifaces_in/custom/connected/dynamic/rules chains, and post-rules connected re-check. Idempotent: checks if rules already exist before adding. Uses a single batch for all operations. |
 
 #### Rules added by `mwan3_set_general_nft()`
@@ -685,8 +709,8 @@ For each of connected/custom/dynamic chains, adds mark-setting rules that match 
 For the prerouting and output hook chains, adds (in order):
 
 1. [prerouting only] IPv6 RA bypass (accept ICMPv6 types: nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, nd-redirect)
-2. [prerouting only] `fib daddr type local return` — packets destined for the router's own IP return immediately. Prevents inbound internet traffic (port scans, probes) from reaching the policy chain and advancing numgen counters pointlessly. See [§c4bcd951e](#mwan3-fix-numgen-counter-contamination-from-inbound-and-reply-traffic).
-3. [output only] `ct direction reply return` — reply-direction packets (ICMP echo replies, TCP responses to inbound connections) return immediately. These lack an mwan3 ct mark because their conntrack entries were never processed by prerouting (the `fib` return bypassed that path), so restoring from ct mark would find zero and let them fall through to the policy chain. See [§c4bcd951e](#mwan3-fix-numgen-counter-contamination-from-inbound-and-reply-traffic).
+2. [prerouting only] `fib daddr type local return` - packets destined for the router's own IP return immediately. Prevents inbound internet traffic (port scans, probes) from reaching the policy chain and advancing numgen counters pointlessly. See [§c4bcd951e](#mwan3-fix-numgen-counter-contamination-from-inbound-and-reply-traffic).
+3. [output only] `ct direction reply return` - reply-direction packets (ICMP echo replies, TCP responses to inbound connections) return immediately. These lack an mwan3 ct mark because their conntrack entries were never processed by prerouting (the `fib` return bypassed that path), so restoring from ct mark would find zero and let them fall through to the policy chain. See [§c4bcd951e](#mwan3-fix-numgen-counter-contamination-from-inbound-and-reply-traffic).
 4. **Non-destructive connmark restore** (if `meta mark & MMX_MASK == 0`): `ct mark & MMX_MASK vmap { ... -> jump mwan3_or_meta_<imm> }`. The setter chains contain `meta mark set meta mark | <imm>`, so non-mwan3 bits in meta mark are preserved across the restore.
 5. Jump to `mwan3_ifaces_in` (if still 0)
 6. Jump to custom, connected, dynamic chains (if still 0)
@@ -730,7 +754,7 @@ The `-a` flag shows rule handles in comments, which can then be used for targete
 |---|---|
 | `mwan3_set_policy member_config` | Callback per policy member. Tracks lowest metric and accumulates online members as `iface:id:weight` tuples into `$policy_members`. Tracks offline devices into `$policy_offline_devices`. Uses caller's variables (dynamic scoping). |
 | `mwan3_create_policies_nft policy` | Creates/flushes the `mwan3_policy_<name>` chain. Iterates members via `mwan3_set_policy`, then builds the chain: single member gets a direct mark-set rule; multiple members get a `numgen` rule; offline devices get out-device fallback rules; last-resort rule (unreachable/blackhole/default) is appended. |
-| `mwan3_set_policies_nft` | Before creating policy chains, enumerates all existing `mwan3_policy_*` chains in `inet fw4` and deletes any whose name is not in the current UCI policy config (orphaned chain sweep — prevents stale chains accumulating after a policy is removed from UCI). Then iterates all policy configs and calls `mwan3_create_policies_nft` for each. |
+| `mwan3_set_policies_nft` | Before creating policy chains, enumerates all existing `mwan3_policy_*` chains in `inet fw4` and deletes any whose name is not in the current UCI policy config (orphaned chain sweep - prevents stale chains accumulating after a policy is removed from UCI). Then iterates all policy configs and calls `mwan3_create_policies_nft` for each. |
 
 ### 6.6 Sticky Routing
 
@@ -788,7 +812,7 @@ When a user rule references an `ipset` (destination nft set) or `ipset_src` (sou
 | `mwan3_flush_conntrack iface action` | Flushes conntrack if configured for this interface/action pair. On `ifdown`, also selectively flushes conntrack entries matching this interface's fwmark using the `conntrack` tool (if installed), forcing stale flows to re-establish via the updated policy immediately. |
 | `mwan3_update_peer_track_ip iface` | If `track_gateway` is enabled for the interface, queries `ifstatus` for the point-to-point peer address and writes it to `$MWAN3TRACK_STATUS_DIR/<iface>/GATEWAY`. Called from `start_tracker()` and on `ifup` hotplug events. |
 | `mwan3_track_clean iface` | Removes track status directory for the interface. |
-| `mwan3_dnsmasq_hup` | Sends `SIGHUP` to running dnsmasq instances. Queries procd via `ubus call service list`, finds PIDs for the dnsmasq service, and signals only instances where procd reports `running: true`. Instances mid-startup are skipped to avoid the race where SIGHUP received during initialisation causes dnsmasq to exit. Uses `json_set_namespace` to protect the caller's jshn state. Called after fw4 reload recovery to clear the DNS cache and force fresh queries that re-populate nftset-based sets. |
+| `mwan3_dnsmasq_hup` | Clears the dnsmasq DNS cache after fw4 reload recovery, forcing fresh upstream resolution to re-populate nftset-based sets. Tries mwan3evtd first via `ubus call mwan3evtd push '{"event":"dnsmasq-hup"}'`; if mwan3evtd is unavailable, falls back to `ubus call service signal '{"name":"dnsmasq","signal":1}'` directly. |
 | `mwan3_flush_stale_conntrack` | Flushes conntrack entries with no mwan3 mark (`0x0/MMX_MASK`) after an fw4 rebuild or mwan3 restart. During the brief rebuild window, new connections can be established with ct mark=0 (iface_in chains not yet present). For most protocols the bad entry expires within 2 minutes and self-heals; WireGuard with `persistent-keepalive` refreshes the entry indefinitely, making the misrouting permanent until a reboot. Called from `start_service` in `init.d/mwan3` (covers boot and `service mwan3 restart`), from `25-mwan3`, and from `mwan3-fw-rebuild.sh` after fw4 reload recovery. Correctly marked entries (0x100, 0x200 etc.) are untouched. If `conntrack` is not installed, logs a notice suggesting installation of the `conntrack` package. |
 
 ---
@@ -853,7 +877,7 @@ One set per policy member, per rule, per address family. Sets hold source addres
 ```
 chain mwan3_rule_https {
     # Restore: if saddr is in this member's set, OR its mark into meta mark
-    # (non-destructive — pbr bits in meta mark are preserved)
+    # (non-destructive - pbr bits in meta mark are preserved)
     ip saddr @mwan3_sticky_v4_https_1 jump mwan3_or_meta_0x100
     ip saddr @mwan3_sticky_v4_https_2 jump mwan3_or_meta_0x200
 
@@ -900,6 +924,13 @@ fw4 startup
   +--> [if flow_offloading=1]          flush conntrack (force flow re-establishment)
   +--> start mwan3rtmon (ipv4)         route monitor (ucode)
   +--> start mwan3rtmon (ipv6)         route monitor (ucode)
+
+mwan3evtd runs as a separate procd service, enabled and started at package install:
+
+/etc/init.d/mwan3evtd start
+  +--> starts mwan3evtd ucode daemon
+  +--> registers ubus object 'mwan3evtd'
+  +--> loads handlers from /etc/config/mwan3evtd
 ```
 
 ### Interface Up (hotplug)
@@ -951,6 +982,8 @@ netifd signals ifdown for $INTERFACE
 Result: skeleton chains and empty sets remain (harmless).
         Removed on fw4 restart or package removal.
 ```
+
+mwan3evtd is not stopped when mwan3 stops. It is stopped and disabled at package removal via postrm.
 
 ---
 
@@ -1010,7 +1043,7 @@ Manual firewall restart
 
 ### dnsmasq nftset Recovery
 
-When fw4 reloads, it also destroys any nft sets populated by dnsmasq (via the `nftset` option). These sets are dynamically populated as DNS queries arrive. The rebuild process calls `mwan3_dnsmasq_hup()` to send `SIGHUP` to running dnsmasq instances, clearing the DNS cache and forcing fresh upstream resolution on next client queries, thereby re-populating the nft sets. Only instances that procd reports as fully running are signalled — instances mid-startup are skipped to avoid the race where a SIGHUP received during dnsmasq initialisation causes it to exit. User rules that reference external nft sets also pre-create them if missing (see [Section 6.7](#67-user-rules)).
+When fw4 reloads, it also destroys any nft sets populated by dnsmasq (via the `nftset` option). These sets are dynamically populated as DNS queries arrive. The rebuild process calls `mwan3_dnsmasq_hup()` to clear the dnsmasq DNS cache, forcing fresh upstream resolution on next client queries and re-populating the nft sets. `mwan3_dnsmasq_hup()` first tries mwan3evtd via ubus - mwan3evtd debounces bursts of pushes from concurrent fw4 rebuild paths into a single `ubus call service signal` SIGHUP, so at most one signal fires per rebuild event regardless of how many interfaces flapped. If mwan3evtd is unavailable, it falls back to calling `ubus call service signal` directly. User rules that reference external nft sets also pre-create them if missing (see [Section 6.7](#67-user-rules)).
 
 ---
 
@@ -1112,7 +1145,7 @@ The LuCI web interface application (`luci-app-mwan3`) required changes to replac
 | `luci-mwan3` | `applications/luci-app-mwan3/root/usr/libexec/luci-mwan3` |
 | `luci-app-mwan3.json` | `applications/luci-app-mwan3/root/usr/share/rpcd/acl.d/luci-app-mwan3.json` |
 
-### 13.1 `rule.js` — Rule Editor UI
+### 13.1 `rule.js` - Rule Editor UI
 
 The LuCI rule editor view allows users to configure mwan3 traffic classification rules. It populates dropdowns of available nft sets for the `ipset` (destination) and `ipset_src` (source) UCI options.
 
@@ -1139,7 +1172,7 @@ The LuCI rule editor view allows users to configure mwan3 traffic classification
 
 **Address family validation:** `src_ip` and `dest_ip` fields validate against the selected address family on blur - an error is shown if an IPv4 address is entered when family is set to IPv6 or vice versa. Family consistency is also validated on save: a destination nftset must match the selected family, and combining a destination nftset with `dest_ip` (or source nftset with `src_ip`) is flagged as an error since both constrain the same traffic dimension.
 
-### 13.2 `luci-mwan3` — Helper Script
+### 13.2 `luci-mwan3` - Helper Script
 
 The `/usr/libexec/luci-mwan3` shell script provides backend commands called by the LuCI JavaScript frontend. The `ipset` subcommand was renamed to `nftset` and the underlying implementation changed from querying ipset to querying nftables.
 
@@ -1154,11 +1187,11 @@ The `/usr/libexec/luci-mwan3` shell script provides backend commands called by t
 
 The `nftset_dump()` function lists all sets in `table inet fw4`, extracts set names using awk (matching lines that start with a tab followed by `set`), filters out mwan3's own internal sets (prefixed with `mwan3_`), and returns the sorted unique names.
 
-In v3.3.1, rule.js switched from calling `luci-mwan3 nftset dump` to the `mwan3.nftset_info` rpcd ubus method. The `nftset dump` subcommand is therefore no longer called by the rule editor — it remains in the script but is effectively unused.
+In v3.3.1, rule.js switched from calling `luci-mwan3 nftset dump` to the `mwan3.nftset_info` rpcd ubus method. The `nftset dump` subcommand is therefore no longer called by the rule editor - it remains in the script but is effectively unused.
 
-The `diag` subcommand and its functions (`diag_gateway`, `diag_tracking`, `diag_rules`, `diag_routes`) are unchanged — they use `ip rule`/`ip route` and the `mwan3 use` command, none of which depend on the firewall backend.
+The `diag` subcommand and its functions (`diag_gateway`, `diag_tracking`, `diag_rules`, `diag_routes`) are unchanged - they use `ip rule`/`ip route` and the `mwan3 use` command, none of which depend on the firewall backend.
 
-### 13.3 `luci-app-mwan3.json` — ACL Permissions
+### 13.3 `luci-app-mwan3.json` - ACL Permissions
 
 The rpcd ACL file controls which commands the LuCI frontend is permitted to execute. It contains two ACL groups with separate permission sets.
 
@@ -1174,11 +1207,11 @@ The `read.ubus` section for this group grants permission to call: `mwan3.status`
 
 **`luci-app-mwan3-status`** (status/diagnostic access): The `read.ubus` section grants permission to call: `mwan3.status`, `mwan3.nftset_members`, and `mwan3.routing_health` (the last added in v3.3 for the Routing Health diagnostic tab). The `write.file` section grants exec permission for the `diag` subcommands (`diag gateway`, `diag tracking`, `diag rules`, `diag routes`), `mwan3 internal`, `mwan3 ifup`, and `mwan3 ifdown`.
 
-### 13.4 `interface.js` — Interface Settings UI
+### 13.4 `interface.js` - Interface Settings UI
 
 A "Track gateway" checkbox was added to the interface configuration modal, visible only when the internet protocol is set to IPv4. This exposes the `track_gateway` UCI option for automatic point-to-point peer/gateway discovery (see [Section 15.3](#153-automatic-gateway-tracking-track_gateway)).
 
-An "IPv6 SNAT" text field was added to the same modal, visible only when the internet protocol is set to IPv6. This exposes the `snat6` UCI option for opt-in IPv6 SNAT of mwan3-rerouted router-originated traffic (see [Section 15.5](#155-opt-in-ipv6-snat-via-per-interface-snat6)). The field accepts an empty value or `0` (default — disabled), `1` (SNAT to the interface's primary global address resolved via `mwan3_get_src_ip`), or a literal IPv6 address (NPTv6-style fixed-source pinning).
+An "IPv6 SNAT" text field was added to the same modal, visible only when the internet protocol is set to IPv6. This exposes the `snat6` UCI option for opt-in IPv6 SNAT of mwan3-rerouted router-originated traffic (see [Section 15.5](#155-opt-in-ipv6-snat-via-per-interface-snat6)). The field accepts an empty value or `0` (default - disabled), `1` (SNAT to the interface's primary global address resolved via `mwan3_get_src_ip`), or a literal IPv6 address (NPTv6-style fixed-source pinning).
 
 The help text for the `flush_conntrack` option was also updated to clarify that it flushes the entire global conntrack table, and that per-interface conntrack entries are now flushed automatically on ifdown (see [Section 15.1](#151-selective-conntrack-flush-on-interface-down)).
 
@@ -1218,7 +1251,7 @@ Key translation patterns used in this port, useful for anyone maintaining or ext
 > [!WARNING]
 > **Key kernel limitations to be aware of:**
 >
-> - **No compound two-source bitwise:** Expressions like `meta mark set meta mark | ct mark & X` or `ct mark set ct mark & ~M | meta mark & M` fail with "Operation not supported". Each set expression can only draw from one register source. **Workaround:** synthesise the masked operation via `vmap`-dispatch into per-mark setter chains whose body is a single-source `meta/ct mark | <constant immediate>`. mwan3 uses this for masked connmark save and restore — see [§2 Connmark Operations](#connmark-operations).
+> - **No compound two-source bitwise:** Expressions like `meta mark set meta mark | ct mark & X` or `ct mark set ct mark & ~M | meta mark & M` fail with "Operation not supported". Each set expression can only draw from one register source. **Workaround:** synthesise the masked operation via `vmap`-dispatch into per-mark setter chains whose body is a single-source `meta/ct mark | <constant immediate>`. mwan3 uses this for masked connmark save and restore - see [§2 Connmark Operations](#connmark-operations).
 > - **No numgen in compound expressions:** `meta mark set meta mark & COMP | numgen inc mod N map { ... }` fails for the same reason. Use `meta mark set numgen ...` with a guard condition ensuring the target bits are already zero.
 > - **vmap vs map:** `vmap` expects verdict values (accept/drop/jump), not data values like marks. For IP→mark lookups, use regular `map`.
 > - **`nft add set` flag immutability:** Creating a set is idempotent, but flags (like `auto-merge`) cannot be updated on existing sets. Must delete and recreate to change flags.
@@ -1295,11 +1328,11 @@ config interface 'wan'
 
 ### 15.4 Postrouting SNAT for Rerouted Router-Originated Traffic (IPv4)
 
-**Problem:** When the router itself originates an IPv4 packet, the kernel binds the source address at `sendto()` time using the *unmarked* initial route lookup. mwan3's mark is not set at that point, so the kernel picks the saddr corresponding to whichever WAN the unmarked default route points at — call it WAN-A. Later in the egress path, `mwan3_output` sets a mark and (because the chain is `type route`) the kernel performs a re-lookup that may move the outgoing interface to WAN-B. The reroute updates `oif` but does *not* rewrite the source address — that was already set. The packet would leave WAN-B with WAN-A's source address and be dropped upstream by BCP38 / uRPF filtering.
+**Problem:** When the router itself originates an IPv4 packet, the kernel binds the source address at `sendto()` time using the *unmarked* initial route lookup. mwan3's mark is not set at that point, so the kernel picks the saddr corresponding to whichever WAN the unmarked default route points at - call it WAN-A. Later in the egress path, `mwan3_output` sets a mark and (because the chain is `type route`) the kernel performs a re-lookup that may move the outgoing interface to WAN-B. The reroute updates `oif` but does *not* rewrite the source address - that was already set. The packet would leave WAN-B with WAN-A's source address and be dropped upstream by BCP38 / uRPF filtering.
 
 mwan3track is unaffected: it sets `SO_BINDTODEVICE` at socket creation, which forces the correct saddr at bind time before any of this happens.
 
-**Why no explicit SNAT is needed for IPv4:** fw4's `srcnat_wan` masquerade applies to all outgoing traffic, including locally-originated. When a rerouted packet reaches the `srcnat` hook, masquerade picks the primary IP of the actual outgoing interface and rewrites the source address correctly. No per-interface SNAT rule is required from mwan3 — fw4 handles it.
+**Why no explicit SNAT is needed for IPv4:** fw4's `srcnat_wan` masquerade applies to all outgoing traffic, including locally-originated. When a rerouted packet reaches the `srcnat` hook, masquerade picks the primary IP of the actual outgoing interface and rewrites the source address correctly. No per-interface SNAT rule is required from mwan3 - fw4 handles it.
 
 The IPv6 case is different because fw4 does not masquerade IPv6 by default. See [§15.5](#155-opt-in-ipv6-snat-via-per-interface-snat6).
 
@@ -1314,15 +1347,15 @@ The IPv6 case is different because fw4 does not masquerade IPv6 by default. See 
 1. **RFC 6724 source-address selection sometimes solves it without NAT.** A host with multiple v6 addresses configured and source-address-dependent routes (SADR) in the routing table can pick the correct saddr at socket-bind time and the problem never arises. A default-on SNAT would silently mask working RFC 6724 / SADR machinery and degrade deployments that were doing v6 multihoming correctly.
 2. **NAT66 is actively harmful in some topologies.** ULA + delegated-PA designs depend on end-to-end addressing. Address-embedding protocols (SIP, FTP, IPsec keying, anything using referrals) break.
 3. **Some upstreams require a specific source.** Tunnel brokers (Hurricane Electric), fixed-address WireGuard endpoints, and similar links only accept packets from a specific saddr.
-4. **RFC 4864 / RFC 6296 stance.** The IPv6 community treats address translation as a deliberate, opt-in choice — never a default.
+4. **RFC 4864 / RFC 6296 stance.** The IPv6 community treats address translation as a deliberate, opt-in choice - never a default.
 
 **Solution:** Version 3.2 introduces an opt-in per-interface UCI option `snat6`. The semantics are:
 
 | value | meaning |
 |---|---|
-| unset / `0` | no v6 SNAT — current default behaviour, preserves the iptables-era v6 baseline |
+| unset / `0` | no v6 SNAT - current default behaviour, preserves the iptables-era v6 baseline |
 | `1` | SNAT to the interface's primary global address, looked up via `mwan3_get_src_ip` (which already handles ipv6 family with prefix-delegation fallback) |
-| `<v6 addr>` | SNAT to the literal address. Used for NPTv6-style fixed mappings or where the operator wants to pin a specific source from a delegated /64. The literal value is not validated against the device — some deployments deliberately use addresses not configured on the egress interface. |
+| `<v6 addr>` | SNAT to the literal address. Used for NPTv6-style fixed mappings or where the operator wants to pin a specific source from a delegated /64. The literal value is not validated against the device - some deployments deliberately use addresses not configured on the egress interface. |
 
 The installed nft rule mirrors the v4 form structurally but uses `meta nfproto ipv6` and `ip6 saddr`:
 
@@ -1515,11 +1548,75 @@ The same pre-creation logic used for `ipset` applies to `ipset_src`: if the name
 
 ---
 
-*mwan3 nftables port — OpenWrt 25.12 — Updated 2026-04-15*
+### 15.9 mwan3evtd: Event Debouncing Daemon
+
+mwan3evtd is a small ucode event debouncing daemon that solves the fan-in coordination problem: multiple independent packages each signal or restart the same shared system services (dnsmasq, rpcd, firewall) when network state changes. Without coordination, a single interface event can trigger redundant restarts in rapid succession, wasting CPU, reducing service availability, disrupting active connections, and producing unnecessary log noise.
+
+#### The problem
+
+On a router running several packages that depend on dnsmasq state, a single interface flap can produce multiple dnsmasq HUP and restart cycles over a minute or so. The rebuild sequence was observed to span around 10 seconds per interface in one case. With N interfaces flapping, this produces O(N) signals from mwan3 alone, before counting signals from other packages.
+
+#### How mwan3evtd solves it
+
+mwan3evtd receives named events over ubus and debounces bursts of identical pushes: each push resets a trailing timer (`window_ms`), and the handler fires only after `window_ms` of silence. A hard deadline (`max_window_ms`) ensures the handler fires even under sustained pushing. The result is O(N) → O(1): regardless of how many interfaces flap or how many callers push, the handler fires at most once per burst.
+
+Handlers run sequentially. If a push arrives while a handler is running, mwan3evtd queues a single deferred invocation rather than stacking concurrent runs.
+
+#### Supersession
+
+Related events can declare a severity hierarchy. For example, `dnsmasq-restart` supersedes `dnsmasq-hup`: if a restart is pending, new HUP pushes are silently discarded; if a HUP is pending and a restart push arrives, the pending HUP timer is cancelled and the restart takes over. Supersession operates only on pending timers, never on handlers already running.
+
+#### Integration with mwan3
+
+`mwan3_dnsmasq_hup()` in `mwan3.sh` tries mwan3evtd first:
+
+```sh
+mwan3_dnsmasq_hup()
+{
+    ubus -t 1 call mwan3evtd push '{"event":"dnsmasq-hup"}' >/dev/null 2>&1 && return
+    ubus call service signal '{"name":"dnsmasq","signal":1}' >/dev/null 2>&1
+}
+```
+
+If mwan3evtd is unavailable (disabled or not yet started), the fallback calls `ubus call service signal` directly, preserving the pre-mwan3evtd behaviour. Users who need to conserve memory can disable mwan3evtd with no loss of correctness.
+
+#### Default handlers
+
+The default `/etc/config/mwan3evtd` ships handlers for the most common fan-in scenarios. See `/usr/share/mwan3evtd/mwan3evtd.md` for the full handler table and configuration reference, `/usr/share/mwan3evtd/timing.md` for timing rationale, and `/usr/share/mwan3evtd/counters.md` for the tuning workflow.
+
+**Files changed:** `usr/sbin/mwan3evtd` (new), `usr/sbin/mwan3evtd-push` (new), `etc/init.d/mwan3evtd` (new), `etc/config/mwan3evtd` (new), `usr/share/rpcd/acl.d/mwan3evtd.json` (new), `usr/share/mwan3evtd/` (new), `lib/mwan3/mwan3.sh`, `Makefile`
+
+#### General use of mwan3evtd
+
+Any package can avail itself of mwan3evtd. The more that do so, the better optimised are the restarts and HUPs of dnsmasq (and any other package whose restarts and HUPs are controlled by mwan3evtd for that matter). Packages needing synchronous restarts of dnsmasq will still need to perform inline restarts.
+
+---
+
+*mwan3 nftables port - OpenWrt 25.12 - Updated 2026-04-22*
 
 ---
 
 # Changelog
+
+## Version 3.4
+
+Adds mwan3evtd, an event debouncing daemon that reduces redundant dnsmasq SIGHUP and restart signals from O(N) to O(1) when N interfaces flap concurrently. Replaces the jshn-based dnsmasq HUP fallback with a direct `ubus call service signal` call.
+
+### mwan3: add mwan3evtd event debouncing daemon
+
+On a router running several packages that react to interface events, a single WAN flap triggers multiple independent packages each signalling dnsmasq in rapid succession. mwan3 signals dnsmasq once per fw4 rebuild event, and other packages add their own signals independently with no cross-package coordination. Each signal is correct in isolation but the combination produces redundant cache flushes, back-to-back restarts, and occasionally a mid-startup SIGHUP that can cause dnsmasq to exit.
+
+mwan3evtd is a standalone ucode daemon registered on ubus as `mwan3evtd`. It maintains a set of named event handlers loaded from `/etc/config/mwan3evtd`. Each handler has a trailing debounce window (`window_ms`) and a hard deadline (`max_window_ms`). Any caller pushes a named event via `ubus call mwan3evtd push '{"event":"<name>"}'`; mwan3evtd resets the window timer on each push and fires the handler once after the window closes, or at the deadline if pushing is continuous. Handlers run sequentially; a push arriving during a running handler queues a single deferred invocation.
+
+`mwan3_dnsmasq_hup()` in `mwan3.sh` now tries mwan3evtd first and falls back to `ubus call service signal` directly if mwan3evtd is unavailable. The jshn-based fallback (which parsed `ubus call service list` output to find running instances) is removed; `ubus call service signal` sends SIGHUP to all instances without requiring that parse, and is functionally equivalent.
+
+The default `/etc/config/mwan3evtd` ships handlers for dnsmasq-hup, dnsmasq-restart, rpcd-reload, rpcd-restart, firewall-reload, firewall-restart, unbound-restart, smartdns-restart, kresd-restart, and named-restart, with supersession relationships between paired reload/restart events.
+
+`mwan3evtd-push` is a shell wrapper for callers that prefer a command-line interface. It calls `ubus call mwan3evtd push` and falls back to executing the handler command directly from `/etc/config/mwan3evtd` if mwan3evtd is unreachable, ensuring the action fires even during early boot.
+
+**Files changed:** `usr/sbin/mwan3evtd` (new), `usr/sbin/mwan3evtd-push` (new), `etc/init.d/mwan3evtd` (new), `etc/config/mwan3evtd` (new), `usr/share/rpcd/acl.d/mwan3evtd.json` (new), `usr/share/mwan3evtd/` (new), `lib/mwan3/mwan3.sh`, `Makefile`
+
+---
 
 ## Version 3.3.5
 
@@ -1585,7 +1682,7 @@ Note: the bypass applies to traffic with these networks as the **destination**. 
 
 Add a `Bypass networks` DynamicList field (`bypass_network`) to the globals page. Accepts IPv4 and IPv6 CIDRs directly with `cidr` datatype validation. Validation fires on blur only (keyup suppressed) using a capture-phase event delegation listener on the container, covering dynamically added items.
 
-Improve `rt_table_lookup`: rename label to "Routing table bypass", update the description to explain the bypass effect and that both table numbers and names are accepted. Remove the incorrect `uinteger` datatype constraint — `ip route list table` accepts names, but the UI previously rejected them.
+Improve `rt_table_lookup`: rename label to "Routing table bypass", update the description to explain the bypass effect and that both table numbers and names are accepted. Remove the incorrect `uinteger` datatype constraint - `ip route list table` accepts names, but the UI previously rejected them.
 
 **Files changed:** `htdocs/luci-static/resources/view/mwan3/network/globals.js`
 
@@ -2013,9 +2110,9 @@ A substantive release. Restores iptables-equivalent non-destructive masked connm
 
 ### mwan3: rearchitect mark save/restore as non-destructive vmap-dispatch
 
-The original nftables port translated iptables's `CONNMARK --restore-mark --nfmask $MMX_MASK` to a single-source `meta mark set ct mark & MMX_MASK`, and `CONNMARK --save-mark --nfmask $MMX_MASK` to a single-source `ct mark set meta mark`. Both forms are *destructive* — they overwrite the entire target register, including bits owned by other mark-using packages such as pbr. The kernel rejects the obvious compound forms (`(meta mark & ~M) | (ct mark & M)`) with "Operation not supported" because an nft set-statement may reference at most one runtime source register.
+The original nftables port translated iptables's `CONNMARK --restore-mark --nfmask $MMX_MASK` to a single-source `meta mark set ct mark & MMX_MASK`, and `CONNMARK --save-mark --nfmask $MMX_MASK` to a single-source `ct mark set meta mark`. Both forms are *destructive* - they overwrite the entire target register, including bits owned by other mark-using packages such as pbr. The kernel rejects the obvious compound forms (`(meta mark & ~M) | (ct mark & M)`) with "Operation not supported" because an nft set-statement may reference at most one runtime source register.
 
-Version 3.1.4 worked around the resulting pbr coexistence breakage by moving mwan3's chains to `priority mangle - 1` so that mwan3 ran *before* pbr in the prerouting hook stack. That ordering papered over the symptom for one specific package but left the underlying behaviour broken — any second mark-using package would still have its bits zeroed.
+Version 3.1.4 worked around the resulting pbr coexistence breakage by moving mwan3's chains to `priority mangle - 1` so that mwan3 ran *before* pbr in the prerouting hook stack. That ordering papered over the symptom for one specific package but left the underlying behaviour broken - any second mark-using package would still have its bits zeroed.
 
 Version 3.2 fixes this properly. mwan3 now synthesises masked save and restore through `vmap`-dispatch into 126 trivial per-mark setter chains (63 per direction with the default `MMX_MASK = 0x3F00`):
 
@@ -2027,7 +2124,7 @@ chain mwan3_or_ct_0x0100   { ct   mark set ct   mark | 0x0100 ; return }
 
 Restore looks up `ct mark & MMX_MASK` in a vmap and dispatches into the matching setter chain, which OR-s the immediate value into `meta mark` without touching any other bit. Save does the same in the opposite direction, after first clearing only mwan3's own bits in `ct mark` (`& MMX_MASK_COMPLEMENT`). The result is functionally equivalent to iptables's masked CONNMARK operations.
 
-Because the operation is now non-destructive in both directions, mwan3's chain priority moves back to the original `mangle + 1` (the placement the iptables-era mwan3 occupied). Order-independence with pbr is now an architectural property, not a side-effect of priority ordering — verified live at `mangle + 1` with pbr at `mangle` (-150), and structurally guaranteed at any other relative ordering.
+Because the operation is now non-destructive in both directions, mwan3's chain priority moves back to the original `mangle + 1` (the placement the iptables-era mwan3 occupied). Order-independence with pbr is now an architectural property, not a side-effect of priority ordering - verified live at `mangle + 1` with pbr at `mangle` (-150), and structurally guaranteed at any other relative ordering.
 
 The Makefile postinst migration removes any chains created at the v3.1.4 `mangle - 1` priority on upgrade so that nft will accept the chain redeclaration at the new priority.
 
@@ -2035,9 +2132,9 @@ See [§2 Connmark Operations](#connmark-operations) for the full architectural n
 
 ### mwan3: opt-in IPv6 SNAT via per-interface `snat6` UCI option
 
-Adds the `mwan3_postrouting` base chain (`type nat hook postrouting priority srcnat - 1`) and an opt-in IPv6 SNAT path gated by a new per-interface UCI option `snat6`. Addresses the router-originated, mark-rerouted, wrong-saddr failure mode for IPv6: when mwan3 reroutes a packet from WAN-A onto WAN-B, the saddr was bound at `sendto()` to WAN-A's prefix; without SNAT it egresses WAN-B with the wrong prefix and is dropped upstream. Default is off because RFC 6724 source-address selection / SADR routing can solve the same problem without translation, NAT66 is harmful in PA/ULA designs, and some upstreams require a specific saddr. Three values: unset/`0` (off, default), `1` (SNAT to the interface's primary global address via `mwan3_get_src_ip`), or `<v6 addr>` (literal — NPTv6-style fixed-source pinning).
+Adds the `mwan3_postrouting` base chain (`type nat hook postrouting priority srcnat - 1`) and an opt-in IPv6 SNAT path gated by a new per-interface UCI option `snat6`. Addresses the router-originated, mark-rerouted, wrong-saddr failure mode for IPv6: when mwan3 reroutes a packet from WAN-A onto WAN-B, the saddr was bound at `sendto()` to WAN-A's prefix; without SNAT it egresses WAN-B with the wrong prefix and is dropped upstream. Default is off because RFC 6724 source-address selection / SADR routing can solve the same problem without translation, NAT66 is harmful in PA/ULA designs, and some upstreams require a specific saddr. Three values: unset/`0` (off, default), `1` (SNAT to the interface's primary global address via `mwan3_get_src_ip`), or `<v6 addr>` (literal - NPTv6-style fixed-source pinning).
 
-IPv4 router-originated traffic does not require an explicit mwan3 SNAT rule — fw4's masquerade handles it.
+IPv4 router-originated traffic does not require an explicit mwan3 SNAT rule - fw4's masquerade handles it.
 
 See [§15.5 Opt-in IPv6 SNAT via Per-Interface `snat6`](#155-opt-in-ipv6-snat-via-per-interface-snat6).
 
@@ -2080,7 +2177,7 @@ normalises numgen map entries from the range form `N-N : 0xMARK` to the
 plain form `N : 0xMARK`. The regex used by `mwan3_report_policies` to
 parse the chain output only matched the `N-M` range form, so equal-weight
 policies produced no output and appeared empty in `mwan3 status`. The
-load balancing itself was unaffected — only the status display was wrong.
+load balancing itself was unaffected - only the status display was wrong.
 
 Fixed by extending the regex to match both `N-M : 0xMARK` and
 `N : 0xMARK`, and updating the weight calculation to handle both forms.
@@ -2108,7 +2205,7 @@ only directed to members of the matching address family.
 
 `mwan3_report_policies` resolved nft marks to interface names using
 `mwan3_mark_to_name` and tested `[ -n "$iface_name" ]` to skip special
-marks. However `mwan3_mark_to_name` never returns an empty string — it
+marks. However `mwan3_mark_to_name` never returns an empty string - it
 returns `"unreachable"`, `"blackhole"`, `"default"`, or the raw hex value
 as a fallthrough for unrecognised marks. The empty-string check therefore
 never filtered anything, causing spurious `unreachable` entries in the
@@ -2200,15 +2297,15 @@ and could not distinguish this from a genuine connectivity failure.
 
 Three cases are fixed:
 
-- **`dobind()` source IP bind failure** — can occur when `SRC_IP` becomes
+- **`dobind()` source IP bind failure** - can occur when `SRC_IP` becomes
   stale after a DHCP address change that does not generate an ifup event.
   The socket is now closed and the function returns; the subsequent
   `sendto()`/`connect()` call fails with `EBADF`, causing the ping to exit
   with a normal error code that mwan3track records as a ping failure.
-- **`SO_BINDTODEVICE` failure in `socket()`** — can occur if the interface
+- **`SO_BINDTODEVICE` failure in `socket()`** - can occur if the interface
   disappears between mwan3track reading `DEVICE` and the next ping round.
   Returns `-1` instead of calling `exit()`.
-- **`SO_MARK` failure and over-length interface name** — both return `-1`
+- **`SO_MARK` failure and over-length interface name** - both return `-1`
   instead of calling `exit()`.
 
 `exit()` is retained in `dlerror_handle()` (unresolvable libc symbols) and
@@ -2245,3 +2342,4 @@ score recovers out of the `disconnecting` state, making the transition back
 to online visible in the log.
 
 **File changed:** `usr/sbin/mwan3track`
+-
