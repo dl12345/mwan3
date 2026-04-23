@@ -420,7 +420,7 @@ mwan3_create_iface_nft()
 	mwan3_nft_batch_commit
 
 	# Add jump rule from mwan3_ifaces_in if not already present
-	if ! $NFT list chain inet fw4 mwan3_ifaces_in 2>/dev/null | grep -q "jump mwan3_iface_in_$1"; then
+	if ! $NFT list chain inet fw4 mwan3_ifaces_in 2>/dev/null | grep -qw "mwan3_iface_in_$1"; then
 		mwan3_nft_exec add rule inet fw4 mwan3_ifaces_in meta mark \& "$MMX_MASK" == 0 jump "mwan3_iface_in_$1"
 		LOG debug "create_iface_nft: mwan3_iface_in_$1 added to mwan3_ifaces_in"
 	else
@@ -463,7 +463,7 @@ mwan3_delete_iface_nft()
 	# Remove all jump rules for this interface from mwan3_ifaces_in (loop handles
 	# the case where duplicate rules accumulated due to repeated fw4 reload cycles)
 	while handle=$($NFT -a list chain inet fw4 mwan3_ifaces_in 2>/dev/null | \
-			grep "jump mwan3_iface_in_$1" | sed -n 's/.*# handle \([0-9]*\)/\1/p' | head -n1); \
+			grep -w "mwan3_iface_in_$1" | sed -n 's/.*# handle \([0-9]*\)/\1/p' | head -n1); \
 	      [ -n "$handle" ]; do
 		mwan3_nft_exec delete rule inet fw4 mwan3_ifaces_in handle "$handle"
 	done
