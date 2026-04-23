@@ -98,12 +98,12 @@ stop_service() {
 	done
 
 	# Flush all mwan3 chains (rules removed, chains stay as skeletons)
-	for chain_name in $($NFT list chains inet fw4 2>/dev/null | grep "chain mwan3_" | awk '{print $2}'); do
+	for chain_name in $($NFT list chains inet 2>/dev/null | grep "chain mwan3_" | awk '{print $2}'); do
 		$NFT flush chain inet fw4 "$chain_name" >/dev/null 2>&1
 	done
 
 	# Delete dynamic per-interface and per-policy chains (not the skeleton ones from 10-mwan3.nft)
-	for chain_name in $($NFT list chains inet fw4 2>/dev/null | grep "chain mwan3_" | awk '{print $2}'); do
+	for chain_name in $($NFT list chains inet 2>/dev/null | grep "chain mwan3_" | awk '{print $2}'); do
 		case "$chain_name" in
 			mwan3_prerouting|mwan3_output|mwan3_postrouting|mwan3_ifaces_in|mwan3_rules|mwan3_connected|mwan3_custom|mwan3_dynamic)
 				# These are skeleton chains from the static .nft file; keep them
