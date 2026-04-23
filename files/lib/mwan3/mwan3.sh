@@ -265,10 +265,6 @@ mwan3_set_general_nft()
 	[ $NO_IPV6 -eq 0 ] && \
 		mwan3_nft_push "add rule inet fw4 mwan3_dynamic ip6 daddr @mwan3_dynamic_v6 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
 
-	# Flush postrouting SNAT chain — per-iface rules are re-added by
-	# mwan3_create_iface_nft as part of the iface rebuild that follows.
-	mwan3_nft_push "flush chain inet fw4 mwan3_postrouting"
-
 	# Populate mwan3_prerouting hook chain
 	mwan3_nft_push "flush chain inet fw4 mwan3_prerouting"
 	# IPv6 RA bypass
