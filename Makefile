@@ -73,6 +73,27 @@ if [ -z "$${IPKG_INSTROOT}" ]; then
 			  awk '$$1=="map" && $$2 ~ /^mwan3_sticky_v[46]_/ { print $$2 }'); do
 		nft delete map inet fw4 "$$mapname" 2>/dev/null
 	done
+	# v4+: mwan3 moved from table inet fw4 to table inet mwan3. fw4 uses
+	# flush-table (not delete-table) on reload, so chains/sets added by
+	# v3.x survive across fw4 reloads and must be explicitly removed.
+	for chain in mwan3_prerouting mwan3_output mwan3_postrouting \
+	             mwan3_ifaces_in mwan3_rules mwan3_connected mwan3_custom mwan3_dynamic; do
+		nft flush chain inet fw4 "$$chain" 2>/dev/null
+		nft delete chain inet fw4 "$$chain" 2>/dev/null
+	done
+	for setname in mwan3_connected_v4 mwan3_connected_v6 \
+	               mwan3_custom_v4 mwan3_custom_v6 \
+	               mwan3_dynamic_v4 mwan3_dynamic_v6; do
+		nft delete set inet fw4 "$$setname" 2>/dev/null
+	done
+	for mapname in $$(nft list maps inet fw4 2>/dev/null | \
+			  awk '$$1=="map" && $$2 ~ /^mwan3_sticky_/ { print $$2 }'); do
+		nft flush map inet fw4 "$$mapname" 2>/dev/null
+		nft delete map inet fw4 "$$mapname" 2>/dev/null
+	done
+	# Remove stale firewall.mwan3_reload UCI section and reload fw4 once
+	# to drop the (now-uninstalled) mwan3 include from fw4's config.
+	uci -q delete firewall.mwan3_reload && uci commit firewall
 	fw4 -q reload
 	/etc/init.d/rpcd restart
 	/etc/init.d/mwan3evtd enable
@@ -120,9 +141,7 @@ define Package/mwan3/install
 		$(1)/lib/mwan3/
 	$(INSTALL_DATA) ./files/lib/mwan3/mwan3.sh \
 		$(1)/lib/mwan3/
-	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-fw-include.sh \
-		$(1)/lib/mwan3/
-	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-fw-rebuild.sh \
+	$(INSTALL_DATA) ./files/lib/mwan3/mwan3-skeleton.nft \
 		$(1)/lib/mwan3/
 
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/ucode/
@@ -145,14 +164,10 @@ define Package/mwan3/install
 
 	$(CP) $(PKG_BUILD_DIR)/libwrap_mwan3_sockopt.so.1.0 $(1)/lib/mwan3/
 
-	$(INSTALL_DIR) $(1)/usr/share/nftables.d/table-post
-	$(INSTALL_DATA) ./files/usr/share/nftables.d/table-post/10-mwan3.nft \
-		$(1)/usr/share/nftables.d/table-post/
-
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_DATA) ./files/etc/uci-defaults/mwan3-migrate-flush_conntrack \
 		$(1)/etc/uci-defaults/
-	$(INSTALL_DATA) ./files/etc/uci-defaults/mwan3-firewall-include \
+	$(INSTALL_DATA) ./files/etc/uci-defaults/mwan3-remove-firewall-include \
 		$(1)/etc/uci-defaults/
 
 	$(INSTALL_DIR) $(1)/usr/sbin

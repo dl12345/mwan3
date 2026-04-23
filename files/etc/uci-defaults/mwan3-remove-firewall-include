@@ -1,0 +1,5 @@
+#!/bin/sh
+# One-shot upgrade cleanup: remove the stale firewall.mwan3_reload include
+# section that v3.x installs registered. mwan3 v4+ no longer uses fw4 includes.
+uci -q delete firewall.mwan3_reload && uci commit firewall
+exit 0

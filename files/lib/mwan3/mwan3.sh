@@ -23,8 +23,6 @@ DEFAULT_LOWEST_METRIC=256
 
 mwan3_dnsmasq_hup()
 {
-	ubus -t 1 call mwan3evtd push '{"event":"dnsmasq-hup"}' >/dev/null 2>&1 && return
-
 	ubus call service signal '{"name":"dnsmasq","signal":1}' >/dev/null 2>&1
 }
 
@@ -119,21 +117,21 @@ mwan3_set_custom_set()
 
 	for custom_network in $($IP4 route list table "$table_arg" | awk '{print $1}' | grep -E "$IPv4_REGEX"); do
 		LOG notice "Adding network $custom_network from table $table_arg to mwan3_custom_v4 set"
-		mwan3_nft_push "add element inet fw4 mwan3_custom_v4 { $custom_network }"
+		mwan3_nft_push "add element inet mwan3 mwan3_custom_v4 { $custom_network }"
 	done
 
 	[ $NO_IPV6 -eq 0 ] || return
 	for custom_network in $($IP6 route list table "$table_arg" | awk '{print $1}' | grep -E "$IPv6_REGEX"); do
 		LOG notice "Adding network $custom_network from table $table_arg to mwan3_custom_v6 set"
-		mwan3_nft_push "add element inet fw4 mwan3_custom_v6 { $custom_network }"
+		mwan3_nft_push "add element inet mwan3 mwan3_custom_v6 { $custom_network }"
 	done
 }
 
 mwan3_set_custom_sets()
 {
 	mwan3_nft_batch_start
-	mwan3_nft_push "flush set inet fw4 mwan3_custom_v4"
-	[ $NO_IPV6 -eq 0 ] && mwan3_nft_push "flush set inet fw4 mwan3_custom_v6"
+	mwan3_nft_push "flush set inet mwan3 mwan3_custom_v4"
+	[ $NO_IPV6 -eq 0 ] && mwan3_nft_push "flush set inet mwan3 mwan3_custom_v6"
 
 	config_list_foreach "globals" "rt_table_lookup" mwan3_set_custom_set
 
@@ -145,16 +143,16 @@ mwan3_set_connected_ipv4()
 	local connected_network_v4
 
 	mwan3_nft_batch_start
-	mwan3_nft_push "flush set inet fw4 mwan3_connected_v4"
+	mwan3_nft_push "flush set inet mwan3 mwan3_connected_v4"
 
 	# Add CIDR routes from the main routing table. Skip host routes — they
 	# are either within a CIDR already (local/broadcast from table 0) or are
 	# remote destinations that should NOT bypass mwan3.
 	for connected_network_v4 in $($IP4 route | awk '{print $1}' | grep -E "$IPv4_REGEX/" | sort -u); do
-		mwan3_nft_push "add element inet fw4 mwan3_connected_v4 { $connected_network_v4 }"
+		mwan3_nft_push "add element inet mwan3 mwan3_connected_v4 { $connected_network_v4 }"
 	done
 
-	mwan3_nft_push "add element inet fw4 mwan3_connected_v4 { 224.0.0.0/3 }"
+	mwan3_nft_push "add element inet mwan3 mwan3_connected_v4 { 224.0.0.0/3 }"
 
 	mwan3_nft_batch_commit
 }
@@ -175,8 +173,8 @@ mwan3_set_connected_ipv6()
 	[ -z "$elements" ] && return
 
 	mwan3_nft_batch_start
-	mwan3_nft_push "flush set inet fw4 mwan3_connected_v6"
-	mwan3_nft_push "add element inet fw4 mwan3_connected_v6 { $elements }"
+	mwan3_nft_push "flush set inet mwan3 mwan3_connected_v6"
+	mwan3_nft_push "add element inet mwan3 mwan3_connected_v6 { $elements }"
 	mwan3_nft_batch_commit
 }
 
@@ -192,18 +190,18 @@ mwan3_set_dynamic_network()
 	case "$network" in
 		*:*) [ $NO_IPV6 -eq 0 ] && {
 			LOG notice "Adding bypass_network $network to mwan3_dynamic_v6 set"
-			mwan3_nft_push "add element inet fw4 mwan3_dynamic_v6 { $network }"
+			mwan3_nft_push "add element inet mwan3 mwan3_dynamic_v6 { $network }"
 		} ;;
 		*.*) LOG notice "Adding bypass_network $network to mwan3_dynamic_v4 set"
-			mwan3_nft_push "add element inet fw4 mwan3_dynamic_v4 { $network }" ;;
+			mwan3_nft_push "add element inet mwan3 mwan3_dynamic_v4 { $network }" ;;
 	esac
 }
 
 mwan3_set_dynamic_sets()
 {
 	mwan3_nft_batch_start
-	mwan3_nft_push "flush set inet fw4 mwan3_dynamic_v4"
-	[ $NO_IPV6 -eq 0 ] && mwan3_nft_push "flush set inet fw4 mwan3_dynamic_v6"
+	mwan3_nft_push "flush set inet mwan3 mwan3_dynamic_v4"
+	[ $NO_IPV6 -eq 0 ] && mwan3_nft_push "flush set inet mwan3 mwan3_dynamic_v6"
 
 	config_list_foreach "globals" "bypass_network" mwan3_set_dynamic_network
 
@@ -233,7 +231,7 @@ mwan3_set_general_nft()
 	local chain_exists restore_vmap save_vmap all_marks
 
 	# Check if rules are already populated
-	chain_exists=$($NFT list chain inet fw4 mwan3_prerouting 2>/dev/null | grep -c "meta mark")
+	chain_exists=$($NFT list chain inet mwan3 mwan3_prerouting 2>/dev/null | grep -c "meta mark")
 	[ "$chain_exists" -gt 0 ] && return
 
 	# Build (idempotently) the per-mark OR-immediate setter chains used by
@@ -248,27 +246,27 @@ mwan3_set_general_nft()
 	mwan3_nft_batch_start
 
 	# Populate mwan3_connected chain
-	mwan3_nft_push "flush chain inet fw4 mwan3_connected"
-	mwan3_nft_push "add rule inet fw4 mwan3_connected ip daddr @mwan3_connected_v4 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
+	mwan3_nft_push "flush chain inet mwan3 mwan3_connected"
+	mwan3_nft_push "add rule inet mwan3 mwan3_connected ip daddr @mwan3_connected_v4 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
 	[ $NO_IPV6 -eq 0 ] && \
-		mwan3_nft_push "add rule inet fw4 mwan3_connected ip6 daddr @mwan3_connected_v6 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
+		mwan3_nft_push "add rule inet mwan3 mwan3_connected ip6 daddr @mwan3_connected_v6 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
 
 	# Populate mwan3_custom chain
-	mwan3_nft_push "flush chain inet fw4 mwan3_custom"
-	mwan3_nft_push "add rule inet fw4 mwan3_custom ip daddr @mwan3_custom_v4 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
+	mwan3_nft_push "flush chain inet mwan3 mwan3_custom"
+	mwan3_nft_push "add rule inet mwan3 mwan3_custom ip daddr @mwan3_custom_v4 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
 	[ $NO_IPV6 -eq 0 ] && \
-		mwan3_nft_push "add rule inet fw4 mwan3_custom ip6 daddr @mwan3_custom_v6 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
+		mwan3_nft_push "add rule inet mwan3 mwan3_custom ip6 daddr @mwan3_custom_v6 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
 
 	# Populate mwan3_dynamic chain
-	mwan3_nft_push "flush chain inet fw4 mwan3_dynamic"
-	mwan3_nft_push "add rule inet fw4 mwan3_dynamic ip daddr @mwan3_dynamic_v4 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
+	mwan3_nft_push "flush chain inet mwan3 mwan3_dynamic"
+	mwan3_nft_push "add rule inet mwan3 mwan3_dynamic ip daddr @mwan3_dynamic_v4 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
 	[ $NO_IPV6 -eq 0 ] && \
-		mwan3_nft_push "add rule inet fw4 mwan3_dynamic ip6 daddr @mwan3_dynamic_v6 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
+		mwan3_nft_push "add rule inet mwan3 mwan3_dynamic ip6 daddr @mwan3_dynamic_v6 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK) return"
 
 	# Populate mwan3_prerouting hook chain
-	mwan3_nft_push "flush chain inet fw4 mwan3_prerouting"
+	mwan3_nft_push "flush chain inet mwan3 mwan3_prerouting"
 	# IPv6 RA bypass
-	mwan3_nft_push "add rule inet fw4 mwan3_prerouting icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, nd-redirect } accept"
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, nd-redirect } accept"
 	# Restore mark from conntrack — non-destructive in unmasked bits.
 	# A direct compound "meta mark set (meta mark & ~MMX) | (ct mark & MMX)"
 	# is rejected by the kernel (a set-statement expression tree may reference
@@ -277,53 +275,53 @@ mwan3_set_general_nft()
 	# does "meta mark set meta mark | <imm>". Lookup miss (ct mark MMX bits = 0)
 	# falls through cleanly. Pbr's bits in meta mark are preserved across the
 	# restore, which is what removes mwan3's prior priority dependency on pbr.
-	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 ct mark & $MMX_MASK vmap { $restore_vmap }"
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta mark & $MMX_MASK == 0 ct mark & $MMX_MASK vmap { $restore_vmap }"
 	# Jump to interface classification
-	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_ifaces_in"
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_ifaces_in"
 	# Skip mwan3 processing for traffic destined for the router on non-WAN interfaces
 	# (LAN, loopback, etc.). Traffic arriving on a mwan3 WAN interface is already
 	# marked by the iface_in catchall above, so meta mark != 0 and this rule is a
 	# no-op for that traffic. The guard ensures DNAT connections are not affected:
 	# the original packet gets its ct mark set by the iface_in catchall, so the
 	# DNAT reply can restore it correctly.
-	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 fib daddr type local return"
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta mark & $MMX_MASK == 0 fib daddr type local return"
 	# Check custom/connected/dynamic destinations
-	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_custom"
-	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_connected"
-	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_dynamic"
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_custom"
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_connected"
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_dynamic"
 	# User rules
-	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_rules"
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_rules"
 	# Save mark to conntrack — non-destructive in unmasked bits of ct mark.
 	# Two-step: clear the MMX bits in ct mark (single-source masked write),
 	# then vmap-dispatch on (meta mark & MMX) into a per-mark "ct mark set
 	# ct mark | <imm>" chain. Net effect: ct mark's MMX bits are replaced
 	# with meta mark's MMX bits, every other bit of ct mark untouched.
-	mwan3_nft_push "add rule inet fw4 mwan3_prerouting ct mark set ct mark & $MMX_MASK_COMPLEMENT"
-	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK vmap { $save_vmap }"
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting ct mark set ct mark & $MMX_MASK_COMPLEMENT"
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta mark & $MMX_MASK vmap { $save_vmap }"
 	# Post-rules: check custom/connected/dynamic for non-default marks
-	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_custom"
-	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_connected"
-	mwan3_nft_push "add rule inet fw4 mwan3_prerouting meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_dynamic"
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_custom"
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_connected"
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_dynamic"
 
 	# Populate mwan3_output hook chain
-	mwan3_nft_push "flush chain inet fw4 mwan3_output"
+	mwan3_nft_push "flush chain inet mwan3 mwan3_output"
 	# Restore mark from conntrack (see prerouting comment above)
-	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 ct mark & $MMX_MASK vmap { $restore_vmap }"
+	mwan3_nft_push "add rule inet mwan3 mwan3_output meta mark & $MMX_MASK == 0 ct mark & $MMX_MASK vmap { $restore_vmap }"
 	# Jump to interface classification
-	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_ifaces_in"
+	mwan3_nft_push "add rule inet mwan3 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_ifaces_in"
 	# Check custom/connected/dynamic destinations
-	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_custom"
-	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_connected"
-	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_dynamic"
+	mwan3_nft_push "add rule inet mwan3 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_custom"
+	mwan3_nft_push "add rule inet mwan3 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_connected"
+	mwan3_nft_push "add rule inet mwan3 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_dynamic"
 	# User rules
-	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_rules"
+	mwan3_nft_push "add rule inet mwan3 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_rules"
 	# Save mark to conntrack (see prerouting comment above)
-	mwan3_nft_push "add rule inet fw4 mwan3_output ct mark set ct mark & $MMX_MASK_COMPLEMENT"
-	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK vmap { $save_vmap }"
+	mwan3_nft_push "add rule inet mwan3 mwan3_output ct mark set ct mark & $MMX_MASK_COMPLEMENT"
+	mwan3_nft_push "add rule inet mwan3 mwan3_output meta mark & $MMX_MASK vmap { $save_vmap }"
 	# Post-rules: check custom/connected/dynamic for non-default marks
-	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_custom"
-	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_connected"
-	mwan3_nft_push "add rule inet fw4 mwan3_output meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_dynamic"
+	mwan3_nft_push "add rule inet mwan3 mwan3_output meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_custom"
+	mwan3_nft_push "add rule inet mwan3 mwan3_output meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_connected"
+	mwan3_nft_push "add rule inet mwan3 mwan3_output meta mark & $MMX_MASK != $MMX_DEFAULT jump mwan3_dynamic"
 
 	mwan3_nft_batch_commit
 }
@@ -359,10 +357,10 @@ mwan3_create_iface_nft()
 	#
 	# Stale rules from a prior incarnation of this interface are removed
 	# first; comment-tagged for unambiguous identification across reloads.
-	while handle=$($NFT -a list chain inet fw4 mwan3_postrouting 2>/dev/null | \
+	while handle=$($NFT -a list chain inet mwan3 mwan3_postrouting 2>/dev/null | \
 			sed -n "s/.*comment \"mwan3_snat_$1\".*# handle \([0-9]*\)/\1/p" | head -n1); \
 	      [ -n "$handle" ]; do
-		mwan3_nft_exec delete rule inet fw4 mwan3_postrouting handle "$handle"
+		mwan3_nft_exec delete rule inet mwan3 mwan3_postrouting handle "$handle"
 	done
 
 	if [ "$family" = "ipv6" ]; then
@@ -380,7 +378,7 @@ mwan3_create_iface_nft()
 				;;
 		esac
 		if [ -n "$src_ip" ] && [ "$src_ip" != "::" ]; then
-			mwan3_nft_exec add rule inet fw4 mwan3_postrouting \
+			mwan3_nft_exec add rule inet mwan3 mwan3_postrouting \
 				oifname "\"$device\"" meta nfproto ipv6 \
 				meta mark \& "$MMX_MASK" == "$iface_mark" \
 				fib saddr type local ip6 saddr != "$src_ip" \
@@ -389,39 +387,39 @@ mwan3_create_iface_nft()
 	fi
 
 	# Check if chain already exists, if so flush it; otherwise create it
-	if $NFT list chain inet fw4 "mwan3_iface_in_$1" &>/dev/null; then
-		mwan3_nft_exec flush chain inet fw4 "mwan3_iface_in_$1"
+	if $NFT list chain inet mwan3 "mwan3_iface_in_$1" &>/dev/null; then
+		mwan3_nft_exec flush chain inet mwan3 "mwan3_iface_in_$1"
 	else
-		mwan3_nft_exec add chain inet fw4 "mwan3_iface_in_$1"
+		mwan3_nft_exec add chain inet mwan3 "mwan3_iface_in_$1"
 	fi
 
 	mwan3_nft_batch_start
 
 	# For packets from connected/custom/dynamic sources, mark as default
 	if [ "$family" = "ipv4" ]; then
-		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv4 ip saddr @mwan3_connected_v4 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
-		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv4 ip saddr @mwan3_custom_v4 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
-		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv4 ip saddr @mwan3_dynamic_v4 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
+		mwan3_nft_push "add rule inet mwan3 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv4 ip saddr @mwan3_connected_v4 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
+		mwan3_nft_push "add rule inet mwan3 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv4 ip saddr @mwan3_custom_v4 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
+		mwan3_nft_push "add rule inet mwan3 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv4 ip saddr @mwan3_dynamic_v4 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
 	elif [ "$family" = "ipv6" ]; then
-		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv6 ip6 saddr @mwan3_connected_v6 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
-		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv6 ip6 saddr @mwan3_custom_v6 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
-		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv6 ip6 saddr @mwan3_dynamic_v6 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
+		mwan3_nft_push "add rule inet mwan3 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv6 ip6 saddr @mwan3_connected_v6 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
+		mwan3_nft_push "add rule inet mwan3 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv6 ip6 saddr @mwan3_custom_v6 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
+		mwan3_nft_push "add rule inet mwan3 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv6 ip6 saddr @mwan3_dynamic_v6 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
 	fi
 
 	# Mark with interface-specific mark — scoped to address family so that an
 	# IPv4 chain's catchall cannot misclassify IPv6 packets when two mwan3
 	# interfaces (one IPv4, one IPv6) share the same physical device.
 	if [ "$family" = "ipv4" ]; then
-		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv4 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $iface_mark $MMX_MASK)"
+		mwan3_nft_push "add rule inet mwan3 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv4 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $iface_mark $MMX_MASK)"
 	elif [ "$family" = "ipv6" ]; then
-		mwan3_nft_push "add rule inet fw4 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv6 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $iface_mark $MMX_MASK)"
+		mwan3_nft_push "add rule inet mwan3 mwan3_iface_in_$1 iifname \"$device\" meta nfproto ipv6 meta mark & $MMX_MASK == 0 $(mwan3_nft_mark_expr $iface_mark $MMX_MASK)"
 	fi
 
 	mwan3_nft_batch_commit
 
 	# Add jump rule from mwan3_ifaces_in if not already present
-	if ! $NFT list chain inet fw4 mwan3_ifaces_in 2>/dev/null | grep -qw "mwan3_iface_in_$1"; then
-		mwan3_nft_exec add rule inet fw4 mwan3_ifaces_in meta mark \& "$MMX_MASK" == 0 jump "mwan3_iface_in_$1"
+	if ! $NFT list chain inet mwan3 mwan3_ifaces_in 2>/dev/null | grep -qw "mwan3_iface_in_$1"; then
+		mwan3_nft_exec add rule inet mwan3 mwan3_ifaces_in meta mark \& "$MMX_MASK" == 0 jump "mwan3_iface_in_$1"
 		LOG debug "create_iface_nft: mwan3_iface_in_$1 added to mwan3_ifaces_in"
 	else
 		LOG debug "create_iface_nft: mwan3_iface_in_$1 already in mwan3_ifaces_in, skip"
@@ -462,24 +460,24 @@ mwan3_delete_iface_nft()
 
 	# Remove all jump rules for this interface from mwan3_ifaces_in (loop handles
 	# the case where duplicate rules accumulated due to repeated fw4 reload cycles)
-	while handle=$($NFT -a list chain inet fw4 mwan3_ifaces_in 2>/dev/null | \
+	while handle=$($NFT -a list chain inet mwan3 mwan3_ifaces_in 2>/dev/null | \
 			grep -w "mwan3_iface_in_$1" | sed -n 's/.*# handle \([0-9]*\)/\1/p' | head -n1); \
 	      [ -n "$handle" ]; do
-		mwan3_nft_exec delete rule inet fw4 mwan3_ifaces_in handle "$handle"
+		mwan3_nft_exec delete rule inet mwan3 mwan3_ifaces_in handle "$handle"
 	done
 
 	# Remove the per-iface postrouting SNAT rule (loop in case both v4/v6
 	# rules exist for the same interface name).
-	while handle=$($NFT -a list chain inet fw4 mwan3_postrouting 2>/dev/null | \
+	while handle=$($NFT -a list chain inet mwan3 mwan3_postrouting 2>/dev/null | \
 			sed -n "s/.*comment \"mwan3_snat_$1\".*# handle \([0-9]*\)/\1/p" | head -n1); \
 	      [ -n "$handle" ]; do
-		mwan3_nft_exec delete rule inet fw4 mwan3_postrouting handle "$handle"
+		mwan3_nft_exec delete rule inet mwan3 mwan3_postrouting handle "$handle"
 	done
 
 	# Delete the interface chain
-	$NFT list chain inet fw4 "mwan3_iface_in_$1" &>/dev/null && {
-		mwan3_nft_exec flush chain inet fw4 "mwan3_iface_in_$1"
-		mwan3_nft_exec delete chain inet fw4 "mwan3_iface_in_$1"
+	$NFT list chain inet mwan3 "mwan3_iface_in_$1" &>/dev/null && {
+		mwan3_nft_exec flush chain inet mwan3 "mwan3_iface_in_$1"
+		mwan3_nft_exec delete chain inet mwan3 "mwan3_iface_in_$1"
 	}
 }
 
@@ -497,7 +495,7 @@ mwan3_delete_iface_map_entries()
 	for setname in $($NFT list sets inet 2>/dev/null | \
 			 awk '$1=="set" && $2 ~ /^mwan3_sticky_v[46]_/ { print $2 }'); do
 		case "$setname" in
-			*_"$id") $NFT flush set inet fw4 "$setname" 2>/dev/null ;;
+			*_"$id") $NFT flush set inet mwan3 "$setname" 2>/dev/null ;;
 		esac
 	done
 }
@@ -693,10 +691,10 @@ mwan3_create_policies_nft()
 	fi
 
 	# Create chain if it doesn't exist
-	$NFT list chain inet fw4 "mwan3_policy_$1" &>/dev/null || \
-		mwan3_nft_exec add chain inet fw4 "mwan3_policy_$1"
+	$NFT list chain inet mwan3 "mwan3_policy_$1" &>/dev/null || \
+		mwan3_nft_exec add chain inet mwan3 "mwan3_policy_$1"
 
-	mwan3_nft_exec flush chain inet fw4 "mwan3_policy_$1"
+	mwan3_nft_exec flush chain inet mwan3 "mwan3_policy_$1"
 
 	lowest_metric_v4=$DEFAULT_LOWEST_METRIC
 	total_weight_v4=0
@@ -744,7 +742,7 @@ mwan3_create_policies_nft()
 				id="${member#*:}"
 				id="${id%%:*}"
 				mark=$(mwan3_id2mask id MMX_MASK)
-				mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
+				mwan3_nft_exec add rule inet mwan3 "mwan3_policy_$policy" \
 					$nfproto_guard meta mark \& "$MMX_MASK" == 0 \
 					"$(mwan3_nft_mark_expr $mark $MMX_MASK)"
 			else
@@ -770,7 +768,7 @@ mwan3_create_policies_nft()
 					map_entries="${map_entries}${running}-${end} : jump mwan3_or_meta_$(mwan3_or_chain_suffix "$mark")"
 					running=$((end + 1))
 				done
-				mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
+				mwan3_nft_exec add rule inet mwan3 "mwan3_policy_$policy" \
 					$nfproto_guard meta mark \& "$MMX_MASK" == 0 \
 					"numgen inc mod $_total_fam vmap { $map_entries }"
 			fi
@@ -784,7 +782,7 @@ mwan3_create_policies_nft()
 		for dev_entry in $policy_offline_devices; do
 			offline_iface="${dev_entry%%:*}"
 			offline_device="${dev_entry#*:}"
-			mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
+			mwan3_nft_exec add rule inet mwan3 "mwan3_policy_$policy" \
 				oifname "$offline_device" meta mark \& "$MMX_MASK" == 0 \
 				"$(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
 		done
@@ -793,17 +791,17 @@ mwan3_create_policies_nft()
 	# Add last resort rule
 	case "$last_resort" in
 		blackhole)
-			mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
+			mwan3_nft_exec add rule inet mwan3 "mwan3_policy_$policy" \
 				meta mark \& "$MMX_MASK" == 0 \
 				"$(mwan3_nft_mark_expr $MMX_BLACKHOLE $MMX_MASK)"
 			;;
 		default)
-			mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
+			mwan3_nft_exec add rule inet mwan3 "mwan3_policy_$policy" \
 				meta mark \& "$MMX_MASK" == 0 \
 				"$(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
 			;;
 		*)
-			mwan3_nft_exec add rule inet fw4 "mwan3_policy_$policy" \
+			mwan3_nft_exec add rule inet mwan3 "mwan3_policy_$policy" \
 				meta mark \& "$MMX_MASK" == 0 \
 				"$(mwan3_nft_mark_expr $MMX_UNREACHABLE $MMX_MASK)"
 			;;
@@ -826,7 +824,7 @@ mwan3_set_policies_nft()
 			*" ${chain} "*) ;;
 			*)
 				LOG debug "Deleting orphaned policy chain mwan3_policy_${chain}"
-				$NFT delete chain inet fw4 "mwan3_policy_${chain}" 2>/dev/null
+				$NFT delete chain inet mwan3 "mwan3_policy_${chain}" 2>/dev/null
 				;;
 		esac
 	done
@@ -970,12 +968,12 @@ mwan3_set_user_nft_rule()
 		# Pre-create the set if it doesn't exist yet (e.g. dnsmasq nftset
 		# hasn't started). nft -f batch fails atomically if any referenced
 		# set is missing, which would kill ALL user rules.
-		if ! $NFT list set inet fw4 "$ipset_name" &>/dev/null; then
+		if ! $NFT list set inet mwan3 "$ipset_name" &>/dev/null; then
 			LOG notice "Creating missing nft set '$ipset_name' for rule $rule"
 			if [ "$ipv" = "ipv4" ]; then
-				mwan3_nft_push "add set inet fw4 $ipset_name { type ipv4_addr; flags interval; auto-merge; }"
+				mwan3_nft_push "add set inet mwan3 $ipset_name { type ipv4_addr; flags interval; auto-merge; }"
 			else
-				mwan3_nft_push "add set inet fw4 $ipset_name { type ipv6_addr; flags interval; auto-merge; }"
+				mwan3_nft_push "add set inet mwan3 $ipset_name { type ipv6_addr; flags interval; auto-merge; }"
 			fi
 		fi
 		if [ "$ipv" = "ipv4" ]; then
@@ -987,12 +985,12 @@ mwan3_set_user_nft_rule()
 
 	# nft set source match
 	if [ -n "$ipset_src" ]; then
-		if ! $NFT list set inet fw4 "$ipset_src" &>/dev/null; then
+		if ! $NFT list set inet mwan3 "$ipset_src" &>/dev/null; then
 			LOG notice "Creating missing nft set '$ipset_src' for rule $rule"
 			if [ "$ipv" = "ipv4" ]; then
-				mwan3_nft_push "add set inet fw4 $ipset_src { type ipv4_addr; flags interval; auto-merge; }"
+				mwan3_nft_push "add set inet mwan3 $ipset_src { type ipv4_addr; flags interval; auto-merge; }"
 			else
-				mwan3_nft_push "add set inet fw4 $ipset_src { type ipv6_addr; flags interval; auto-merge; }"
+				mwan3_nft_push "add set inet mwan3 $ipset_src { type ipv6_addr; flags interval; auto-merge; }"
 			fi
 		fi
 		if [ "$ipv" = "ipv4" ]; then
@@ -1045,8 +1043,8 @@ mwan3_set_user_nft_rule()
 
 	# Create policy chain if it doesn't exist
 	if [ $rule_policy -eq 1 ]; then
-		$NFT list chain inet fw4 "mwan3_policy_$use_policy" &>/dev/null || \
-			mwan3_nft_push "add chain inet fw4 mwan3_policy_$use_policy"
+		$NFT list chain inet mwan3 "mwan3_policy_$use_policy" &>/dev/null || \
+			mwan3_nft_push "add chain inet mwan3 mwan3_policy_$use_policy"
 	fi
 
 	if [ $rule_policy -eq 1 ] && [ "$sticky" -eq 1 ]; then
@@ -1072,9 +1070,9 @@ mwan3_set_user_nft_rule()
 		# Create sticky rule chain (idempotent) and reset its body.
 		# Note: same flush-on-each-pass behaviour as before; sticky+family=any
 		# remains a pre-existing latent issue not addressed here.
-		$NFT list chain inet fw4 "mwan3_rule_$1" &>/dev/null || \
-			mwan3_nft_push "add chain inet fw4 mwan3_rule_$1"
-		mwan3_nft_push "flush chain inet fw4 mwan3_rule_$1"
+		$NFT list chain inet mwan3 "mwan3_rule_$1" &>/dev/null || \
+			mwan3_nft_push "add chain inet mwan3 mwan3_rule_$1"
+		mwan3_nft_push "flush chain inet mwan3 mwan3_rule_$1"
 
 		# Per-member sticky sets and lookup rules.
 		for _entry in $_policy_member_marks; do
@@ -1082,14 +1080,14 @@ mwan3_set_user_nft_rule()
 			_m_mark="${_entry##*:}"
 			_setname="mwan3_sticky_${_fam_short}_${rule}_${_m_id}"
 
-			$NFT list set inet fw4 "$_setname" &>/dev/null || \
-				mwan3_nft_push "add set inet fw4 $_setname { type ${_addr_type}; flags timeout; timeout ${timeout}s; }"
+			$NFT list set inet mwan3 "$_setname" &>/dev/null || \
+				mwan3_nft_push "add set inet mwan3 $_setname { type ${_addr_type}; flags timeout; timeout ${timeout}s; }"
 
-			mwan3_nft_push "add rule inet fw4 mwan3_rule_$1 ${_saddr_kw} @${_setname} jump mwan3_or_meta_$(mwan3_or_chain_suffix "$_m_mark")"
+			mwan3_nft_push "add rule inet mwan3 mwan3_rule_$1 ${_saddr_kw} @${_setname} jump mwan3_or_meta_$(mwan3_or_chain_suffix "$_m_mark")"
 		done
 
 		# Fall through to policy for new flows (no sticky entry hit -> mark still 0).
-		mwan3_nft_push "add rule inet fw4 mwan3_rule_$1 meta mark & $MMX_MASK == 0 jump mwan3_policy_$use_policy"
+		mwan3_nft_push "add rule inet mwan3 mwan3_rule_$1 meta mark & $MMX_MASK == 0 jump mwan3_policy_$use_policy"
 
 		# After the policy assigns a mark, populate the matching per-member
 		# sticky set so subsequent packets from this saddr stay on the same WAN.
@@ -1098,7 +1096,7 @@ mwan3_set_user_nft_rule()
 			_m_mark="${_entry##*:}"
 			_setname="mwan3_sticky_${_fam_short}_${rule}_${_m_id}"
 
-			mwan3_nft_push "add rule inet fw4 mwan3_rule_$1 meta mark & $MMX_MASK == $_m_mark update @${_setname} { ${_saddr_kw} timeout ${timeout}s }"
+			mwan3_nft_push "add rule inet mwan3 mwan3_rule_$1 meta mark & $MMX_MASK == $_m_mark update @${_setname} { ${_saddr_kw} timeout ${timeout}s }"
 		done
 
 		policy_action="jump mwan3_rule_$1"
@@ -1106,11 +1104,11 @@ mwan3_set_user_nft_rule()
 
 	# Add logging rule if enabled
 	if [ "$global_logging" = "1" ] && [ "$rule_logging" = "1" ]; then
-		mwan3_nft_push "add rule inet fw4 mwan3_rules $nft_match meta mark & $MMX_MASK == 0 log prefix \"MWAN3($1)\" level $loglevel"
+		mwan3_nft_push "add rule inet mwan3 mwan3_rules $nft_match meta mark & $MMX_MASK == 0 log prefix \"MWAN3($1)\" level $loglevel"
 	fi
 
 	# Add the actual rule
-	mwan3_nft_push "add rule inet fw4 mwan3_rules $nft_match meta mark & $MMX_MASK == 0 $policy_action"
+	mwan3_nft_push "add rule inet mwan3 mwan3_rules $nft_match meta mark & $MMX_MASK == 0 $policy_action"
 }
 
 mwan3_set_user_iface_rules()
@@ -1125,7 +1123,7 @@ mwan3_set_user_iface_rules()
 	fi
 
 	# Check if rules already reference this device
-	$NFT list chain inet fw4 mwan3_rules 2>/dev/null | grep -q "iifname \"$device\"" && return
+	$NFT list chain inet mwan3 mwan3_rules 2>/dev/null | grep -q "iifname \"$device\"" && return
 
 	is_src_iface=0
 
@@ -1145,7 +1143,7 @@ mwan3_set_user_rules()
 
 	mwan3_nft_batch_start
 
-	mwan3_nft_push "flush chain inet fw4 mwan3_rules"
+	mwan3_nft_push "flush chain inet mwan3 mwan3_rules"
 
 	for ipv in ipv4 ipv6; do
 		[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && continue
@@ -1306,7 +1304,7 @@ mwan3_report_iface_status()
 			result=$((result+2))
 		[ -n "$($IP rule | awk '$1 == "'$((id+3000)):'"')" ] ||
 			result=$((result+4))
-		[ -n "$($NFT list chain inet fw4 mwan3_iface_in_$1 2>/dev/null)" ] ||
+		[ -n "$($NFT list chain inet mwan3 mwan3_iface_in_$1 2>/dev/null)" ] ||
 			result=$((result+8))
 		[ -n "$($IP route list table $id default dev $device 2> /dev/null)" ] ||
 			result=$((result+16))
@@ -1422,20 +1420,20 @@ mwan3_report_policies_v6()
 
 mwan3_report_connected_v4()
 {
-	$NFT list set inet fw4 mwan3_connected_v4 2>/dev/null | \
+	$NFT list set inet mwan3 mwan3_connected_v4 2>/dev/null | \
 		sed -n '/elements/,/}/p' | grep -oE "$IPv4_REGEX(/[0-9]+)?"
 }
 
 mwan3_report_connected_v6()
 {
 	[ $NO_IPV6 -ne 0 ] && return
-	$NFT list set inet fw4 mwan3_connected_v6 2>/dev/null | \
+	$NFT list set inet mwan3 mwan3_connected_v6 2>/dev/null | \
 		sed -n '/elements/,/}/p' | grep -oE "$IPv6_REGEX(/[0-9]+)?"
 }
 
 mwan3_report_rules_v4()
 {
-	$NFT list chain inet fw4 mwan3_rules 2>/dev/null | \
+	$NFT list chain inet mwan3 mwan3_rules 2>/dev/null | \
 		grep -v "^[[:space:]]*$\|^table \|^[[:space:]]*chain \|^[[:space:]]*type \|^[[:space:]]*policy \|{$\|^[[:space:]]*}$" | \
 		sed 's/^[[:space:]]*/ /; s/jump mwan3_policy_/- /; s/jump mwan3_rule_/S /'
 }

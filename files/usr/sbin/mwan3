@@ -178,9 +178,9 @@ internal()
 		echo ""
 	fi
 
-	echo "Output of \"nft list table inet fw4\" (mwan3 chains)"
+	echo "Output of \"nft list table inet mwan3\" (mwan3 chains)"
 	echo "$dash"
-	output=$($NFT list table inet fw4 2>/dev/null | grep -A 100 'chain mwan3_')
+	output=$($NFT list table inet mwan3 2>/dev/null | grep -A 100 'chain mwan3_')
 	if [ "$output" != "" ]; then
 		echo "$output"
 	else

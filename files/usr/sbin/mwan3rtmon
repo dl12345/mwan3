@@ -355,7 +355,7 @@ function populate_connected_set() {
 	let setname = (family_num == AF_INET)
 		? "mwan3_connected_v4" : "mwan3_connected_v6";
 
-	let cmds = [ "flush set inet fw4 " + setname ];
+	let cmds = [ "flush set inet mwan3 " + setname ];
 
 	let elements = [];
 	for (let route in routes) {
@@ -369,7 +369,7 @@ function populate_connected_set() {
 		push(elements, "224.0.0.0/3");
 
 	if (length(elements) > 0)
-		push(cmds, "add element inet fw4 " + setname +
+		push(cmds, "add element inet mwan3 " + setname +
 			" { " + join(", ", elements) + " }");
 
 	nft_batch(cmds);
@@ -463,7 +463,7 @@ function handle_route_event(event) {
 
 	if (is_new) {
 		if (is_cidr_route(route))
-			nft_exec('add element inet fw4 ' + setname +
+			nft_exec('add element inet mwan3 ' + setname +
 				' { ' + route.dst + ' }');
 	} else {
 		// Debounce: coalesce rapid deletes into one rebuild

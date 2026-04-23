@@ -67,7 +67,7 @@ const nft_connected_set = {
 function get_nftset_members(setname) {
 	if (!match(setname, /^[a-zA-Z0-9_-]+$/))
 		return [];
-	const nft = popen(sprintf('nft -j list set inet fw4 %s 2>/dev/null', setname), 'r');
+	const nft = popen(sprintf('nft -j list set inet mwan3 %s 2>/dev/null', setname), 'r');
 	if (!nft)
 		return [];
 	const raw = nft.read('all');
@@ -227,7 +227,7 @@ function routing_health() {
 
 function get_connected_ips(version) {
 	const setname = nft_connected_set[version];
-	const nft = popen(sprintf('nft -j list set inet fw4 %s 2>/dev/null', setname), 'r');
+	const nft = popen(sprintf('nft -j list set inet mwan3 %s 2>/dev/null', setname), 'r');
 	if (!nft) {
 		return [];
 	}
@@ -416,7 +416,7 @@ const methods = {
 	nftset_info: {
 		args: {},
 		call: function(request) {
-			const nft = popen('nft -j list sets inet fw4 2>/dev/null', 'r');
+			const nft = popen('nft -j list sets inet mwan3 2>/dev/null', 'r');
 			if (!nft)
 				return { sets: {} };
 			const raw = nft.read('all');

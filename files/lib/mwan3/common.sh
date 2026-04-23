@@ -125,12 +125,12 @@ mwan3_build_or_chains_nft()
 	# batch failure, with no recovery path. ~126 trivial statements; cheap.
 	mwan3_nft_batch_start
 	for suffix in $want; do
-		mwan3_nft_push "add chain inet fw4 mwan3_or_meta_${suffix}"
-		mwan3_nft_push "add chain inet fw4 mwan3_or_ct_${suffix}"
-		mwan3_nft_push "flush chain inet fw4 mwan3_or_meta_${suffix}"
-		mwan3_nft_push "flush chain inet fw4 mwan3_or_ct_${suffix}"
-		mwan3_nft_push "add rule inet fw4 mwan3_or_meta_${suffix} meta mark set meta mark | ${suffix}"
-		mwan3_nft_push "add rule inet fw4 mwan3_or_ct_${suffix} ct mark set ct mark | ${suffix}"
+		mwan3_nft_push "add chain inet mwan3 mwan3_or_meta_${suffix}"
+		mwan3_nft_push "add chain inet mwan3 mwan3_or_ct_${suffix}"
+		mwan3_nft_push "flush chain inet mwan3 mwan3_or_meta_${suffix}"
+		mwan3_nft_push "flush chain inet mwan3 mwan3_or_ct_${suffix}"
+		mwan3_nft_push "add rule inet mwan3 mwan3_or_meta_${suffix} meta mark set meta mark | ${suffix}"
+		mwan3_nft_push "add rule inet mwan3 mwan3_or_ct_${suffix} ct mark set ct mark | ${suffix}"
 	done
 	mwan3_nft_batch_commit
 }
@@ -179,33 +179,33 @@ mwan3_ensure_nft_framework()
 	for setname in mwan3_connected_v4 mwan3_connected_v6 \
 		       mwan3_custom_v4 mwan3_custom_v6 \
 		       mwan3_dynamic_v4 mwan3_dynamic_v6; do
-		$NFT delete set inet fw4 "$setname" >/dev/null 2>&1
+		$NFT delete set inet mwan3 "$setname" >/dev/null 2>&1
 	done
 
 	mwan3_nft_batch_start
 
 	# Sets for network classification (interval + auto-merge for CIDR support)
-	mwan3_nft_push "add set inet fw4 mwan3_connected_v4 { type ipv4_addr; flags interval; auto-merge; }"
-	mwan3_nft_push "add set inet fw4 mwan3_connected_v6 { type ipv6_addr; flags interval; auto-merge; }"
-	mwan3_nft_push "add set inet fw4 mwan3_custom_v4 { type ipv4_addr; flags interval; auto-merge; }"
-	mwan3_nft_push "add set inet fw4 mwan3_custom_v6 { type ipv6_addr; flags interval; auto-merge; }"
-	mwan3_nft_push "add set inet fw4 mwan3_dynamic_v4 { type ipv4_addr; flags interval; auto-merge; }"
-	mwan3_nft_push "add set inet fw4 mwan3_dynamic_v6 { type ipv6_addr; flags interval; auto-merge; }"
+	mwan3_nft_push "add set inet mwan3 mwan3_connected_v4 { type ipv4_addr; flags interval; auto-merge; }"
+	mwan3_nft_push "add set inet mwan3 mwan3_connected_v6 { type ipv6_addr; flags interval; auto-merge; }"
+	mwan3_nft_push "add set inet mwan3 mwan3_custom_v4 { type ipv4_addr; flags interval; auto-merge; }"
+	mwan3_nft_push "add set inet mwan3 mwan3_custom_v6 { type ipv6_addr; flags interval; auto-merge; }"
+	mwan3_nft_push "add set inet mwan3 mwan3_dynamic_v4 { type ipv4_addr; flags interval; auto-merge; }"
+	mwan3_nft_push "add set inet mwan3 mwan3_dynamic_v6 { type ipv6_addr; flags interval; auto-merge; }"
 
 	# Hook chains (base chains with type/hook/priority)
-	mwan3_nft_push "add chain inet fw4 mwan3_prerouting { type filter hook prerouting priority mangle + 1; policy accept; }"
-	mwan3_nft_push "add chain inet fw4 mwan3_output { type route hook output priority mangle + 1; policy accept; }"
+	mwan3_nft_push "add chain inet mwan3 mwan3_prerouting { type filter hook prerouting priority mangle + 1; policy accept; }"
+	mwan3_nft_push "add chain inet mwan3 mwan3_output { type route hook output priority mangle + 1; policy accept; }"
 
 	# IPv6 SNAT chain (opt-in per interface via 'snat6'). See 10-mwan3.nft
 	# for the rationale; per-iface rules are added by mwan3_create_iface_nft.
-	mwan3_nft_push "add chain inet fw4 mwan3_postrouting { type nat hook postrouting priority srcnat - 1; policy accept; }"
+	mwan3_nft_push "add chain inet mwan3 mwan3_postrouting { type nat hook postrouting priority srcnat - 1; policy accept; }"
 
 	# Internal chains (jumped to from hook chains)
-	mwan3_nft_push "add chain inet fw4 mwan3_ifaces_in"
-	mwan3_nft_push "add chain inet fw4 mwan3_rules"
-	mwan3_nft_push "add chain inet fw4 mwan3_connected"
-	mwan3_nft_push "add chain inet fw4 mwan3_custom"
-	mwan3_nft_push "add chain inet fw4 mwan3_dynamic"
+	mwan3_nft_push "add chain inet mwan3 mwan3_ifaces_in"
+	mwan3_nft_push "add chain inet mwan3 mwan3_rules"
+	mwan3_nft_push "add chain inet mwan3 mwan3_connected"
+	mwan3_nft_push "add chain inet mwan3 mwan3_custom"
+	mwan3_nft_push "add chain inet mwan3 mwan3_dynamic"
 
 	mwan3_nft_batch_commit
 }
