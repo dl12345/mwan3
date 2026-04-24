@@ -43,6 +43,41 @@ mwan3_flush_stale_conntrack()
 	fi
 }
 
+mwan3_flush_marked_conntrack()
+{
+	# Flush every conntrack entry whose mark has any mwan3 (MMX_MASK) bit
+	# set. Used on `service mwan3 reload` / uci-commit-triggered reload so
+	# live flows re-enter the classification chains and re-evaluate
+	# against the new rules instead of staying pinned to a previously
+	# saved ct mark.
+	#
+	# Complements mwan3_flush_stale_conntrack (zero-mark only). The two
+	# cover distinct cleanup needs:
+	#   stale  : flow slipped through unclassified (fw4-rebuild window)
+	#   marked : policy changed after the flow was classified
+	#
+	# conntrack's -D --mark VALUE/MASK filter does exact-match on the
+	# masked bits; there is no "any bit set" predicate. We therefore
+	# iterate the mwan3 id-space (default 6 bits => 63 ids) and issue
+	# one targeted -D per id. Bounded and fast.
+	[ -e "$CONNTRACK_FILE" ] || return
+	if ! command -v conntrack >/dev/null 2>&1; then
+		LOG notice "conntrack not installed; mwan3-marked conntrack entries may persist after reload - install conntrack"
+		return
+	fi
+
+	local bitcnt max_id id mark
+	bitcnt=$(mwan3_count_one_bits MMX_MASK)
+	max_id=$(( (1 << bitcnt) - 1 ))
+	id=1
+	while [ "$id" -le "$max_id" ]; do
+		mark=$(mwan3_id2mask "$id" "$MMX_MASK")
+		conntrack -D --mark "${mark}/${MMX_MASK}" >/dev/null 2>&1
+		id=$(( id + 1 ))
+	done
+	LOG notice "Flushed mwan3-marked conntrack entries for reclassification"
+}
+
 mwan3_update_dev_to_table()
 {
 	local _tid

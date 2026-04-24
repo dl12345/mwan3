@@ -152,6 +152,15 @@ stop_service() {
 }
 
 reload_service() {
+	# Flush mwan3-marked conntrack before stop so the kernel still has
+	# the cached MMX_MASK and the marks currently applied to live flows
+	# match what we are trying to clear. Without this, UCI rule changes
+	# do not take effect on existing flows because mwan3_output restores
+	# each packet's meta mark from the already-saved ct mark and the
+	# `meta mark & MMX == 0` guards skip the updated classification
+	# rules entirely. See mwan3_flush_marked_conntrack for the rationale.
+	mwan3_init
+	mwan3_flush_marked_conntrack
 	stop
 	start
 }
