@@ -1037,16 +1037,16 @@ mwan3_set_user_nft_rule()
 
 	# Source port
 	if [ -n "$src_port" ]; then
-		# Convert comma-separated ports to nft syntax
+		# UCI stores port ranges as x:y; nft requires x-y. Also expand comma list.
 		local nft_src_port
-		nft_src_port=$(echo "$src_port" | sed 's/,/, /g')
+		nft_src_port=$(echo "$src_port" | sed 's/:/-/g; s/,/, /g')
 		nft_match="$nft_match th sport { $nft_src_port }"
 	fi
 
 	# Destination port
 	if [ -n "$dest_port" ]; then
 		local nft_dest_port
-		nft_dest_port=$(echo "$dest_port" | sed 's/,/, /g')
+		nft_dest_port=$(echo "$dest_port" | sed 's/:/-/g; s/,/, /g')
 		nft_match="$nft_match th dport { $nft_dest_port }"
 	fi
 
