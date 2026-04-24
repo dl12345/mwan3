@@ -32,8 +32,7 @@ define Package/mwan3
      +ucode-mod-uloop \
      +ucode-mod-uci \
      +ucode-mod-ubus \
-     +ucode-mod-fs \
-     +ucode-mod-log
+     +ucode-mod-fs
    TITLE:=Multiwan hotplug script with connection tracking support (ucode rtmon)
    MAINTAINER:=Florian Eckert <fe@dev.tdt.de>
    PKGARCH:=all
@@ -49,7 +48,6 @@ endef
 
 define Package/mwan3/conffiles
 /etc/config/mwan3
-/etc/config/mwan3evtd
 /etc/mwan3.user
 endef
 
@@ -100,8 +98,6 @@ if [ -z "$${IPKG_INSTROOT}" ]; then
 	/lib/mwan3/mwan3-migrate-ipset-v4.sh
 	rm -f /lib/mwan3/mwan3-migrate-ipset-v4.sh
 	/etc/init.d/rpcd restart
-	/etc/init.d/mwan3evtd enable
-	/etc/init.d/mwan3evtd start
 fi
 exit 0
 endef
@@ -109,13 +105,11 @@ endef
 define Package/mwan3/postrm
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
-	/etc/init.d/mwan3evtd stop
-	/etc/init.d/mwan3evtd disable
 	/etc/init.d/rpcd restart
 	for f in /tmp/dnsmasq.*.d/mwan3-nftsets.conf /tmp/dnsmasq.d/mwan3-nftsets.conf; do
 		[ -f "$$f" ] && rm -f "$$f"
 	done
-	/etc/init.d/dnsmasq reload 2>/dev/null
+	/etc/init.d/dnsmasq restart 2>/dev/null
 fi
 exit 0
 endef
@@ -179,43 +173,6 @@ define Package/mwan3/install
 		$(1)/etc/uci-defaults/
 	$(INSTALL_DATA) ./files/etc/uci-defaults/mwan3-remove-firewall-include \
 		$(1)/etc/uci-defaults/
-
-	$(INSTALL_DIR) $(1)/usr/sbin
-	$(INSTALL_BIN) ./files/usr/sbin/mwan3evtd \
-		$(1)/usr/sbin/
-
-	$(INSTALL_DIR) $(1)/etc/init.d
-	$(INSTALL_BIN) ./files/etc/init.d/mwan3evtd \
-		$(1)/etc/init.d/
-
-	$(INSTALL_DIR) $(1)/etc/config
-	$(INSTALL_CONF) ./files/etc/config/mwan3evtd \
-		$(1)/etc/config/
-
-	$(INSTALL_BIN) ./files/usr/sbin/mwan3evtd-push \
-		$(1)/usr/sbin/
-
-	$(INSTALL_DIR) $(1)/usr/share/mwan3evtd
-	$(INSTALL_DATA) ./files/usr/share/mwan3evtd/timing.md \
-		$(1)/usr/share/mwan3evtd/
-	$(INSTALL_DATA) ./files/usr/share/mwan3evtd/counters.md \
-		$(1)/usr/share/mwan3evtd/
-	$(INSTALL_DATA) ./files/usr/share/mwan3evtd/mwan3evtd-analysis.md \
-		$(1)/usr/share/mwan3evtd/
-	$(INSTALL_DATA) ./files/usr/share/mwan3evtd/mwan3evtd.md \
-		$(1)/usr/share/mwan3evtd/
-	$(INSTALL_BIN) ./files/usr/share/mwan3evtd/example.sh \
-		$(1)/usr/share/mwan3evtd/
-	$(INSTALL_BIN) ./files/usr/share/mwan3evtd/example.uc \
-		$(1)/usr/share/mwan3evtd/
-	$(INSTALL_BIN) ./files/usr/share/mwan3evtd/example-mwan3evtd-push.sh \
-		$(1)/usr/share/mwan3evtd/
-	$(INSTALL_BIN) ./files/usr/share/mwan3evtd/example-mwan3evtd-push.uc \
-		$(1)/usr/share/mwan3evtd/
-
-	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
-	$(INSTALL_DATA) ./files/usr/share/rpcd/acl.d/mwan3evtd.json \
-		$(1)/usr/share/rpcd/acl.d/
 endef
 
 $(eval $(call BuildPackage,mwan3))
