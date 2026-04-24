@@ -51,9 +51,33 @@ define Package/mwan3/conffiles
 /etc/mwan3.user
 endef
 
+define Package/mwan3/preinst
+#!/bin/sh
+if [ -z "$${IPKG_INSTROOT}" ]; then
+	# Stop mwan3evtd if upgrading from v3.4 (where it existed). The
+	# pre-upgrade hook runs before APK removes files no longer in the
+	# package, so this must happen here to avoid leaving a running process
+	# with no init script or binary after the file swap.
+	/etc/init.d/mwan3evtd stop 2>/dev/null
+	/etc/init.d/mwan3evtd disable 2>/dev/null
+	# Stop mwan3 before APK replaces any files. This is critical for
+	# upgrades: if mwan3 is running when the init script is replaced,
+	# procd's inotify trigger restarts the service while the old ip rules
+	# are still installed, producing RTNETLINK "File exists" errors when
+	# start_service tries to re-add them. Stopping here puts the service
+	# into procd's "stopped" state before the init script changes, so
+	# procd does not auto-restart it.
+	/etc/init.d/mwan3 stop 2>/dev/null
+fi
+exit 0
+endef
+
 define Package/mwan3/postinst
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
+	# Safety-net stop in case preinst did not run or procd restarted the
+	# service between preinst and postinst.
+	/etc/init.d/mwan3 stop 2>/dev/null
 	# v3.2+: priority is mangle + 1 (was mangle - 1 in v3.1.4),
 	# backed by non-destructive vmap-dispatch save/restore so the
 	# placement is order-independent w.r.t. pbr. nftables rejects a base
@@ -89,15 +113,30 @@ if [ -z "$${IPKG_INSTROOT}" ]; then
 		nft flush map inet fw4 "$$mapname" 2>/dev/null
 		nft delete map inet fw4 "$$mapname" 2>/dev/null
 	done
-	# Remove stale firewall.mwan3_reload UCI section and reload fw4 once
-	# to drop the (now-uninstalled) mwan3 include from fw4's config.
-	uci -q delete firewall.mwan3_reload && uci commit firewall
-	fw4 -q reload
+	# Remove stale firewall.mwan3_reload UCI section (v3.x only) and
+	# reload fw4 only if the section existed. On a fresh v4.x install
+	# no such section is present; an unconditional fw4 -q reload would
+	# trigger queued ifup hotplug events that race with mwan3_create_iface_rules
+	# in the init hotplug, producing RTNETLINK "File exists" errors.
+	if uci -q delete firewall.mwan3_reload; then
+		uci commit firewall
+		fw4 -q reload
+	fi
 	# Migrate any fw4-side set references in mwan3 rules to config ipset
 	# declarations in /etc/config/mwan3 (one-shot, idempotent).
 	/lib/mwan3/mwan3-migrate-ipset-v4.sh
 	rm -f /lib/mwan3/mwan3-migrate-ipset-v4.sh
 	/etc/init.d/rpcd restart
+	# Second stop immediately before start: procd may have auto-started mwan3
+	# when the init script was installed (the first stop above runs before that
+	# happens and is therefore a no-op). By this point the auto-start has
+	# completed, so this stop calls stop_service and removes its ip rules.
+	# Without this, mwan3 start below calls procd_close_service (which tells
+	# procd to replace the service instances) but never calls stop_service,
+	# so the ip rules from the auto-start are still present when the init
+	# hotplug events try to add them again.
+	/etc/init.d/mwan3 stop 2>/dev/null
+	/etc/init.d/mwan3 start
 fi
 exit 0
 endef
