@@ -95,6 +95,10 @@ if [ -z "$${IPKG_INSTROOT}" ]; then
 	# to drop the (now-uninstalled) mwan3 include from fw4's config.
 	uci -q delete firewall.mwan3_reload && uci commit firewall
 	fw4 -q reload
+	# Migrate any fw4-side set references in mwan3 rules to config ipset
+	# declarations in /etc/config/mwan3 (one-shot, idempotent).
+	/lib/mwan3/mwan3-migrate-ipset-v4.sh
+	rm -f /lib/mwan3/mwan3-migrate-ipset-v4.sh
 	/etc/init.d/rpcd restart
 	/etc/init.d/mwan3evtd enable
 	/etc/init.d/mwan3evtd start
@@ -108,6 +112,10 @@ if [ -z "$${IPKG_INSTROOT}" ]; then
 	/etc/init.d/mwan3evtd stop
 	/etc/init.d/mwan3evtd disable
 	/etc/init.d/rpcd restart
+	for f in /tmp/dnsmasq.*.d/mwan3-nftsets.conf /tmp/dnsmasq.d/mwan3-nftsets.conf; do
+		[ -f "$$f" ] && rm -f "$$f"
+	done
+	/etc/init.d/dnsmasq reload 2>/dev/null
 fi
 exit 0
 endef
@@ -142,6 +150,8 @@ define Package/mwan3/install
 	$(INSTALL_DATA) ./files/lib/mwan3/mwan3.sh \
 		$(1)/lib/mwan3/
 	$(INSTALL_DATA) ./files/lib/mwan3/mwan3-skeleton.nft \
+		$(1)/lib/mwan3/
+	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-migrate-ipset-v4.sh \
 		$(1)/lib/mwan3/
 
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/ucode/

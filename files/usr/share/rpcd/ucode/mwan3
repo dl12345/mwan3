@@ -434,7 +434,7 @@ const methods = {
 				for (let item in data.nftables) {
 					if (item?.set) {
 						const s = item.set;
-						if (s.table == 'fw4' && !match(s.name, /^mwan3_/))
+						if (s.table == 'mwan3' && !match(s.name, /^mwan3_/))
 							sets[s.name] = { type: s.type };
 					}
 				}

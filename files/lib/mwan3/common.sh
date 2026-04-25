@@ -425,3 +425,144 @@ get_online_time() {
 		export -n "$1=$((time_n-time_u))"
 	}
 }
+
+# Render one config ipset section from /etc/config/mwan3 into table inet mwan3.
+# Called by config_foreach from mwan3_render_config_ipsets.
+_mwan3_render_one_ipset()
+{
+	local section="$1"
+	local enabled name family maxelem timeout loadfile
+	local addr_type set_flags set_decl
+
+	config_get_bool enabled "$section" enabled 1
+	[ "$enabled" -eq 1 ] || return 0
+
+	config_get name     "$section" name
+	config_get family   "$section" family   ipv4
+	config_get maxelem  "$section" maxelem  65536
+	config_get timeout  "$section" timeout  0
+	config_get loadfile "$section" loadfile
+
+	[ -n "$name" ] || { LOG warn "config ipset section '$section' missing 'name'"; return 0; }
+
+	case "$family" in
+		ipv4) addr_type="ipv4_addr" ;;
+		ipv6) addr_type="ipv6_addr" ;;
+		*)    LOG warn "config ipset '$name': unknown family '$family'"; return 0 ;;
+	esac
+
+	set_decl="type ${addr_type}; flags interval"
+	[ "$timeout" -gt 0 ] && set_decl="$set_decl, timeout"
+	set_decl="$set_decl; auto-merge;"
+	[ "$timeout" -gt 0 ] && set_decl="$set_decl timeout ${timeout}s;"
+	[ "$maxelem" -gt 0 ] && set_decl="$set_decl size ${maxelem};"
+
+	# Delete-and-recreate so flag changes (timeout, size) take effect.
+	# Safe: render runs before mwan3_set_user_rules, so no rules reference the
+	# set yet at this point.
+	$NFT delete set inet mwan3 "$name" >/dev/null 2>&1
+
+	# Collect all elements (inline list + loadfile) before entering batch.
+	local elements="" line
+	_add_entry() { elements="${elements:+$elements, }$1"; }
+	config_list_foreach "$section" entry _add_entry
+	if [ -n "$loadfile" ] && [ -f "$loadfile" ]; then
+		while IFS= read -r line; do
+			line="${line%%#*}"
+			line=$(echo "$line" | xargs 2>/dev/null)
+			[ -n "$line" ] && elements="${elements:+$elements, }$line"
+		done < "$loadfile"
+	fi
+
+	# nft CLI cannot parse { ... } as a single quoted argument; use batch mode.
+	mwan3_nft_batch_start
+	mwan3_nft_push "add set inet mwan3 $name { $set_decl }"
+	[ -n "$elements" ] && mwan3_nft_push "add element inet mwan3 $name { $elements }"
+	mwan3_nft_batch_commit || return 1
+}
+
+# Create all user-declared sets from config ipset sections in /etc/config/mwan3.
+# Must be called after mwan3_ensure_nft_framework and before mwan3_set_user_rules.
+mwan3_render_config_ipsets()
+{
+	config_foreach _mwan3_render_one_ipset ipset
+}
+
+# Write per-instance dnsmasq confdir fragments containing nftset= directives
+# for all mwan3 config ipset sections that have list domain entries.
+# Triggers /etc/init.d/dnsmasq reload only if any fragment content changed.
+mwan3_write_dnsmasq_fragments()
+{
+	local any_changed=0
+
+	_wdf_emit_domains()
+	{
+		local section="$1" confdir="$2"
+		local enabled name family fam_ch final tmp elements
+
+		config_get_bool enabled "$section" enabled 1
+		[ "$enabled" -eq 1 ] || return
+		config_get name   "$section" name
+		config_get family "$section" family ipv4
+		[ -n "$name" ] || return
+
+		# Check whether this section has any domain entries before writing
+		elements=""
+		_check_domain() { elements="yes"; }
+		config_list_foreach "$section" domain _check_domain
+		[ -n "$elements" ] || return
+
+		[ "$family" = "ipv4" ] && fam_ch=4 || fam_ch=6
+
+		_emit_domain()
+		{
+			printf 'nftset=/%s/%s#inet#mwan3#%s\n' "$1" "$fam_ch" "$name"
+		}
+		config_list_foreach "$section" domain _emit_domain
+	}
+
+	_wdf_for_instance()
+	{
+		local cfg="$1"
+		local confdir final tmp
+
+		config_get confdir "$cfg" confdir "/tmp/dnsmasq${cfg:+.$cfg}.d"
+		final="${confdir}/mwan3-nftsets.conf"
+		tmp="${final}.new"
+
+		mkdir -p "$confdir"
+
+		# Emit all domain directives for all ipset sections into a temp file
+		(
+			config_load mwan3
+			config_foreach _wdf_emit_domains ipset "$confdir"
+		) > "$tmp"
+
+		if [ ! -s "$tmp" ]; then
+			# No domain entries: remove stale fragment if present
+			rm -f "$tmp"
+			if [ -f "$final" ]; then
+				rm -f "$final"
+				any_changed=1
+			fi
+		elif ! cmp -s "$tmp" "$final" 2>/dev/null; then
+			mv -f "$tmp" "$final"
+			any_changed=1
+		else
+			rm -f "$tmp"
+		fi
+	}
+
+	config_load dhcp
+	config_foreach _wdf_for_instance dnsmasq
+	# Restore mwan3 config context: config_load dhcp above replaces it,
+	# and callers (start_service) still need to iterate mwan3 sections.
+	config_load mwan3
+
+	# restart (not reload) so dnsmasq re-reads the confdir and picks up new
+	# nftset directives. At boot, dnsmasq hasn't started yet (START=60 > mwan3
+	# START=20), so skip the restart -- dnsmasq will find the fragment when it
+	# starts naturally.
+	[ "$any_changed" -eq 1 ] && pidof dnsmasq >/dev/null 2>&1 && \
+		/etc/init.d/dnsmasq restart
+}

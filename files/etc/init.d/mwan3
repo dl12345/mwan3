@@ -48,6 +48,8 @@ start_service() {
 	fi
 
 	mwan3_ensure_nft_framework
+	mwan3_render_config_ipsets
+	mwan3_write_dnsmasq_fragments
 	config_foreach start_tracker interface
 
 	mwan3_update_iface_to_table
