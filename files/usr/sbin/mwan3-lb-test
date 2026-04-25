@@ -29,7 +29,8 @@
 
 . /lib/functions.sh
 
-TABLE="inet fw4"
+TABLE="inet mwan3"
+FORWARD_TABLE="inet fw4"
 MWAN3TRACK_STATUS_DIR="/var/run/mwan3track"
 MMX_MASK=$(uci -q get mwan3.globals.mmx_mask 2>/dev/null || echo "0x3f00")
 HANDLES=""
@@ -66,7 +67,7 @@ cleanup() {
 		OUTPUT_ISOLATION_HANDLE=""
 	fi
 	if [ -n "$FORWARD_BLOCK_HANDLE" ]; then
-		nft delete rule $TABLE forward handle "$FORWARD_BLOCK_HANDLE" 2>/dev/null
+		nft delete rule $FORWARD_TABLE forward handle "$FORWARD_BLOCK_HANDLE" 2>/dev/null
 		FORWARD_BLOCK_HANDLE=""
 	fi
 	# Remove temporary test rule from mwan3_rules
@@ -74,8 +75,9 @@ cleanup() {
 		nft delete rule $TABLE mwan3_rules handle "$TEST_RULE_HANDLE" 2>/dev/null
 		TEST_RULE_HANDLE=""
 	fi
-	# Remove temporary destination set
+	# Remove temporary destination sets (one per table)
 	nft delete set $TABLE "$TEST_SET" 2>/dev/null
+	nft delete set $FORWARD_TABLE "$TEST_SET" 2>/dev/null
 	# Remove diagnostic counter rules from policy chain
 	[ -z "$HANDLES" ] && return
 	for h in $HANDLES; do
@@ -112,11 +114,11 @@ if [ "$1" = "cleanup" ]; then
 			| awk '/mwan3_lb_test_/{gsub(/.*mwan3_lb_test_/,"mwan3_lb_test_"); gsub(/ \{.*/,""); print}'); do
 		found=1
 		echo "Removing stale set: $stale_set"
-		stale_fwd=$(nft -a list chain $TABLE forward 2>/dev/null \
+		stale_fwd=$(nft -a list chain $FORWARD_TABLE forward 2>/dev/null \
 			| awk "/@${stale_set}.*drop/{print \$NF; exit}")
 		[ -n "$stale_fwd" ] && {
 			echo "  Removing forward isolation rule (handle $stale_fwd)"
-			nft delete rule $TABLE forward handle "$stale_fwd" 2>/dev/null
+			nft delete rule $FORWARD_TABLE forward handle "$stale_fwd" 2>/dev/null
 		}
 		stale_out=$(nft -a list chain $TABLE mwan3_output 2>/dev/null \
 			| awk "/@${stale_set}.*return/{print \$NF; exit}")
@@ -131,6 +133,7 @@ if [ "$1" = "cleanup" ]; then
 			nft delete rule $TABLE mwan3_rules handle "$stale_handle" 2>/dev/null
 		}
 		nft delete set $TABLE "$stale_set" 2>/dev/null
+		nft delete set $FORWARD_TABLE "$stale_set" 2>/dev/null
 	done
 	[ "$found" -eq 0 ] && echo "Nothing to clean up."
 	exit 0
@@ -161,7 +164,7 @@ if [ -z "$1" ]; then
 		| awk '/mwan3_policy_/{gsub(/.*mwan3_policy_/,""); gsub(/ \{.*/,""); print}' \
 		| sort -u \
 		| while read -r name; do
-			nft list chain inet fw4 "mwan3_policy_${name}" 2>/dev/null \
+			nft list chain inet mwan3 "mwan3_policy_${name}" 2>/dev/null \
 				| grep -q "numgen" && echo "  $name"
 		done
 	exit 1
@@ -257,10 +260,10 @@ MEMBER_MARKS="${MEMBER_MARKS_NORM# }"
 
 for stale_set in $(nft list sets inet 2>/dev/null \
 		| awk '/mwan3_lb_test_/{gsub(/.*mwan3_lb_test_/,"mwan3_lb_test_"); gsub(/ \{.*/,""); print}'); do
-	stale_fwd=$(nft -a list chain $TABLE forward 2>/dev/null \
+	stale_fwd=$(nft -a list chain $FORWARD_TABLE forward 2>/dev/null \
 		| awk "/@${stale_set}.*drop/{print \$NF; exit}")
 	[ -n "$stale_fwd" ] && \
-		nft delete rule $TABLE forward handle "$stale_fwd" 2>/dev/null
+		nft delete rule $FORWARD_TABLE forward handle "$stale_fwd" 2>/dev/null
 	stale_out=$(nft -a list chain $TABLE mwan3_output 2>/dev/null \
 		| awk "/@${stale_set}.*return/{print \$NF; exit}")
 	[ -n "$stale_out" ] && \
@@ -270,6 +273,7 @@ for stale_set in $(nft list sets inet 2>/dev/null \
 	[ -n "$stale_handle" ] && \
 		nft delete rule $TABLE mwan3_rules handle "$stale_handle" 2>/dev/null
 	nft delete set $TABLE "$stale_set" 2>/dev/null
+	nft delete set $FORWARD_TABLE "$stale_set" 2>/dev/null
 done
 
 # ---------------------------------------------------------------------------
@@ -421,19 +425,26 @@ fi
 # The rule matches ICMP/ICMPv6 only - not DNS, TCP, or other traffic to these
 # IPs. This prevents contamination from DNS forwarders and rogue clients that
 # bypass the local resolver, without needing to avoid popular DNS server IPs.
+#
+# nft sets are table-scoped. The mwan3_output and mwan3_rules rules live in
+# table inet mwan3; the forward isolation rule lives in table inet fw4.
+# Create the set in both tables and populate both with the same IPs.
 nft add set $TABLE "$TEST_SET" { type "$SET_TYPE" \; } \
-	|| die "failed to create temporary destination set $TEST_SET"
+	|| die "failed to create temporary destination set $TEST_SET in $TABLE"
+nft add set $FORWARD_TABLE "$TEST_SET" { type "$SET_TYPE" \; } \
+	|| die "failed to create temporary destination set $TEST_SET in $FORWARD_TABLE"
 
 for ip in $TRACK_IPS; do
 	nft add element $TABLE "$TEST_SET" { "$ip" } 2>/dev/null
+	nft add element $FORWARD_TABLE "$TEST_SET" { "$ip" } 2>/dev/null
 done
 
 # Insert forward isolation rule: drop pings to test IPs from all LAN clients
 # except the nominated test client. Scoped to the test set so other LAN traffic
 # is unaffected.
-nft insert rule $TABLE forward $FORWARD_BLOCK drop \
+nft insert rule $FORWARD_TABLE forward $FORWARD_BLOCK drop \
 	|| die "failed to insert forward isolation rule"
-FORWARD_BLOCK_HANDLE=$(nft -a list chain $TABLE forward 2>/dev/null \
+FORWARD_BLOCK_HANDLE=$(nft -a list chain $FORWARD_TABLE forward 2>/dev/null \
 	| awk "/@${TEST_SET}.*drop/{print \$NF; exit}")
 [ -n "$FORWARD_BLOCK_HANDLE" ] || die "could not read forward isolation rule handle"
 
