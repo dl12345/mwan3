@@ -88,6 +88,8 @@ start_service() {
 }
 
 stop_service() {
+	service_running || exit 0
+
 	local chain_name IP family table tid
 
 	mwan3_init
@@ -152,17 +154,64 @@ stop_service() {
 }
 
 reload_service() {
-	# Flush mwan3-marked conntrack before stop so the kernel still has
-	# the cached MMX_MASK and the marks currently applied to live flows
-	# match what we are trying to clear. Without this, UCI rule changes
-	# do not take effect on existing flows because mwan3_output restores
-	# each packet's meta mark from the already-saved ct mark and the
-	# `meta mark & MMX == 0` guards skip the updated classification
-	# rules entirely. See mwan3_flush_marked_conntrack for the rationale.
 	mwan3_init
-	mwan3_flush_marked_conntrack
-	stop
-	start
+
+	# Atomically rebuild the entire mwan3 nft ruleset in a single kernel
+	# transaction. mwan3_nft_reload_start opens the outermost batch level
+	# (MWAN3_BATCH_DEPTH 0->1) so all subsequent batch_start/commit calls
+	# from build functions nest inside it rather than committing immediately.
+	# The preamble tears down all dynamic chains and internal sets; user-defined
+	# sets and sticky sets are untouched throughout.
+	mwan3_nft_reload_start
+	mwan3_ensure_nft_framework
+	mwan3_render_config_ipsets
+	mwan3_set_dynamic_sets
+	mwan3_set_connected_sets
+	mwan3_set_custom_sets
+	config_foreach mwan3_rebuild_iface_nft interface
+	mwan3_set_general_nft
+	mwan3_set_policies_nft
+	mwan3_set_user_rules
+	mwan3_nft_reload_commit || return 1
+
+	# ip rules and routing tables are kernel state outside nftables —
+	# update them after the nft commit so the table is already consistent.
+	mwan3_update_iface_to_table
+	mwan3_set_general_rules
+
+	# mwan3_write_dnsmasq_fragments restarts dnsmasq internally if fragment
+	# content changed. User-defined nft sets survive the atomic reload intact
+	# so no HUP is needed here when fragments are unchanged.
+	mwan3_write_dnsmasq_fragments
+
+	# Detect tracker count mismatch. reload_service cannot add or remove
+	# procd service instances -- only start_service can do that. If the
+	# number of running mwan3track processes does not match the number the
+	# current config requires, fall through to a full restart. The restart
+	# starts the correct tracker set; start_service calls mwan3_dnsmasq_hup
+	# so nftset-populated sets are repopulated on name resolution.
+	local _expected_trackers=0 _running_trackers=0
+	_count_tracker_needed() {
+		local enabled track_ip track_gateway
+		config_get_bool enabled "$1" enabled 0
+		[ "$enabled" -eq 1 ] || return
+		if [ -n "$(config_get "$1" track_ip)" ]; then
+			_expected_trackers=$((_expected_trackers + 1))
+			return
+		fi
+		config_get_bool track_gateway "$1" track_gateway 0
+		[ "$track_gateway" -eq 1 ] && _expected_trackers=$((_expected_trackers + 1))
+	}
+	config_foreach _count_tracker_needed interface
+	_count_running_tracker() {
+		procd_running mwan3 "track_$1" && _running_trackers=$((_running_trackers + 1))
+	}
+	config_foreach _count_running_tracker interface
+	if [ "$_running_trackers" -ne "$_expected_trackers" ]; then
+		LOG notice "reload: tracker mismatch (need $_expected_trackers, have $_running_trackers) -- restarting"
+		stop
+		start
+	fi
 }
 
 service_triggers() {

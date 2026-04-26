@@ -25,6 +25,7 @@ NO_IPV6=$?
 
 NFT="nft"
 MWAN3_NFT_BATCH="/tmp/mwan3_nft_batch.$$"
+MWAN3_BATCH_DEPTH=0
 
 LOG()
 {
@@ -36,9 +37,14 @@ LOG()
 	logger -t "${SCRIPTNAME}[$$]" -p $facility "$*"
 }
 
-# Execute an nft command with error logging
+# Execute an nft command. When inside a batch (MWAN3_BATCH_DEPTH > 0), push
+# the command into the batch file instead of running nft immediately.
 mwan3_nft_exec()
 {
+	if [ "$MWAN3_BATCH_DEPTH" -gt 0 ]; then
+		mwan3_nft_push "$@"
+		return
+	fi
 	local error
 	error=$($NFT "$@" 2>&1) || {
 		LOG error "nft $*: $error"
@@ -46,21 +52,30 @@ mwan3_nft_exec()
 	}
 }
 
-# Start an nft batch
+# Start an nft batch. Truncates the batch file only when opening the outermost
+# level (depth 0 -> 1). Nested calls increment depth and are otherwise no-ops,
+# so callers can open their own mini-batches inside a larger reload batch
+# without inadvertently truncating it.
 mwan3_nft_batch_start()
 {
-	echo "" > "$MWAN3_NFT_BATCH"
+	[ "$MWAN3_BATCH_DEPTH" -eq 0 ] && : > "$MWAN3_NFT_BATCH"
+	MWAN3_BATCH_DEPTH=$((MWAN3_BATCH_DEPTH + 1))
 }
 
-# Add a line to the nft batch
+# Append a line to the nft batch. Called directly with a pre-formatted nft
+# statement, or indirectly via mwan3_nft_exec when MWAN3_BATCH_DEPTH > 0.
 mwan3_nft_push()
 {
 	echo "$*" >> "$MWAN3_NFT_BATCH"
 }
 
-# Commit the nft batch
+# Commit the nft batch. Decrements depth; only commits to the kernel when
+# reaching depth 0 (the outermost level). Inner commits from nested callers
+# are no-ops: they just decrement the counter and return.
 mwan3_nft_batch_commit()
 {
+	MWAN3_BATCH_DEPTH=$((MWAN3_BATCH_DEPTH - 1))
+	[ "$MWAN3_BATCH_DEPTH" -gt 0 ] && return 0
 	local error
 	error=$($NFT -f "$MWAN3_NFT_BATCH" 2>&1) || {
 		LOG error "nft batch: $error"
@@ -68,6 +83,55 @@ mwan3_nft_batch_commit()
 		return 1
 	}
 	rm -f "$MWAN3_NFT_BATCH"
+}
+
+# Begin an atomic reload batch. Opens the outermost batch level (depth 0->1)
+# so all subsequent mwan3_nft_batch_start/commit calls from build functions
+# accumulate into the same global batch rather than committing immediately.
+# The preamble: flushes all skeleton chains, then flushes+deletes all dynamic
+# chains (iface_in, policy, rule, or-setter, etc.).
+# Internal mwan3_* sets are deleted so mwan3_ensure_nft_framework can recreate
+# them with correct flags. User-defined sets are never touched.
+mwan3_nft_reload_start()
+{
+	local chain setname
+	mwan3_nft_batch_start
+	for chain in mwan3_prerouting mwan3_output mwan3_postrouting \
+	             mwan3_ifaces_in mwan3_rules mwan3_connected mwan3_custom mwan3_dynamic; do
+		mwan3_nft_push "flush chain inet mwan3 $chain"
+	done
+	# Two-pass: flush all dynamic chains first to remove cross-references
+	# (e.g. mwan3_rule_* chains jump to mwan3_or_meta_* chains), then delete.
+	# A single-pass flush+delete in alphabetical order fails with "Device or
+	# resource busy" because mwan3_or_meta_* sorts before mwan3_rule_*, so
+	# the delete fires while the rule chain still holds a jump reference.
+	local _dyn_chains=""
+	for chain in $($NFT list chains inet 2>/dev/null | grep "chain mwan3_" | awk '{gsub(/ \{.*/, ""); print $2}'); do
+		case "$chain" in
+			mwan3_prerouting|mwan3_output|mwan3_postrouting|\
+			mwan3_ifaces_in|mwan3_rules|mwan3_connected|mwan3_custom|mwan3_dynamic)
+				;;
+			*)
+				mwan3_nft_push "flush chain inet mwan3 $chain"
+				_dyn_chains="$_dyn_chains $chain"
+				;;
+		esac
+	done
+	for chain in $_dyn_chains; do
+		mwan3_nft_push "delete chain inet mwan3 $chain"
+	done
+	for setname in mwan3_connected_v4 mwan3_connected_v6 \
+	               mwan3_custom_v4 mwan3_custom_v6 \
+	               mwan3_dynamic_v4 mwan3_dynamic_v6; do
+		mwan3_nft_push "delete set inet mwan3 $setname"
+	done
+}
+
+# Commit the reload batch atomically to the kernel (thin wrapper around
+# mwan3_nft_batch_commit, which handles the depth decrement and actual commit).
+mwan3_nft_reload_commit()
+{
+	mwan3_nft_batch_commit
 }
 
 # Build an nft mark set expression
@@ -176,11 +240,14 @@ mwan3_ensure_nft_framework()
 	# Always delete existing sets — nft 'add set' is idempotent and won't
 	# update flags (like auto-merge) on existing sets, so we must recreate.
 	# stop_service() flushes chains first, so no rules reference the sets.
-	for setname in mwan3_connected_v4 mwan3_connected_v6 \
-		       mwan3_custom_v4 mwan3_custom_v6 \
-		       mwan3_dynamic_v4 mwan3_dynamic_v6; do
-		$NFT delete set inet mwan3 "$setname" >/dev/null 2>&1
-	done
+	# Inside a reload batch the deletions are already in the preamble.
+	if [ "$MWAN3_BATCH_DEPTH" -eq 0 ]; then
+		for setname in mwan3_connected_v4 mwan3_connected_v6 \
+		               mwan3_custom_v4 mwan3_custom_v6 \
+		               mwan3_dynamic_v4 mwan3_dynamic_v6; do
+			$NFT delete set inet mwan3 "$setname" >/dev/null 2>&1
+		done
+	fi
 
 	mwan3_nft_batch_start
 
@@ -459,8 +526,10 @@ _mwan3_render_one_ipset()
 
 	# Delete-and-recreate so flag changes (timeout, size) take effect.
 	# Safe: render runs before mwan3_set_user_rules, so no rules reference the
-	# set yet at this point.
-	$NFT delete set inet mwan3 "$name" >/dev/null 2>&1
+	# set yet at this point. In reload mode, preserve the set and its elements
+	# (dnsmasq-populated entries, blocklists); the 'add set' below is idempotent
+	# for an existing set with the same flags, which is the common case.
+	[ "$MWAN3_BATCH_DEPTH" -eq 0 ] && $NFT delete set inet mwan3 "$name" >/dev/null 2>&1
 
 	# Collect all elements (inline list + loadfile) before entering batch.
 	local elements="" line

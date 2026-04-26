@@ -265,9 +265,12 @@ mwan3_set_general_nft()
 {
 	local chain_exists restore_vmap save_vmap all_marks
 
-	# Check if rules are already populated
-	chain_exists=$($NFT list chain inet mwan3 mwan3_prerouting 2>/dev/null | grep -c "meta mark")
-	[ "$chain_exists" -gt 0 ] && return
+	# Check if rules are already populated (skip inside a batch: kernel still
+	# shows old rules since the preamble teardown is queued but not committed)
+	if [ "$MWAN3_BATCH_DEPTH" -eq 0 ]; then
+		chain_exists=$($NFT list chain inet mwan3 mwan3_prerouting 2>/dev/null | grep -c "meta mark")
+		[ "$chain_exists" -gt 0 ] && return
+	fi
 
 	# Build (idempotently) the per-mark OR-immediate setter chains used by
 	# the non-destructive restore/save vmap dispatch below. These chains
@@ -390,13 +393,16 @@ mwan3_create_iface_nft()
 	#   1         : SNAT to the interface's primary GUA via mwan3_get_src_ip
 	#   <addr>    : SNAT to the literal v6 address (NPTv6-style fixed pin)
 	#
-	# Stale rules from a prior incarnation of this interface are removed
-	# first; comment-tagged for unambiguous identification across reloads.
-	while handle=$($NFT -a list chain inet mwan3 mwan3_postrouting 2>/dev/null | \
-			sed -n "s/.*comment \"mwan3_snat_$1\".*# handle \([0-9]*\)/\1/p" | head -n1); \
-	      [ -n "$handle" ]; do
-		mwan3_nft_exec delete rule inet mwan3 mwan3_postrouting handle "$handle"
-	done
+	# Stale rules from a prior incarnation of this interface are removed first;
+	# comment-tagged for unambiguous identification across reloads.
+	# Inside a batch the preamble already flushed mwan3_postrouting entirely.
+	if [ "$MWAN3_BATCH_DEPTH" -eq 0 ]; then
+		while handle=$($NFT -a list chain inet mwan3 mwan3_postrouting 2>/dev/null | \
+				sed -n "s/.*comment \"mwan3_snat_$1\".*# handle \([0-9]*\)/\1/p" | head -n1); \
+		      [ -n "$handle" ]; do
+			mwan3_nft_exec delete rule inet mwan3 mwan3_postrouting handle "$handle"
+		done
+	fi
 
 	if [ "$family" = "ipv6" ]; then
 		config_get snat6 "$1" snat6 ""
@@ -421,12 +427,11 @@ mwan3_create_iface_nft()
 		fi
 	fi
 
-	# Check if chain already exists, if so flush it; otherwise create it
-	if $NFT list chain inet mwan3 "mwan3_iface_in_$1" &>/dev/null; then
-		mwan3_nft_exec flush chain inet mwan3 "mwan3_iface_in_$1"
-	else
-		mwan3_nft_exec add chain inet mwan3 "mwan3_iface_in_$1"
-	fi
+	# Add chain (idempotent) then flush. Inside a batch the preamble has already
+	# queued a delete for this chain, but add+flush is safe: the kernel sees the
+	# delete only when the batch commits, so add chain here recreates it fresh.
+	mwan3_nft_exec add chain inet mwan3 "mwan3_iface_in_$1"
+	mwan3_nft_exec flush chain inet mwan3 "mwan3_iface_in_$1"
 
 	mwan3_nft_batch_start
 
@@ -452,8 +457,11 @@ mwan3_create_iface_nft()
 
 	mwan3_nft_batch_commit
 
-	# Add jump rule from mwan3_ifaces_in if not already present
-	if ! $NFT list chain inet mwan3 mwan3_ifaces_in 2>/dev/null | grep -qw "mwan3_iface_in_$1"; then
+	# Add jump rule from mwan3_ifaces_in if not already present.
+	# Inside a batch the preamble flushed mwan3_ifaces_in but the kernel still
+	# shows old rules — skip the grep check and always push the jump.
+	if [ "$MWAN3_BATCH_DEPTH" -gt 0 ] || \
+	   ! $NFT list chain inet mwan3 mwan3_ifaces_in 2>/dev/null | grep -qw "mwan3_iface_in_$1"; then
 		mwan3_nft_exec add rule inet mwan3 mwan3_ifaces_in meta mark \& "$MMX_MASK" == 0 jump "mwan3_iface_in_$1"
 		LOG debug "create_iface_nft: mwan3_iface_in_$1 added to mwan3_ifaces_in"
 	else
@@ -479,6 +487,8 @@ mwan3_rebuild_iface_nft()
 	json_load "$status_json"
 	json_get_vars up l3_device
 	[ "$up" = "1" ] && [ -n "$l3_device" ] || return
+
+	[ "$(mwan3_get_iface_hotplug_state "$interface")" = "online" ] || return
 
 	mwan3_create_iface_nft "$interface" "$l3_device"
 }
@@ -725,10 +735,10 @@ mwan3_create_policies_nft()
 		LOG warn "Policy $1 exceeds max of 15 chars. Not setting policy" && return 0
 	fi
 
-	# Create chain if it doesn't exist
-	$NFT list chain inet mwan3 "mwan3_policy_$1" &>/dev/null || \
-		mwan3_nft_exec add chain inet mwan3 "mwan3_policy_$1"
-
+	# Add chain (idempotent) then flush. Inside a batch the preamble deleted the
+	# chain already, so add recreates it; outside a batch add is a no-op if it
+	# exists. Either way flush leaves a clean slate for the new policy rules.
+	mwan3_nft_exec add chain inet mwan3 "mwan3_policy_$1"
 	mwan3_nft_exec flush chain inet mwan3 "mwan3_policy_$1"
 
 	lowest_metric_v4=$DEFAULT_LOWEST_METRIC
@@ -847,22 +857,25 @@ mwan3_set_policies_nft()
 {
 	# Delete orphaned mwan3_policy_* chains - chains that exist in nft but
 	# have no corresponding UCI policy config. These accumulate when a policy
-	# is removed from config without a fw4 reload to flush the full table.
-	local valid_policies="" chain policy_name
+	# is removed from config without a service restart.
+	# Inside a batch the preamble already deleted all dynamic chains.
+	if [ "$MWAN3_BATCH_DEPTH" -eq 0 ]; then
+		local valid_policies="" chain
 
-	collect_valid_policy() { valid_policies="$valid_policies ${1} "; }
-	config_foreach collect_valid_policy policy
+		collect_valid_policy() { valid_policies="$valid_policies ${1} "; }
+		config_foreach collect_valid_policy policy
 
-	for chain in $($NFT list chains inet 2>/dev/null \
-			| awk '/mwan3_policy_/{gsub(/.*mwan3_policy_/,""); gsub(/ \{.*/,""); print}'); do
-		case "$valid_policies" in
-			*" ${chain} "*) ;;
-			*)
-				LOG debug "Deleting orphaned policy chain mwan3_policy_${chain}"
-				$NFT delete chain inet mwan3 "mwan3_policy_${chain}" 2>/dev/null
-				;;
-		esac
-	done
+		for chain in $($NFT list chains inet 2>/dev/null \
+				| awk '/mwan3_policy_/{gsub(/.*mwan3_policy_/,""); gsub(/ \{.*/,""); print}'); do
+			case "$valid_policies" in
+				*" ${chain} "*) ;;
+				*)
+					LOG debug "Deleting orphaned policy chain mwan3_policy_${chain}"
+					$NFT delete chain inet mwan3 "mwan3_policy_${chain}" 2>/dev/null
+					;;
+			esac
+		done
+	fi
 
 	config_foreach mwan3_create_policies_nft policy
 }
@@ -1105,8 +1118,7 @@ mwan3_set_user_nft_rule()
 		# Create sticky rule chain (idempotent) and reset its body.
 		# Note: same flush-on-each-pass behaviour as before; sticky+family=any
 		# remains a pre-existing latent issue not addressed here.
-		$NFT list chain inet mwan3 "mwan3_rule_$1" &>/dev/null || \
-			mwan3_nft_push "add chain inet mwan3 mwan3_rule_$1"
+		mwan3_nft_push "add chain inet mwan3 mwan3_rule_$1"
 		mwan3_nft_push "flush chain inet mwan3 mwan3_rule_$1"
 
 		# Per-member sticky sets and lookup rules.
