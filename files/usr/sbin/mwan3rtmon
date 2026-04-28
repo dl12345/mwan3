@@ -30,8 +30,9 @@ let extra_table_set = {};   // { table_id: true } for O(1) lookup
 let dev_table_map = {};     // { device_name: table_id }
 let iface_list = [];        // [ { name, family, tid, enabled, has_tracking } ]
 let active_chains = {};     // { chain_name: true } cached from nft
-let connected_timer = null;    // debounce timer for connected set rebuilds
-let main_route_cache = {};     // { route_key: count } for ECMP-safe delete checks
+let connected_timer = null;       // debounce timer for connected set rebuilds
+let last_connected_fingerprint = ""; // sorted element list from last populate call
+let main_route_cache = {};        // { route_key: count } for ECMP-safe delete checks
 let ubus_conn;
 
 // ---------------------------------------------------------------------------
@@ -355,18 +356,25 @@ function populate_connected_set() {
 	let setname = (family_num == AF_INET)
 		? "mwan3_connected_v4" : "mwan3_connected_v6";
 
-	let cmds = [ "flush set inet mwan3 " + setname ];
-
+	let seen = {};
 	let elements = [];
 	for (let route in routes) {
-		if (is_cidr_route(route))
+		if (is_cidr_route(route) && !is_linklocal_route(route) && !seen[route.dst]) {
 			push(elements, route.dst);
+			seen[route.dst] = true;
+		}
 	}
-
-	// Add multicast range for IPv4
 
 	if (family_num == AF_INET)
 		push(elements, "224.0.0.0/3");
+
+	sort(elements);
+	let fingerprint = join(",", elements);
+	if (fingerprint == last_connected_fingerprint)
+		return;
+	last_connected_fingerprint = fingerprint;
+
+	let cmds = [ "flush set inet mwan3 " + setname ];
 
 	if (length(elements) > 0)
 		push(cmds, "add element inet mwan3 " + setname +
@@ -457,16 +465,13 @@ function handle_route_event(event) {
 	}
 
 	// -- Update connected set --
+	// Both adds and deletes are debounced through populate_connected_set so
+	// that bursts of RTM_NEWROUTE updates for already-present prefixes (common
+	// with IPv6 PD address renewal) do not spawn a rapid stream of nft calls.
+	// The fingerprint in populate_connected_set makes repeated identical calls
+	// cheap when nothing has actually changed.
 
-	let setname = (family_num == AF_INET)
-		? "mwan3_connected_v4" : "mwan3_connected_v6";
-
-	if (is_new) {
-		if (is_cidr_route(route))
-			nft_exec('add element inet mwan3 ' + setname +
-				' { ' + route.dst + ' }');
-	} else {
-		// Debounce: coalesce rapid deletes into one rebuild
+	if (is_cidr_route(route)) {
 		if (!connected_timer)
 			connected_timer = uloop.timer(DEBOUNCE_MS, () => {
 				populate_connected_set();
