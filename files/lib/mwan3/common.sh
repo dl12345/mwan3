@@ -498,17 +498,18 @@ get_online_time() {
 _mwan3_render_one_ipset()
 {
 	local section="$1"
-	local enabled name family maxelem timeout loadfile
+	local enabled name family maxelem timeout loadfile counters
 	local addr_type set_flags set_decl
 
-	config_get_bool enabled "$section" enabled 1
+	config_get_bool enabled  "$section" enabled  1
 	[ "$enabled" -eq 1 ] || return 0
 
 	config_get name     "$section" name
 	config_get family   "$section" family   ipv4
-	config_get maxelem  "$section" maxelem  65536
+	config_get maxelem  "$section" maxelem  0
 	config_get timeout  "$section" timeout  0
 	config_get loadfile "$section" loadfile
+	config_get_bool counters "$section" counters 0
 
 	[ -n "$name" ] || { LOG warn "config ipset section '$section' missing 'name'"; return 0; }
 
@@ -521,6 +522,7 @@ _mwan3_render_one_ipset()
 	set_decl="type ${addr_type}; flags interval"
 	[ "$timeout" -gt 0 ] && set_decl="$set_decl, timeout"
 	set_decl="$set_decl; auto-merge;"
+	[ "$counters" -eq 1 ] && set_decl="$set_decl counter;"
 	[ "$timeout" -gt 0 ] && set_decl="$set_decl timeout ${timeout}s;"
 	[ "$maxelem" -gt 0 ] && set_decl="$set_decl size ${maxelem};"
 
@@ -555,6 +557,33 @@ _mwan3_render_one_ipset()
 mwan3_render_config_ipsets()
 {
 	config_foreach _mwan3_render_one_ipset ipset
+}
+
+# Delete user-defined nft sets that exist in the kernel but are no longer in
+# the current config. Must be called inside the reload batch so that the kernel
+# still reflects pre-commit state (making the query accurate) and so that the
+# deletes are queued via mwan3_nft_push rather than executed immediately.
+mwan3_cleanup_orphaned_ipsets()
+{
+	local setname config_names="" n found
+
+	_collect_configured_name() {
+		local enabled name
+		config_get_bool enabled "$1" enabled 1
+		[ "$enabled" -eq 1 ] || return 0
+		config_get name "$1" name
+		[ -n "$name" ] && config_names="${config_names} $name"
+	}
+	config_foreach _collect_configured_name ipset
+
+	for setname in $($NFT list table inet mwan3 2>/dev/null | \
+	                 awk '$1 == "set" && $2 !~ /^mwan3_/ {print $2}'); do
+		found=0
+		for n in $config_names; do
+			[ "$n" = "$setname" ] && found=1 && break
+		done
+		[ "$found" -eq 0 ] && mwan3_nft_push "delete set inet mwan3 $setname"
+	done
 }
 
 # Write per-instance dnsmasq confdir fragments containing nftset= directives

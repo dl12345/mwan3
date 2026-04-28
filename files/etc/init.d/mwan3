@@ -165,6 +165,7 @@ reload_service() {
 	mwan3_nft_reload_start
 	mwan3_ensure_nft_framework
 	mwan3_render_config_ipsets
+	mwan3_cleanup_orphaned_ipsets
 	mwan3_set_dynamic_sets
 	mwan3_set_connected_sets
 	mwan3_set_custom_sets

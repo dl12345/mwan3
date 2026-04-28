@@ -64,6 +64,41 @@ const nft_connected_set = {
 	'6': 'mwan3_connected_v6',
 };
 
+function parse_elem_val(v) {
+	if (type(v) == 'string')
+		return v;
+	if (v?.prefix)
+		return sprintf('%s/%d', v.prefix.addr, v.prefix.len);
+	if (v?.range)
+		return sprintf('%s-%s', v.range[0], v.range[1]);
+	return null;
+}
+
+function count_nftset_elements(setname) {
+	if (!match(setname, /^[a-zA-Z0-9_-]+$/))
+		return 0;
+	const nft = popen(sprintf('nft -j list set inet mwan3 %s 2>/dev/null', setname), 'r');
+	if (!nft)
+		return 0;
+	const raw = nft.read('all');
+	nft.close();
+	if (!raw || length(raw) == 0)
+		return 0;
+	let data;
+	try {
+		data = json(raw);
+	} catch(e) {
+		return 0;
+	}
+	if (data?.nftables) {
+		for (let item in data.nftables) {
+			if (item?.set?.elem)
+				return length(item.set.elem);
+		}
+	}
+	return 0;
+}
+
 function get_nftset_members(setname) {
 	if (!match(setname, /^[a-zA-Z0-9_-]+$/))
 		return [];
@@ -85,19 +120,71 @@ function get_nftset_members(setname) {
 		for (let item in data.nftables) {
 			if (item?.set?.elem) {
 				for (let elem in item.set.elem) {
-					if (type(elem) == 'string') {
-						push(members, elem);
-					} else if (type(elem) == 'object') {
-						if (elem?.prefix)
-							push(members, sprintf('%s/%d', elem.prefix.addr, elem.prefix.len));
-						else if (elem?.range)
-							push(members, sprintf('%s-%s', elem.range[0], elem.range[1]));
-					}
+					const val = parse_elem_val(elem);
+					if (val != null)
+						push(members, val);
 				}
 			}
 		}
 	}
 	return members;
+}
+
+function get_nftset_elements(setname, max_count) {
+	if (!match(setname, /^[a-zA-Z0-9_-]+$/))
+		return { elements: [], truncated: false };
+	const nft = popen(sprintf('nft -j list set inet mwan3 %s 2>/dev/null', setname), 'r');
+	if (!nft)
+		return { elements: [], truncated: false };
+	const raw = nft.read('all');
+	nft.close();
+	if (!raw || length(raw) == 0)
+		return { elements: [], truncated: false };
+	let data;
+	try {
+		data = json(raw);
+	} catch(e) {
+		return { elements: [], truncated: false };
+	}
+	const elements = [];
+	let truncated = false;
+	let done = false;
+	if (data?.nftables) {
+		for (let item in data.nftables) {
+			if (done) break;
+			if (item?.set?.elem) {
+				for (let elem in item.set.elem) {
+					if (length(elements) >= max_count) {
+						truncated = true;
+						done = true;
+						break;
+					}
+					let val = null;
+					let packets = null;
+					let bytes = null;
+					if (type(elem) == 'object' && elem?.elem) {
+						const inner = elem.elem;
+						if (inner?.counter) {
+							packets = inner.counter.packets;
+							bytes   = inner.counter.bytes;
+						}
+						val = parse_elem_val(inner?.val);
+					} else {
+						val = parse_elem_val(elem);
+					}
+					if (val != null) {
+						const entry = { value: val };
+						if (packets != null) {
+							entry.packets = packets;
+							entry.bytes   = bytes;
+						}
+						push(elements, entry);
+					}
+				}
+			}
+		}
+	}
+	return { elements: elements, truncated: truncated };
 }
 
 function get_ip_rules() {
@@ -434,8 +521,18 @@ const methods = {
 				for (let item in data.nftables) {
 					if (item?.set) {
 						const s = item.set;
-						if (s.table == 'mwan3' && !match(s.name, /^mwan3_/))
-							sets[s.name] = { type: s.type };
+						if (s.table == 'mwan3' && !match(s.name, /^mwan3_/)) {
+							let counters = false;
+							if (type(s.stmt) == 'array') {
+								for (let stmt in s.stmt) {
+									if (type(stmt) == 'object' && 'counter' in stmt) {
+										counters = true;
+										break;
+									}
+								}
+							}
+							sets[s.name] = { type: s.type, flags: s.flags || [], counters: counters, count: count_nftset_elements(s.name) };
+						}
 					}
 				}
 			}
@@ -443,12 +540,24 @@ const methods = {
 		}
 	},
 	nftset_members: {
-		args: { set: 'set' },
+		args: { set: '' },
 		call: function(request) {
 			const setname = request.args.set;
 			if (!setname)
 				return { error: 'set name required', members: [] };
 			return { members: get_nftset_members(setname) };
+		}
+	},
+	nftset_elements: {
+		args: { set: '', max: 0 },
+		call: function(request) {
+			const setname = request.args.set;
+			if (!setname)
+				return { error: 'set name required', elements: [], truncated: false };
+			const max = (request.args.max > 0) ? int(request.args.max) : 200;
+			const result = get_nftset_elements(setname, max > 5000 ? 5000 : max);
+			result.set = setname;
+			return result;
 		}
 	},
 	routing_health: {
