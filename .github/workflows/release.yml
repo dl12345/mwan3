@@ -37,6 +37,8 @@ jobs:
             target: mips_24kc
           - version: openwrt-25.12
             target: mipsel_24kc
+          - version: openwrt-25.12
+            target: arm_cortex-a7_neon-vfpv4
 
     steps:
       - name: Checkout repo
