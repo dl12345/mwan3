@@ -146,17 +146,21 @@ mwan3_get_iface_id()
 
 mwan3_set_custom_set()
 {
-	local custom_network family_flag IP table_arg
+	local custom_network table_arg routes
 
 	table_arg="$1"
 
-	for custom_network in $($IP4 route list table "$table_arg" | awk '{print $1}' | grep -E "$IPv4_REGEX"); do
+	routes=$($IP4 route list table "$table_arg" 2>/dev/null) || \
+		LOG warn "rt_table_lookup: routing table '$table_arg' does not exist"
+	for custom_network in $(printf '%s' "$routes" | awk '{print $1}' | grep -E "$IPv4_REGEX"); do
 		LOG notice "Adding network $custom_network from table $table_arg to mwan3_custom_v4 set"
 		mwan3_nft_push "add element inet mwan3 mwan3_custom_v4 { $custom_network }"
 	done
 
 	[ $NO_IPV6 -eq 0 ] || return
-	for custom_network in $($IP6 route list table "$table_arg" | awk '{print $1}' | grep -E "$IPv6_REGEX"); do
+	routes=$($IP6 route list table "$table_arg" 2>/dev/null) || \
+		LOG warn "rt_table_lookup: routing table '$table_arg' does not exist (IPv6)"
+	for custom_network in $(printf '%s' "$routes" | awk '{print $1}' | grep -E "$IPv6_REGEX"); do
 		LOG notice "Adding network $custom_network from table $table_arg to mwan3_custom_v6 set"
 		mwan3_nft_push "add element inet mwan3 mwan3_custom_v6 { $custom_network }"
 	done
@@ -547,7 +551,7 @@ mwan3_delete_iface_map_entries()
 
 mwan3_extra_tables_routes()
 {
-	$IP route list table "$1"
+	$IP route list table "$1" 2>/dev/null
 }
 
 mwan3_get_routes()
@@ -601,9 +605,9 @@ mwan3_delete_iface_route()
 	fi
 
 	if [ "$family" = "ipv4" ]; then
-		$IP4 route flush table "$id"
+		$IP4 route flush table "$id" 2>/dev/null
 	elif [ "$family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
-		$IP6 route flush table "$id"
+		$IP6 route flush table "$id" 2>/dev/null
 	fi
 }
 
@@ -626,9 +630,9 @@ mwan3_create_iface_rules()
 
 	mwan3_delete_iface_rules "$1"
 
-	$IP rule add pref $((id+1000)) iif "$2" lookup "$id"
-	$IP rule add pref $((id+2000)) fwmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK" lookup "$id"
-	$IP rule add pref $((id+3000)) fwmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK" unreachable
+	$IP rule add pref $((id+1000)) iif "$2" lookup "$id" 2>/dev/null
+	$IP rule add pref $((id+2000)) fwmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK" lookup "$id" 2>/dev/null
+	$IP rule add pref $((id+3000)) fwmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK" unreachable 2>/dev/null
 }
 
 mwan3_delete_iface_rules()
