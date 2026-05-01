@@ -247,6 +247,251 @@ mwan3_set_dynamic_sets()
 	mwan3_nft_batch_commit
 }
 
+# Convert an nft time string (1h, 5m, 300s, 3600) to seconds.
+# Used when comparing a config timeout value against the kernel's display value.
+_mwan3_nft_time_to_sec()
+{
+	local t="$1" n u
+	n="${t%[smhdwSMHDW]}"
+	u="${t#$n}"
+	case "$u" in
+		s|S|"") printf '%s\n' "$n" ;;
+		m|M)    printf '%s\n' "$((n * 60))" ;;
+		h|H)    printf '%s\n' "$((n * 3600))" ;;
+		d|D)    printf '%s\n' "$((n * 86400))" ;;
+		w|W)    printf '%s\n' "$((n * 604800))" ;;
+		*)      printf '%s\n' "$n" ;;
+	esac
+}
+
+# Return 0 (true) if the named set exists in the kernel AND its flags differ
+# from the desired spec; return 1 otherwise (set absent, or flags all match).
+# Used during reload to decide whether to queue a delete before recreating.
+#   $1 name         -- set name
+#   $2 want_type    -- ipv4_addr or ipv6_addr
+#   $3 want_counter -- 0 or 1
+#   $4 want_timeout -- 0 (none) or timeout in seconds
+#   $5 want_maxelem -- 0 (default) or explicit element limit
+_mwan3_ipset_needs_delete()
+{
+	local name="$1" want_type="$2" want_counter="$3" want_timeout="$4" want_maxelem="$5"
+	local out cur_type has_counter has_timeout_flag cur_timeout_raw cur_timeout_sec cur_size
+
+	out=$($NFT list set inet mwan3 "$name" 2>/dev/null) || return 1  # absent -- no delete
+
+	cur_type=$(printf '%s\n' "$out" | awk '/^[[:space:]]+type[[:space:]]/{print $2; exit}')
+	[ "$cur_type" != "$want_type" ] && return 0
+
+	# 'counter' as a standalone keyword line; does not match 'counter packets N bytes N'
+	# in elements because those lines are indented inside 'elements = { ... }'.
+	has_counter=0
+	printf '%s\n' "$out" | grep -qE '^[[:space:]]+counter[[:space:]]*$' && has_counter=1
+	[ "$has_counter" -ne "$want_counter" ] && return 0
+
+	has_timeout_flag=0
+	printf '%s\n' "$out" | grep -q 'flags.*timeout' && has_timeout_flag=1
+	if [ "$want_timeout" -gt 0 ]; then
+		[ "$has_timeout_flag" -eq 0 ] && return 0
+		cur_timeout_raw=$(printf '%s\n' "$out" | awk '/^[[:space:]]+timeout[[:space:]]/{print $2; exit}')
+		cur_timeout_sec=$(_mwan3_nft_time_to_sec "$cur_timeout_raw")
+		[ "$cur_timeout_sec" != "$want_timeout" ] && return 0
+	else
+		[ "$has_timeout_flag" -ne 0 ] && return 0
+	fi
+
+	cur_size=$(printf '%s\n' "$out" | awk '/^[[:space:]]+size[[:space:]]/{print $2; exit}')
+	if [ "$want_maxelem" -gt 0 ]; then
+		[ "$cur_size" != "$want_maxelem" ] && return 0
+	else
+		[ -n "$cur_size" ] && return 0
+	fi
+
+	return 1  # all flags match
+}
+
+# Render one config ipset section from /etc/config/mwan3 into table inet mwan3.
+# Called by config_foreach from mwan3_render_config_ipsets.
+_mwan3_render_one_ipset()
+{
+	local section="$1"
+	local enabled name family maxelem timeout loadfile counters
+	local addr_type set_flags set_decl
+
+	config_get_bool enabled  "$section" enabled  1
+	[ "$enabled" -eq 1 ] || return 0
+
+	config_get name     "$section" name
+	config_get family   "$section" family   ipv4
+	config_get maxelem  "$section" maxelem  0
+	config_get timeout  "$section" timeout  0
+	config_get loadfile "$section" loadfile
+	config_get_bool counters "$section" counters 0
+
+	[ -n "$name" ] || { LOG warn "config ipset section '$section' missing 'name'"; return 0; }
+
+	case "$family" in
+		ipv4) addr_type="ipv4_addr" ;;
+		ipv6) addr_type="ipv6_addr" ;;
+		*)    LOG warn "config ipset '$name': unknown family '$family'"; return 0 ;;
+	esac
+
+	set_decl="type ${addr_type}; flags interval"
+	[ "$timeout" -gt 0 ] && set_decl="$set_decl, timeout"
+	set_decl="$set_decl; auto-merge;"
+	[ "$counters" -eq 1 ] && set_decl="$set_decl counter;"
+	[ "$timeout" -gt 0 ] && set_decl="$set_decl timeout ${timeout}s;"
+	[ "$maxelem" -gt 0 ] && set_decl="$set_decl size ${maxelem};"
+
+	# Delete-and-recreate when flags change so the new spec takes effect.
+	# On the start path (BATCH_DEPTH=0): always delete immediately -- no rules
+	# exist yet; suppress the error if the set is absent.
+	# On the reload path (BATCH_DEPTH>0): only delete when flags actually differ.
+	# The preamble (mwan3_nft_reload_start) has already queued a flush of
+	# mwan3_rules and all dynamic chains, so all references to user sets are
+	# removed before the delete fires at commit time. When flags are unchanged
+	# the 'add set' below is idempotent and dnsmasq-populated elements survive.
+	if [ "$MWAN3_BATCH_DEPTH" -eq 0 ]; then
+		$NFT delete set inet mwan3 "$name" >/dev/null 2>&1
+	elif _mwan3_ipset_needs_delete "$name" "$addr_type" "$counters" "$timeout" "$maxelem"; then
+		mwan3_nft_push "delete set inet mwan3 $name"
+		local _dom_found=""
+		_mwan3_hup_check() { _dom_found=1; }
+		config_list_foreach "$section" domain _mwan3_hup_check
+		[ -n "$_dom_found" ] && MWAN3_NEED_DNSMASQ_HUP=1
+	fi
+
+	# Collect all elements (inline list + loadfile) before entering batch.
+	local elements="" line
+	_add_entry() { elements="${elements:+$elements, }$1"; }
+	config_list_foreach "$section" entry _add_entry
+	if [ -n "$loadfile" ] && [ -f "$loadfile" ]; then
+		while IFS= read -r line; do
+			line="${line%%#*}"
+			line=$(echo "$line" | xargs 2>/dev/null)
+			[ -n "$line" ] && elements="${elements:+$elements, }$line"
+		done < "$loadfile"
+	fi
+
+	# nft CLI cannot parse { ... } as a single quoted argument; use batch mode.
+	mwan3_nft_batch_start
+	mwan3_nft_push "add set inet mwan3 $name { $set_decl }"
+	[ -n "$elements" ] && mwan3_nft_push "add element inet mwan3 $name { $elements }"
+	mwan3_nft_batch_commit || return 1
+}
+
+# Create all user-declared sets from config ipset sections in /etc/config/mwan3.
+# Must be called after mwan3_ensure_nft_framework and before mwan3_set_user_rules.
+mwan3_render_config_ipsets()
+{
+	config_foreach _mwan3_render_one_ipset ipset
+}
+
+# Delete user-defined nft sets that exist in the kernel but are no longer in
+# the current config. Must be called inside the reload batch so that the kernel
+# still reflects pre-commit state (making the query accurate) and so that the
+# deletes are queued via mwan3_nft_push rather than executed immediately.
+mwan3_cleanup_orphaned_ipsets()
+{
+	local setname config_names="" n found
+
+	_collect_configured_name() {
+		local enabled name
+		config_get_bool enabled "$1" enabled 1
+		[ "$enabled" -eq 1 ] || return 0
+		config_get name "$1" name
+		[ -n "$name" ] && config_names="${config_names} $name"
+	}
+	config_foreach _collect_configured_name ipset
+
+	for setname in $($NFT list table inet mwan3 2>/dev/null | \
+	                 awk '$1 == "set" && $2 !~ /^mwan3_/ {print $2}'); do
+		found=0
+		for n in $config_names; do
+			[ "$n" = "$setname" ] && found=1 && break
+		done
+		[ "$found" -eq 0 ] && mwan3_nft_push "delete set inet mwan3 $setname"
+	done
+}
+
+# Write per-instance dnsmasq confdir fragments containing nftset= directives
+# for all mwan3 config ipset sections that have list domain entries.
+# Triggers /etc/init.d/dnsmasq reload only if any fragment content changed.
+mwan3_write_dnsmasq_fragments()
+{
+	local any_changed=0
+
+	_wdf_emit_domains()
+	{
+		local section="$1" confdir="$2"
+		local enabled name family fam_ch final tmp elements
+
+		config_get_bool enabled "$section" enabled 1
+		[ "$enabled" -eq 1 ] || return
+		config_get name   "$section" name
+		config_get family "$section" family ipv4
+		[ -n "$name" ] || return
+
+		# Check whether this section has any domain entries before writing
+		elements=""
+		_check_domain() { elements="yes"; }
+		config_list_foreach "$section" domain _check_domain
+		[ -n "$elements" ] || return
+
+		[ "$family" = "ipv4" ] && fam_ch=4 || fam_ch=6
+
+		_emit_domain()
+		{
+			printf 'nftset=/%s/%s#inet#mwan3#%s\n' "$1" "$fam_ch" "$name"
+		}
+		config_list_foreach "$section" domain _emit_domain
+	}
+
+	_wdf_for_instance()
+	{
+		local cfg="$1"
+		local confdir final tmp
+
+		config_get confdir "$cfg" confdir "/tmp/dnsmasq${cfg:+.$cfg}.d"
+		final="${confdir}/mwan3-nftsets.conf"
+		tmp="${final}.new"
+
+		mkdir -p "$confdir"
+
+		# Emit all domain directives for all ipset sections into a temp file
+		(
+			config_load mwan3
+			config_foreach _wdf_emit_domains ipset "$confdir"
+		) > "$tmp"
+
+		if [ ! -s "$tmp" ]; then
+			# No domain entries: remove stale fragment if present
+			rm -f "$tmp"
+			if [ -f "$final" ]; then
+				rm -f "$final"
+				any_changed=1
+			fi
+		elif ! cmp -s "$tmp" "$final" 2>/dev/null; then
+			mv -f "$tmp" "$final"
+			any_changed=1
+		else
+			rm -f "$tmp"
+		fi
+	}
+
+	config_load dhcp
+	config_foreach _wdf_for_instance dnsmasq
+	# Restore mwan3 config context: config_load dhcp above replaces it,
+	# and callers (start_service) still need to iterate mwan3 sections.
+	config_load mwan3
+
+	# restart (not reload) so dnsmasq re-reads the confdir and picks up new
+	# nftset directives. At boot, dnsmasq hasn't started yet (START=60 > mwan3
+	# START=20), so skip the restart -- dnsmasq will find the fragment when it
+	# starts naturally.
+	[ "$any_changed" -eq 1 ] && pidof dnsmasq >/dev/null 2>&1 && \
+		/etc/init.d/dnsmasq restart
+}
+
 mwan3_set_general_rules()
 {
 	local IP

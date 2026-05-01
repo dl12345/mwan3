@@ -185,6 +185,10 @@ reload_service() {
 	# so no HUP is needed here when fragments are unchanged.
 	mwan3_write_dnsmasq_fragments
 
+	# If a set was deleted and recreated (flags changed) and had dnsmasq-populated
+	# domain entries, those entries were lost. HUP dnsmasq to repopulate them.
+	[ "$MWAN3_NEED_DNSMASQ_HUP" -eq 1 ] && mwan3_dnsmasq_hup
+
 	# Detect tracker count mismatch. reload_service cannot add or remove
 	# procd service instances -- only start_service can do that. If the
 	# number of running mwan3track processes does not match the number the
