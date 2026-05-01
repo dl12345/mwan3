@@ -148,7 +148,7 @@ function refresh_active_chains() {
 		return;
 
 	for (let item in data.nftables) {
-		if (item.chain && item.chain.table == "fw4")
+		if (item.chain && item.chain.table == "mwan3")
 			active_chains[item.chain.name] = true;
 	}
 }
