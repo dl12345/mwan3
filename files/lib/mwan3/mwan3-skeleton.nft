@@ -2,7 +2,7 @@
 # Standalone ruleset loaded by mwan3's init script via `nft -f` at
 # start_service, before mwan3_ensure_nft_framework. Defines mwan3's
 # own table (inet mwan3), its six address sets, its hook base chains
-# at the historical v3.x priorities, and its regular chains.
+# at mangle + 1 priority, and its regular chains.
 #
 # All runtime content (per-interface mwan3_iface_in_* chains, policy
 # chains, sticky-rule chains, setter chains, policy/rule content) is

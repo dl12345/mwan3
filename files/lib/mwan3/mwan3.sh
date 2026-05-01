@@ -537,7 +537,7 @@ mwan3_delete_iface_map_entries()
 	mwan3_get_iface_id id "$1"
 	[ -n "$id" ] || return 0
 
-	# v3.2+ sticky scheme: one set per (rule, family, iface_id) holding
+	# Sticky scheme: one set per (rule, family, iface_id) holding
 	# only saddrs (no value side). Removing an interface invalidates every
 	# such set whose name ends in "_<id>"; we flush rather than delete since
 	# rule chains may still reference the set name.
