@@ -22,7 +22,7 @@ define Package/mwan3
    CATEGORY:=Network
    SUBMENU:=Routing and Redirection
    DEPENDS:= \
-     +ip \
+     +ip-full \
      +conntrack \
      +kmod-nft-core \
      +nftables-json \
