@@ -592,6 +592,10 @@ mwan3_set_general_nft()
 
 	# Populate mwan3_output hook chain
 	mwan3_nft_push "flush chain inet mwan3 mwan3_output"
+	# Bypass NDP: kernel-generated NS/NA probes (mark=0) would match fe80::/64 in
+	# mwan3_connected, receive MMX_DEFAULT, and be re-routed via main table to the wrong
+	# interface, cycling NDP state to FAILED and dropping subsequent ping probes.
+	mwan3_nft_push "add rule inet mwan3 mwan3_output icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, nd-redirect } accept"
 	# Restore mark from conntrack (see prerouting comment above)
 	mwan3_nft_push "add rule inet mwan3 mwan3_output meta mark & $MMX_MASK == 0 ct mark & $MMX_MASK vmap { $restore_vmap }"
 	# Jump to interface classification
