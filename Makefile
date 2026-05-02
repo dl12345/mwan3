@@ -202,6 +202,8 @@ define Package/mwan3/install
 		$(1)/usr/sbin/
 	$(INSTALL_BIN) ./files/usr/sbin/mwan3-lb-test \
 		$(1)/usr/sbin/
+	$(INSTALL_BIN) ./files/usr/sbin/mwan3-diag \
+		$(1)/usr/sbin/
 
 	$(INSTALL_DIR) $(1)/etc
 	$(INSTALL_BIN) ./files/etc/mwan3.user \

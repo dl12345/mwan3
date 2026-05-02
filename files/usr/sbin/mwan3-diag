@@ -1,0 +1,424 @@
+#!/usr/bin/ucode
+// mwan3 comprehensive diagnostic script
+// Run with: ucode /tmp/mwan3-diag.uc
+//
+// Collects network state relevant to mwan3 debugging.
+// Public routable IPv4 and IPv6 addresses are replaced with PUB4_N / PUB6_N
+// placeholders throughout the entire output so the report can be posted
+// publicly. The same physical address always receives the same placeholder,
+// so cross-references between routing tables, neighbor cache, nft rules,
+// configuration and log entries remain internally consistent.
+//
+// Link-local (fe80::), ULA (fc00::/7), RFC1918, loopback and multicast
+// addresses are left unchanged -- they are unroutable and diagnostically
+// important.
+
+import * as rtnl from 'rtnl';
+import * as sock from 'socket';
+import * as ubus from 'ubus';
+import * as fs   from 'fs';
+
+// ---------------------------------------------------------------------------
+// Address classification
+// ---------------------------------------------------------------------------
+
+function is_public_v6(addr) {
+	if (!addr || addr == '::' || addr == '::1') return false;
+	let a = lc(addr);
+	if (match(a, /^fe[89ab][0-9a-f]:/)) return false; // link-local fe80::/10
+	if (match(a, /^f[cd]/))             return false; // ULA fc00::/7
+	if (match(a, /^ff/))                return false; // multicast ff00::/8
+	return true;
+}
+
+function is_public_v4(addr) {
+	if (!addr) return false;
+	let p = split(addr, '.');
+	if (length(p) != 4) return false;
+	let a = +p[0], b = +p[1];
+	if (a == 127)                        return false; // loopback
+	if (a == 10)                         return false; // RFC1918
+	if (a == 172 && b >= 16 && b <= 31) return false; // RFC1918
+	if (a == 192 && b == 168)           return false; // RFC1918
+	if (a == 169 && b == 254)           return false; // link-local
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Address normalisation via sock.sockaddr()
+// Returns canonical string form, or null on failure.
+// Strips any /prefix-length before parsing.
+// ---------------------------------------------------------------------------
+
+function norm_addr(addr_str) {
+	if (!addr_str) return null;
+	let sa = sock.sockaddr(split(addr_str, '/')[0]);
+	if (!sa || (sa.family != 2 && sa.family != 10)) return null;
+	return sa.address;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: collect all structured data via rtnl
+// ---------------------------------------------------------------------------
+
+let nb_all   = rtnl.request(rtnl.const.RTM_GETNEIGH, rtnl.const.NLM_F_DUMP, {});
+let rt6_all  = rtnl.request(rtnl.const.RTM_GETROUTE, rtnl.const.NLM_F_DUMP, { family: 10 });
+let rt4_all  = rtnl.request(rtnl.const.RTM_GETROUTE, rtnl.const.NLM_F_DUMP, { family: 2  });
+let rul6_all = rtnl.request(rtnl.const.RTM_GETRULE,  rtnl.const.NLM_F_DUMP, { family: 10 });
+let rul4_all = rtnl.request(rtnl.const.RTM_GETRULE,  rtnl.const.NLM_F_DUMP, { family: 2  });
+let addr_all = rtnl.request(rtnl.const.RTM_GETADDR,  rtnl.const.NLM_F_DUMP, {});
+
+// mwan3 interface status via ubus
+let ub = ubus.connect();
+let mwan3_st = ub ? ub.call('mwan3', 'status', { section: 'interfaces' }) : null;
+
+// mwan3 UCI config
+let mwan3_cfg = null;
+{
+	let f = fs.open('/etc/config/mwan3', 'r');
+	if (f) { mwan3_cfg = f.read('all'); f.close(); }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: extract every address that appears anywhere and classify it
+// ---------------------------------------------------------------------------
+
+let pub6_seen = {};
+let pub4_seen = {};
+
+function register(addr_str) {
+	if (!addr_str) return;
+	let norm = norm_addr(addr_str);
+	if (!norm) return;
+	let sa = sock.sockaddr(split(addr_str, '/')[0]);
+	if (sa.family == 10 && is_public_v6(norm)) pub6_seen[norm] = 1;
+	else if (sa.family == 2 && is_public_v4(norm)) pub4_seen[norm] = 1;
+}
+
+for (let n in nb_all) { register(n.dst); }
+for (let r in rt6_all)  { register(r.dst); register(r.gateway); register(r.src); register(r.prefsrc); }
+for (let r in rt4_all)  { register(r.dst); register(r.gateway); register(r.src); register(r.prefsrc); }
+for (let r in rul6_all) { register(r.src); register(r.dst); }
+for (let r in rul4_all) { register(r.src); register(r.dst); }
+for (let a in addr_all) { register(a.address); register(a.local); }
+if (mwan3_st?.interfaces)
+	for (let iface, idata in mwan3_st.interfaces)
+		for (let tip in (idata.track_ip || []))
+			register(tip.ip);
+
+// Register any addresses appearing in the mwan3 UCI config (e.g. track_ip
+// values not yet reflected in routes/status).
+if (mwan3_cfg)
+	for (let line in split(mwan3_cfg, '\n'))
+		for (let tok in split(replace(line, "'", ' '), ' '))
+			register(trim(tok));
+
+// ---------------------------------------------------------------------------
+// Phase 3: build deterministic placeholder map
+// Sort addresses so the same address always gets the same placeholder across
+// multiple runs (e.g. v3.4 run vs v3.5.1 run).
+// ---------------------------------------------------------------------------
+
+let pub6_list = sort(keys(pub6_seen));
+let pub4_list = sort(keys(pub4_seen));
+let addr_map  = {};
+for (let i = 0; i < length(pub6_list); i++)
+	addr_map[pub6_list[i]] = sprintf('PUB6_%d', i + 1);
+for (let i = 0; i < length(pub4_list); i++)
+	addr_map[pub4_list[i]] = sprintf('PUB4_%d', i + 1);
+
+// ---------------------------------------------------------------------------
+// Anonymisation helpers
+// ---------------------------------------------------------------------------
+
+// Anonymise a single address string (preserves any /prefix-length suffix).
+function anon(addr_str) {
+	if (!addr_str) return addr_str;
+	let parts = split(addr_str, '/');
+	let norm  = norm_addr(parts[0]);
+	let ph    = norm ? (addr_map[norm] ?? null) : null;
+	if (ph) return ph + (length(parts) > 1 ? '/' + parts[1] : '');
+	return addr_str;
+}
+
+// Anonymise a block of free-form text (nft output, log lines, etc.).
+// Sorted longest-first so longer addresses are replaced before any shorter
+// prefix they might share (prevents partial substitutions).
+let _sorted_addrs = sort(keys(addr_map), (a, b) => length(b) - length(a));
+function anon_text(text) {
+	if (!text) return '(no output)';
+	for (let addr in _sorted_addrs) {
+		let ph  = addr_map[addr];
+		let pos = 0;
+		while (true) {
+			let found = index(text, addr, pos);
+			if (found == -1) break;
+			text = substr(text, 0, found) + ph + substr(text, found + length(addr));
+			pos  = found + length(ph);
+		}
+	}
+	return text;
+}
+
+// Strip elements from user-defined nft sets, replacing with { ... }.
+// mwan3 infrastructure sets (names starting with mwan3_) are left intact:
+// their IPs derive from the routing table and are already in addr_map.
+// All other sets (user ipsets in the mwan3 table, fw4 sets) may contain
+// arbitrary IPs not captured in phase 2 and have their elements redacted.
+function strip_set_elements(text) {
+	let lines    = split(text, '\n');
+	let out      = [];
+	let skip     = false;
+	let user_set = false;
+	for (let line in lines) {
+		if (skip) {
+			if (index(line, '}') != -1) skip = false;
+			continue;
+		}
+		// Detect set declaration: trimmed line is 'set <name> {'
+		let trimmed = trim(line);
+		if (substr(trimmed, 0, 4) == 'set ' && substr(trimmed, length(trimmed) - 2) == ' {') {
+			let setname = substr(trimmed, 4, length(trimmed) - 6);
+			user_set = (substr(setname, 0, 6) != 'mwan3_');
+		}
+		if (user_set) {
+			let ei = index(line, 'elements = {');
+			if (ei != -1) {
+				let after = substr(line, ei + length('elements = {'));
+				push(out, substr(line, 0, ei) + 'elements = { ... }');
+				if (index(after, '}') == -1) skip = true;
+				continue;
+			}
+		}
+		push(out, line);
+	}
+	return join('\n', out);
+}
+
+// Run a shell command and return its anonymised output.
+function pcmd(cmd) {
+	let f = fs.popen(cmd);
+	if (!f) return '(failed to run: ' + cmd + ')\n';
+	let out = f.read('all');
+	f.close();
+	return anon_text(out || '(no output)\n');
+}
+
+// ---------------------------------------------------------------------------
+// Named constants for formatting
+// ---------------------------------------------------------------------------
+
+let NUD = { '1':'INCOMPLETE', '2':'REACHABLE', '4':'STALE', '8':'DELAY',
+            '16':'PROBE', '32':'FAILED', '64':'NOARP', '128':'PERMANENT' };
+let PROTO = { '2':'kernel', '3':'boot', '4':'static', '11':'dhcp',
+              '186':'bgp', '187':'isis', '188':'ospf', '189':'rip' };
+
+function nud_name(s)   { return NUD[s]   || sprintf('state=0x%x', s); }
+function proto_name(p) { return PROTO[p] || sprintf('proto=%d', p); }
+
+let TBL_NAMES = { '253': 'default', '254': 'main' };
+function tbl_label(n) {
+	let name = TBL_NAMES[n + ''];
+	return name ? sprintf('%s (%d)', name, n) : sprintf('%d', n);
+}
+
+// ---------------------------------------------------------------------------
+// Detect which table mwan3 is using (v3.4 = inet fw4, v3.5+ = inet mwan3)
+// ---------------------------------------------------------------------------
+
+let mwan3_tbl = 'inet mwan3';
+{
+	let f = fs.popen('nft list chain inet mwan3 mwan3_prerouting 2>/dev/null | head -1');
+	let l = f?.read('line');
+	f?.close();
+	if (!l || !length(trim(l))) mwan3_tbl = 'inet fw4';
+}
+
+// ---------------------------------------------------------------------------
+// mwan3 version
+// ---------------------------------------------------------------------------
+
+let mwan3_ver = 'unknown';
+{
+	let f = fs.popen("apk list --installed 2>/dev/null | grep '^mwan3'");
+	let l = trim(f?.read('line') ?? '');
+	f?.close();
+	let parts = length(l) ? split(l, ' ') : [];
+	if (length(parts)) mwan3_ver = parts[0];
+}
+
+// ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+
+printf('=== mwan3 Diagnostic Report ===\n');
+printf('Timestamp : %s', fs.popen('date')?.read('line') ?? '\n');
+printf('Version   : %s\n', mwan3_ver);
+printf('Table     : %s\n', mwan3_tbl);
+printf('\n');
+printf('NOTE: Public routable addresses are replaced with PUB4_N / PUB6_N\n');
+printf('      placeholders. The same address always gets the same placeholder\n');
+printf('      so cross-references within this report remain consistent.\n');
+printf('      fe80:: link-local, ULA (fc00::/7), RFC1918 and multicast are shown as-is.\n');
+printf('\n');
+
+// --- IPv6 interface addresses ---
+printf('=== IPv6 Interface Addresses ===\n');
+for (let a in addr_all) {
+	if (a.family != 10 || a.dev == 'lo') continue;
+	let scope = (a.scope == 253) ? ' scope link' : (a.scope == 254) ? ' scope host' : '';
+	printf('  %-16s %s%s\n', a.dev, anon(a.address), scope);
+}
+printf('\n');
+
+// --- IPv4 interface addresses ---
+printf('=== IPv4 Interface Addresses ===\n');
+for (let a in addr_all) {
+	if (a.family != 2 || a.dev == 'lo') continue;
+	printf('  %-16s %s\n', a.dev, anon(a.address));
+}
+printf('\n');
+
+// --- IPv6 routing tables (all tables except local/unspec) ---
+{
+	let tbls = {};
+	for (let r in rt6_all) if (r.table && r.table != 255) tbls[r.table] = 1;
+	let tlist = sort(keys(tbls), (a, b) => +a - +b);
+	printf('=== IPv6 Routing Tables ===\n');
+	for (let ts in tlist) {
+		let tn = +ts;
+		printf('-- %s --\n', tbl_label(tn));
+		for (let r in rt6_all) {
+			if (r.table != tn) continue;
+			let dst    = anon(r.dst) ?? 'default';
+			let src    = r.src     ? sprintf(' from %s', anon(r.src))     : '';
+			let via    = r.gateway ? sprintf(' via %s',  anon(r.gateway)) : '';
+			let dev    = r.oif     ? sprintf(' dev %s',  r.oif)           : '';
+			let metric = r.priority ? sprintf(' metric %d', r.priority)   : '';
+			printf('  %s%s%s%s proto %s%s\n', dst, src, via, dev, proto_name(r.protocol), metric);
+		}
+		printf('\n');
+	}
+}
+
+// --- IPv4 routing tables (all tables except local/unspec) ---
+{
+	let tbls = {};
+	for (let r in rt4_all) if (r.table && r.table != 255) tbls[r.table] = 1;
+	let tlist = sort(keys(tbls), (a, b) => +a - +b);
+	printf('=== IPv4 Routing Tables ===\n');
+	for (let ts in tlist) {
+		let tn = +ts;
+		printf('-- %s --\n', tbl_label(tn));
+		for (let r in rt4_all) {
+			if (r.table != tn) continue;
+			let dst    = anon(r.dst) ?? 'default';
+			let via    = r.gateway ? sprintf(' via %s', anon(r.gateway)) : '';
+			let dev    = r.oif     ? sprintf(' dev %s', r.oif)           : '';
+			let metric = r.priority ? sprintf(' metric %d', r.priority)  : '';
+			printf('  %s%s%s proto %s%s\n', dst, via, dev, proto_name(r.protocol), metric);
+		}
+		printf('\n');
+	}
+}
+
+// rtnl does not decode FRA_IIFNAME; parse text output to get iif per priority.
+function parse_iif(family_flag) {
+	let m = {};
+	let f = fs.popen(sprintf('ip -%s rule list 2>/dev/null', family_flag));
+	if (!f) return m;
+	for (let line = f.read('line'); length(line); line = f.read('line')) {
+		let parts = split(trim(line), /\s+/);
+		let prio = +replace(parts[0], ':', '');
+		for (let i = 1; i + 1 < length(parts); i++) {
+			if (parts[i] == 'iif') { m[prio] = parts[i + 1]; break; }
+		}
+	}
+	f.close();
+	return m;
+}
+
+function fmt_rule(r, iif_map) {
+	let src    = r.src    ? sprintf(' from %s', anon(r.src)) : ' from all';
+	let iif    = iif_map[r.priority] ? sprintf(' iif %s', iif_map[r.priority]) : '';
+	let fwmark = r.fwmark ? sprintf(' fwmark 0x%x/0x%x', r.fwmark, r.fwmask) : '';
+	let action;
+	if      (r.action == 6) action = 'blackhole';
+	else if (r.action == 7) action = 'unreachable';
+	else if (r.action == 8) action = 'prohibit';
+	else                    action = sprintf('lookup %s', r.table);
+	printf('  %-12s%s%s%s %s\n', (r.priority ?? 0) + ':', src, iif, fwmark, action);
+}
+
+let iif6_map = parse_iif('6');
+let iif4_map = parse_iif('4');
+
+// --- IPv6 policy rules ---
+printf('=== IPv6 Policy Rules ===\n');
+for (let r in rul6_all) fmt_rule(r, iif6_map);
+printf('\n');
+
+// --- IPv4 policy rules ---
+printf('=== IPv4 Policy Rules ===\n');
+for (let r in rul4_all) fmt_rule(r, iif4_map);
+printf('\n');
+
+// --- IPv6 neighbor cache ---
+printf('=== IPv6 Neighbor Cache ===\n');
+for (let n in nb_all) {
+	if (n.family != 10 || n.dev == 'lo') continue;
+	let mac = n.lladdr ? sprintf(' lladdr %s', n.lladdr) : '';
+	printf('  %-40s dev %-16s%s %s\n', anon(n.dst), n.dev, mac, nud_name(n.state));
+}
+printf('\n');
+
+// --- IPv4 neighbor cache ---
+printf('=== IPv4 Neighbor Cache ===\n');
+for (let n in nb_all) {
+	if (n.family != 2 || n.dev == 'lo') continue;
+	let mac = n.lladdr ? sprintf(' lladdr %s', n.lladdr) : '';
+	printf('  %-18s dev %-16s%s %s\n', anon(n.dst), n.dev, mac, nud_name(n.state));
+}
+printf('\n');
+
+// --- mwan3 status ---
+printf('=== mwan3 Interface Status ===\n');
+if (mwan3_st?.interfaces) {
+	for (let iface, d in mwan3_st.interfaces) {
+		printf('  %-14s status=%-12s score=%d tracking=%s\n',
+		       iface, d.status, d.score, d.tracking);
+		for (let tip in (d.track_ip || []))
+			printf('    track %-30s status=%-8s latency=%dms loss=%d%%\n',
+			       anon(tip.ip), tip.status, tip.latency, tip.packetloss);
+	}
+} else {
+	printf('  (mwan3 not running or ubus call failed)\n');
+}
+printf('\n');
+
+// --- mwan3 UCI config ---
+printf('=== mwan3 Configuration (/etc/config/mwan3) ===\n');
+if (mwan3_cfg)
+	printf('%s\n', anon_text(mwan3_cfg));
+else
+	printf('  (not found)\n\n');
+
+// --- full mwan3 nft table ---
+printf('=== mwan3 nft table (%s) ===\n', mwan3_tbl);
+printf('%s\n', strip_set_elements(pcmd(sprintf('nft list table %s 2>/dev/null', mwan3_tbl))));
+
+// --- fw4 mangle chains (relevant to mwan3 mark interactions) ---
+printf('=== fw4 mangle_prerouting chain ===\n');
+printf('%s\n', pcmd('nft list chain inet fw4 mangle_prerouting 2>/dev/null'));
+
+printf('=== fw4 mangle_output chain ===\n');
+printf('%s\n', pcmd('nft list chain inet fw4 mangle_output 2>/dev/null'));
+
+printf('=== fw4 output chain ===\n');
+printf('%s\n', pcmd('nft list chain inet fw4 output 2>/dev/null'));
+
+// --- recent mwan3 log ---
+printf('=== Recent mwan3 Log (last 200 lines) ===\n');
+printf('%s\n', pcmd('logread 2>/dev/null | grep -E "mwan3track\\[|mwan3-hotplug\\[|mwan3-init\\[|mwan3\\[" | tail -200'));
+
+printf('=== End of Report ===\n');
