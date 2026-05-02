@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mwan3
-PKG_VERSION:=3.5
+PKG_VERSION:=3.5.1
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Florian Eckert <fe@dev.tdt.de>
@@ -55,7 +55,7 @@ endef
 define Package/mwan3/preinst
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
-	# Stop mwan3evtd if upgrading from v3.4 (where it existed). The
+	# Stop mwan3evtd if present (older installs included this daemon). The
 	# pre-upgrade hook runs before APK removes files no longer in the
 	# package, so this must happen here to avoid leaving a running process
 	# with no init script or binary after the file swap.
@@ -79,26 +79,28 @@ if [ -z "$${IPKG_INSTROOT}" ]; then
 	# Safety-net stop in case preinst did not run or procd restarted the
 	# service between preinst and postinst.
 	/etc/init.d/mwan3 stop 2>/dev/null
-	# v3.2+: priority is mangle + 1 (was mangle - 1 in v3.1.4),
-	# backed by non-destructive vmap-dispatch save/restore so the
-	# placement is order-independent w.r.t. pbr. nftables rejects a base
-	# chain redeclaration at a different priority, so flush+delete first.
+	# mwan3_prerouting/mwan3_output run at priority mangle + 1, backed by
+	# non-destructive vmap-dispatch save/restore so the placement is
+	# order-independent w.r.t. pbr. Older installs used mangle - 1.
+	# nftables rejects a base chain redeclaration at a different priority,
+	# so flush+delete the old chains before start recreates them.
 	for chain in mwan3_prerouting mwan3_output; do
 		if nft list chain inet fw4 "$$chain" 2>/dev/null | grep -q "priority mangle - 1"; then
 			nft flush chain inet fw4 "$$chain" 2>/dev/null
 			nft delete chain inet fw4 "$$chain" 2>/dev/null
 		fi
 	done
-	# Drop legacy ip->mark sticky maps from <=v3.1.4. They are replaced by
-	# per-(rule,family,member) ip-only sets. Leftover legacy maps are
-	# unreferenced after upgrade but waste a name and confuse status.
+	# Drop legacy ip->mark sticky maps (replaced by per-(rule,family,member)
+	# ip-only sets). Leftover legacy maps are unreferenced after upgrade
+	# but waste a name and confuse status.
 	for mapname in $$(nft list maps inet 2>/dev/null | \
 			  awk '$$1=="map" && $$2 ~ /^mwan3_sticky_v[46]_/ { print $$2 }'); do
 		nft delete map inet fw4 "$$mapname" 2>/dev/null
 	done
-	# v4+: mwan3 moved from table inet fw4 to table inet mwan3. fw4 uses
-	# flush-table (not delete-table) on reload, so chains/sets added by
-	# v3.x survive across fw4 reloads and must be explicitly removed.
+	# mwan3 now operates in table inet mwan3 rather than table inet fw4.
+	# fw4 uses flush-table (not delete-table) on reload, so any mwan3
+	# chains/sets left in fw4 survive fw4 reloads and must be explicitly
+	# removed.
 	for chain in mwan3_prerouting mwan3_output mwan3_postrouting \
 	             mwan3_ifaces_in mwan3_rules mwan3_connected mwan3_custom mwan3_dynamic; do
 		nft flush chain inet fw4 "$$chain" 2>/dev/null
@@ -114,10 +116,9 @@ if [ -z "$${IPKG_INSTROOT}" ]; then
 		nft flush map inet fw4 "$$mapname" 2>/dev/null
 		nft delete map inet fw4 "$$mapname" 2>/dev/null
 	done
-	# Remove stale firewall.mwan3_reload UCI section (v3.x only) and
-	# reload fw4 only if the section existed. On a fresh v4.x install
-	# no such section is present; an unconditional fw4 -q reload would
-	# trigger queued ifup hotplug events that race with mwan3_create_iface_rules
+	# Remove stale firewall.mwan3_reload UCI section if present and reload
+	# fw4 only if it was. An unconditional fw4 -q reload would trigger
+	# queued ifup hotplug events that race with mwan3_create_iface_rules
 	# in the init hotplug, producing RTNETLINK "File exists" errors.
 	if uci -q delete firewall.mwan3_reload; then
 		uci commit firewall
