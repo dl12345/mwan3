@@ -228,6 +228,22 @@ function get_table_routes(table_id) {
 	return routes;
 }
 
+function nslookup_resolve(host, type) {
+	const p = popen(sprintf('/bin/busybox nslookup -type=%s %s 127.0.0.1 2>/dev/null', type, host), 'r');
+	if (!p) return [];
+	const raw = p.read('all');
+	p.close();
+	if (!raw || length(raw) == 0) return [];
+	const found = [];
+	for (let line in split(raw, '\n')) {
+		if (index(line, 'Address:') != 0) continue;
+		const rest = ltrim(substr(line, 8));
+		if (index(rest, '127.0.0.1') >= 0) continue;
+		if (length(rest) > 0) push(found, rest);
+	}
+	return found;
+}
+
 function routing_health() {
 	const IIF_BASE    = 1000;
 	const FWMARK_BASE = 2000;
@@ -562,6 +578,18 @@ const methods = {
 			const result = get_nftset_elements(setname, max > 5000 ? 5000 : max);
 			result.set = setname;
 			return result;
+		}
+	},
+	resolve_host: {
+		args: { host: '', family: '' },
+		call: function(request) {
+			const host = request.args.host;
+			if (!host || !match(host, /^[a-zA-Z0-9._-]+$/))
+				return { error: 'invalid hostname', v4: [], v6: [] };
+			const family = request.args.family || '';
+			const v4 = (family !== 'ipv6') ? nslookup_resolve(host, 'A')    : [];
+			const v6 = (family !== 'ipv4') ? nslookup_resolve(host, 'AAAA') : [];
+			return { v4: v4, v6: v6 };
 		}
 	},
 	routing_health: {
