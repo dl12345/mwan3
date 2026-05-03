@@ -120,7 +120,11 @@ function get_nftset_members(setname) {
 		for (let item in data.nftables) {
 			if (item?.set?.elem) {
 				for (let elem in item.set.elem) {
-					const val = parse_elem_val(elem);
+					let val;
+					if (type(elem) == 'object' && elem?.elem)
+						val = parse_elem_val(elem.elem?.val);
+					else
+						val = parse_elem_val(elem);
 					if (val != null)
 						push(members, val);
 				}
