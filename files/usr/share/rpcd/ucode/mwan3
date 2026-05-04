@@ -637,6 +637,108 @@ const methods = {
 					};
 			}
 		}
+	},
+	nftset_flush: {
+		args: { set: '' },
+		call: function(request) {
+			const setname = request.args.set;
+			if (!setname || !match(setname, /^[a-zA-Z0-9_-]+$/))
+				return { error: 'invalid set name' };
+			const proc = popen(sprintf('nft flush set inet mwan3 %s 2>&1', setname), 'r');
+			if (!proc)
+				return { error: 'failed to run nft' };
+			const out = proc.read('all');
+			const rc = proc.close();
+			if (rc != 0)
+				return { error: rtrim(out, '\n') || 'nft flush failed' };
+			return {};
+		}
+	},
+	nftset_reload: {
+		args: { set: '' },
+		call: function(request) {
+			const setname = request.args.set;
+			if (!setname || !match(setname, /^[a-zA-Z0-9_-]+$/))
+				return { error: 'invalid set name' };
+
+			let proc = popen(sprintf('nft flush set inet mwan3 %s 2>&1', setname), 'r');
+			if (!proc) return { error: 'failed to run nft' };
+			let out = proc.read('all');
+			let rc = proc.close();
+			if (rc != 0) return { error: rtrim(out, '\n') || 'nft flush failed' };
+
+			const uci = cursor();
+			let cfg = null;
+			uci.foreach('mwan3', 'ipset', function(s) {
+				if (s.name == setname) {
+					if (s.enabled !== '0')
+						cfg = s;
+					return false;
+				}
+			});
+			if (!cfg) return {};
+
+			const elements = [];
+			let entries = cfg.entry || [];
+			if (type(entries) != 'array') entries = [entries];
+			for (let e in entries) {
+				const ev = ltrim(rtrim(e, ' \t\r\n'), ' \t\r\n');
+				if (length(ev) > 0) push(elements, ev);
+			}
+			if (cfg.loadfile) {
+				const content = readfile(cfg.loadfile);
+				if (content) {
+					for (let line in split(content, '\n')) {
+						const ci = index(line, '#');
+						if (ci >= 0) line = substr(line, 0, ci);
+						line = ltrim(rtrim(line, ' \t\r\n'), ' \t\r\n');
+						if (length(line) > 0) push(elements, line);
+					}
+				}
+			}
+			if (length(elements) == 0) return {};
+
+			proc = popen(sprintf('nft add element inet mwan3 %s { %s } 2>&1',
+				setname, join(', ', elements)), 'r');
+			if (!proc) return { error: 'failed to run nft add element' };
+			out = proc.read('all');
+			rc = proc.close();
+			if (rc != 0) return { error: rtrim(out, '\n') || 'nft add element failed' };
+			return {};
+		}
+	},
+	nftset_resolve: {
+		args: { set: '' },
+		call: function(request) {
+			const setname = request.args.set;
+			if (!setname || !match(setname, /^[a-zA-Z0-9_-]+$/))
+				return { error: 'invalid set name' };
+
+			const uci = cursor();
+			let cfg = null;
+			uci.foreach('mwan3', 'ipset', function(s) {
+				if (s.name == setname) {
+					if (s.enabled !== '0')
+						cfg = s;
+					return false;
+				}
+			});
+			if (!cfg) return { error: 'set not found in config' };
+
+			let domains = cfg.domain || [];
+			if (type(domains) != 'array') domains = [domains];
+			if (length(domains) == 0) return {};
+
+			ubus.call('service', 'signal', { name: 'dnsmasq', signal: 1 });
+
+			const qtype = (cfg.family == 'ipv6') ? 'AAAA' : 'A';
+			let resolved = 0;
+			for (let domain in domains) {
+				const addrs = nslookup_resolve(domain, qtype);
+				if (length(addrs) > 0) resolved++;
+			}
+			return { resolved: resolved };
+		}
 	}
 };
 
