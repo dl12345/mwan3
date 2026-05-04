@@ -93,7 +93,7 @@ mwan3_update_dev_to_table()
 		config_get family "$1" family ipv4
 		network_get_device device "$1"
 		[ -z "$device" ] && return
-		config_get_bool enabled "$1" enabled
+		config_get_bool enabled "$1" enabled 1
 		[ "$enabled" -eq 0 ] && return
 		curr_table=$(eval "echo	 \"\$mwan3_dev_tbl_${family}\"")
 		export "mwan3_dev_tbl_$family=${curr_table}${device}=$_tid "
