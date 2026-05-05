@@ -1159,6 +1159,10 @@ mwan3_set_user_nft_rule()
 	local ipset_name ipset_src family proto policy src_ip src_port src_iface src_dev
 	local sticky dest_ip dest_port use_policy timeout policy
 	local global_logging rule_logging loglevel rule_policy rule ipv
+	local enabled
+
+	config_get_bool enabled "$1" enabled 1
+	[ "$enabled" -eq 1 ] || return
 
 	rule="$1"
 	ipv="$2"
@@ -1428,7 +1432,9 @@ mwan3_set_user_iface_rules()
 
 	iface_rule()
 	{
-		local src_iface
+		local src_iface enabled
+		config_get_bool enabled "$1" enabled 1
+		[ "$enabled" -eq 1 ] || return
 		config_get src_iface "$1" src_iface
 		[ "$src_iface" = "$iface" ] && is_src_iface=1
 	}
