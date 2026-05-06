@@ -9,6 +9,7 @@ DEVICE=""
 
 IFDOWN_EVENT=0
 IFUP_EVENT=0
+WRAP_LIB=/lib/mwan3/libwrap_mwan3_sockopt.so.1.0
 
 stop_subprocs() {
 	local killpids="$(jobs -p)"
@@ -17,7 +18,7 @@ stop_subprocs() {
 
 WRAP() {
 	# shellcheck disable=SC2048
-	FAMILY=$FAMILY DEVICE=$DEVICE SRCIP=$SRC_IP FWMARK=$MMX_DEFAULT LD_PRELOAD=/lib/mwan3/libwrap_mwan3_sockopt.so.1.0 $*
+	FAMILY=$FAMILY DEVICE=$DEVICE SRCIP=$SRC_IP FWMARK=$MMX_DEFAULT LD_PRELOAD=$WRAP_LIB $*
 }
 
 clean_up() {
@@ -105,9 +106,8 @@ validate_track_method() {
 }
 
 validate_wrap() {
-	[ -x /lib/mwan3/libwrap_mwan3_sockopt.so.1.0 ] && return
-	LOG error "Missing libwrap_mwan3_sockopt. Please reinstall mwan3." &&
-		exit 1
+	[ -f "$WRAP_LIB" ] && return
+	LOG error "Missing libwrap_mwan3_sockopt. Please reinstall mwan3." && exit 1
 }
 
 disconnected() {
@@ -241,6 +241,7 @@ main() {
 	PING_OUTPUT=$MWAN3TRACK_STATUS_DIR/$INTERFACE/PING_OUTPUT
 
 	mwan3_init
+	validate_wrap
 
 	trap clean_up TERM
 	trap if_down USR1
