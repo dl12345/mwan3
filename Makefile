@@ -33,7 +33,8 @@ define Package/mwan3
      +ucode-mod-uloop \
      +ucode-mod-uci \
      +ucode-mod-ubus \
-     +ucode-mod-fs
+     +ucode-mod-fs \
+     +ucode-mod-socket
    TITLE:=Multiwan hotplug script with connection tracking support (ucode rtmon)
    MAINTAINER:=Florian Eckert <fe@dev.tdt.de>
    PKGARCH:=all
