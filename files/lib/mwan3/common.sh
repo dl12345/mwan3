@@ -437,6 +437,28 @@ mwan3_init()
 
 	# Precompute mask complement for nft rules
 	MMX_MASK_COMPLEMENT=$(printf "0x%08x" $(( (~MMX_MASK) & 0xFFFFFFFF )))
+
+	# Configurable ip rule base priorities. Defaults preserve the historical
+	# layout exactly: per-interface iif lookup rules at id+1000, fwmark lookup
+	# rules at id+2000, fwmark unreachable rules at id+3000. Two ordering
+	# constraints must hold to avoid priority collisions:
+	#   iif_rule_base + MWAN3_INTERFACE_MAX < fwmark_rule_base
+	#   fwmark_rule_base + MWAN3_INTERFACE_MAX + 1 < unreachable_rule_base
+	# (the +1 reflects that the fwmark tier also contains the global blackhole
+	# and unreachable rules at fwmark_rule_base + MM_BLACKHOLE / MM_UNREACHABLE,
+	# the highest of which is fwmark_rule_base + MWAN3_INTERFACE_MAX + 2.)
+	# If either constraint is violated, all three values are reverted to defaults.
+	config_get MWAN3_IIF_RULE_BASE globals iif_rule_base 1000
+	config_get MWAN3_FWMARK_RULE_BASE globals fwmark_rule_base 2000
+	config_get MWAN3_UNREACHABLE_RULE_BASE globals unreachable_rule_base 3000
+
+	if [ "$((MWAN3_IIF_RULE_BASE + MWAN3_INTERFACE_MAX))" -ge "$MWAN3_FWMARK_RULE_BASE" ] || \
+	   [ "$((MWAN3_FWMARK_RULE_BASE + MWAN3_INTERFACE_MAX + 1))" -ge "$MWAN3_UNREACHABLE_RULE_BASE" ]; then
+		LOG warn "Rule base ordering constraint violated (iif=$MWAN3_IIF_RULE_BASE, fwmark=$MWAN3_FWMARK_RULE_BASE, unreachable=$MWAN3_UNREACHABLE_RULE_BASE, max_interfaces=$MWAN3_INTERFACE_MAX); reverting all to defaults 1000/2000/3000"
+		MWAN3_IIF_RULE_BASE=1000
+		MWAN3_FWMARK_RULE_BASE=2000
+		MWAN3_UNREACHABLE_RULE_BASE=3000
+	fi
 }
 
 # maps the 1st parameter so it only uses the bits allowed by the bitmask (2nd parameter)

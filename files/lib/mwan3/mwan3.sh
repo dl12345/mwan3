@@ -498,12 +498,12 @@ mwan3_set_general_rules()
 
 	for IP in "$IP4" "$IP6"; do
 		[ "$IP" = "$IP6" ] && [ $NO_IPV6 -ne 0 ] && continue
-		RULE_NO=$((MM_BLACKHOLE+2000))
+		RULE_NO=$((MM_BLACKHOLE+MWAN3_FWMARK_RULE_BASE))
 		if [ -z "$($IP rule list | awk -v var="$RULE_NO:" '$1 == var')" ]; then
 			$IP rule add pref $RULE_NO fwmark $MMX_BLACKHOLE/$MMX_MASK blackhole
 		fi
 
-		RULE_NO=$((MM_UNREACHABLE+2000))
+		RULE_NO=$((MM_UNREACHABLE+MWAN3_FWMARK_RULE_BASE))
 		if [ -z "$($IP rule list | awk -v var="$RULE_NO:" '$1 == var')" ]; then
 			$IP rule add pref $RULE_NO fwmark $MMX_UNREACHABLE/$MMX_MASK unreachable
 		fi
@@ -878,14 +878,14 @@ mwan3_create_iface_rules()
 
 	mwan3_delete_iface_rules "$1"
 
-	$IP rule add pref $((id+1000)) iif "$2" lookup "$id" 2>/dev/null
-	$IP rule add pref $((id+2000)) fwmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK" lookup "$id" 2>/dev/null
-	$IP rule add pref $((id+3000)) fwmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK" unreachable 2>/dev/null
+	$IP rule add pref $((id+MWAN3_IIF_RULE_BASE)) iif "$2" lookup "$id" 2>/dev/null
+	$IP rule add pref $((id+MWAN3_FWMARK_RULE_BASE)) fwmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK" lookup "$id" 2>/dev/null
+	$IP rule add pref $((id+MWAN3_UNREACHABLE_RULE_BASE)) fwmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK" unreachable 2>/dev/null
 }
 
 mwan3_delete_iface_rules()
 {
-	local id family IP rule_id
+	local id family IP pref fwmark_val
 
 	config_get family "$1" family ipv4
 	mwan3_get_iface_id id "$1"
@@ -900,9 +900,34 @@ mwan3_delete_iface_rules()
 		return
 	fi
 
-	for rule_id in $($IP rule list | awk -F : '$1 % 1000 == '$id' && $1 > 1000 && $1 < 4000 {print $1}'); do
-		$IP rule del pref $rule_id
+	# Delete iif rule(s): any rule with the iif keyword referencing this
+	# interface's table id. Routing tables 1..MWAN3_INTERFACE_MAX are
+	# mwan3-owned, so a match is unambiguous.
+	for pref in $($IP rule list | awk '/iif/ {
+		for (i=1; i<=NF; i++)
+			if ($i == "lookup" && $(i+1)+0 == '$id') { sub(/:$/, "", $1); print $1; next }
+	}'); do
+		$IP rule del pref "$pref" 2>/dev/null
 	done
+
+	# Discover fwmark/mask from the fwmark lookup rule. The routing table id
+	# is the anchor: any fwmark rule with lookup $id is mwan3's rule for this
+	# interface, regardless of priority or mask value. This handles base
+	# changes, MMX_MASK changes, and upgrade from pre-configurable-base
+	# versions transparently. Once the mark/mask is known, the matching
+	# unreachable rule can be deleted by content too.
+	fwmark_val=$($IP rule list | awk '/fwmark/ {
+		fmark=""
+		for (i=1; i<=NF; i++) {
+			if ($i == "fwmark") fmark=$(i+1)
+			if ($i == "lookup" && $(i+1)+0 == '$id' && fmark != "") { print fmark; exit }
+		}
+	}')
+
+	if [ -n "$fwmark_val" ]; then
+		$IP rule del fwmark "$fwmark_val" lookup "$id" 2>/dev/null
+		$IP rule del fwmark "$fwmark_val" unreachable 2>/dev/null
+	fi
 }
 
 mwan3_set_policy()
@@ -1159,7 +1184,7 @@ mwan3_set_user_nft_rule()
 	local ipset_name ipset_src family proto policy src_ip src_port src_iface src_dev
 	local sticky dest_ip dest_port use_policy timeout policy
 	local global_logging rule_logging loglevel rule_policy rule ipv
-	local enabled
+	local enabled fwmark fwmask
 
 	config_get_bool enabled "$1" enabled 1
 	[ "$enabled" -eq 1 ] || return
@@ -1182,10 +1207,41 @@ mwan3_set_user_nft_rule()
 	config_get rule_logging "$1" logging 0
 	config_get global_logging globals logging 0
 	config_get loglevel globals loglevel notice
+	config_get fwmark "$1" fwmark
+	config_get fwmask "$1" fwmask
+
+	# fwmark and fwmask must be specified together. Skip the rule if only one
+	# is set. Warn (not error) if the user-supplied mask overlaps mwan3's
+	# internal MMX_MASK: the match would then fire on packets already carrying
+	# an mwan3 classification mark, which can cause unexpected double-policy
+	# assignment. The rule is still installed in that case.
+	if [ -n "$fwmark" ] && [ -z "$fwmask" ]; then
+		LOG warn "Rule $1: fwmark specified without fwmask; rule skipped"
+		return
+	fi
+	if [ -z "$fwmark" ] && [ -n "$fwmask" ]; then
+		LOG warn "Rule $1: fwmask specified without fwmark; rule skipped"
+		return
+	fi
+	if [ -n "$fwmask" ] && [ $(( fwmask & MMX_MASK )) -ne 0 ]; then
+		LOG warn "Rule $1: fwmask $fwmask overlaps mwan3 internal mask $MMX_MASK; unexpected behaviour possible"
+	fi
 
 	[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && return
 	[ "$family" = "ipv4" ] && [ "$ipv" = "ipv6" ] && return
 	[ "$family" = "ipv6" ] && [ "$ipv" = "ipv4" ] && return
+
+	# family=any rules whose nft expression has no IP-version-specific element
+	# (no src_ip/dest_ip/ipset/ipset_src) generate identical output on both the
+	# ipv4 and ipv6 passes. Skip the ipv6 pass to avoid pushing a duplicate
+	# rule. The ipv4 pass output already matches IPv6 traffic at runtime
+	# because the match operates on family-agnostic fields (meta mark, l4proto,
+	# port, iifname).
+	if [ "$family" = "any" ] && [ "$ipv" = "ipv6" ] && \
+	   [ -z "$src_ip" ] && [ -z "$dest_ip" ] && \
+	   [ -z "$ipset_name" ] && [ -z "$ipset_src" ]; then
+		return
+	fi
 
 	for ipaddr in "$src_ip" "$dest_ip"; do
 		if [ -n "$ipaddr" ] && { { [ "$ipv" = "ipv4" ] && echo "$ipaddr" | grep -qE "$IPv6_REGEX"; } ||
@@ -1317,6 +1373,14 @@ mwan3_set_user_nft_rule()
 		local nft_dest_port
 		nft_dest_port=$(echo "$dest_port" | sed 's/:/-/g; s/,/, /g')
 		nft_match="$nft_match th dport { $nft_dest_port }"
+	fi
+
+	# fwmark/fwmask: classify traffic by an externally-applied socket/packet
+	# mark (e.g. SO_MARK from a userspace daemon). Operates on meta mark, so
+	# it is address-family agnostic: a rule with only fwmark/fwmask set and
+	# family=any applies to both IPv4 and IPv6.
+	if [ -n "$fwmark" ]; then
+		nft_match="$nft_match meta mark & $fwmask == $fwmark"
 	fi
 
 	# If family is explicitly ipv4 or ipv6 but nft_match has no implicit family
@@ -1603,11 +1667,11 @@ mwan3_report_iface_status()
 		result="$(mwan3_get_iface_hotplug_state $1) $online, uptime $uptime"
 	else
 		result=0
-		[ -n "$($IP rule | awk '$1 == "'$((id+1000)):'"')" ] ||
+		[ -n "$($IP rule | awk '$1 == "'$((id+MWAN3_IIF_RULE_BASE)):'"')" ] ||
 			result=$((result+1))
-		[ -n "$($IP rule | awk '$1 == "'$((id+2000)):'"')" ] ||
+		[ -n "$($IP rule | awk '$1 == "'$((id+MWAN3_FWMARK_RULE_BASE)):'"')" ] ||
 			result=$((result+2))
-		[ -n "$($IP rule | awk '$1 == "'$((id+3000)):'"')" ] ||
+		[ -n "$($IP rule | awk '$1 == "'$((id+MWAN3_UNREACHABLE_RULE_BASE)):'"')" ] ||
 			result=$((result+4))
 		[ -n "$($NFT list chain inet mwan3 mwan3_iface_in_$1 2>/dev/null)" ] ||
 			result=$((result+8))
