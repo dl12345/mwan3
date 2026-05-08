@@ -245,11 +245,23 @@ function nslookup_resolve(host, type) {
 }
 
 function routing_health() {
-	const IIF_BASE    = 1000;
-	const FWMARK_BASE = 2000;
-	const MAX_IFACES  = 63;
-
 	const uci = cursor();
+
+	const mmx_mask = int(uci.get('mwan3', 'globals', 'mmx_mask')) || 0x3F00;
+	let bitcnt = 0;
+	for (let m = mmx_mask; m; m >>= 1) bitcnt += m & 1;
+	const mmdefault = (1 << bitcnt) - 1;
+	const iface_max = mmdefault - 3;
+
+	let IIF_BASE     = int(uci.get('mwan3', 'globals', 'iif_rule_base'))         || 1000;
+	let FWMARK_BASE  = int(uci.get('mwan3', 'globals', 'fwmark_rule_base'))      || 2000;
+	let UNREACH_BASE = int(uci.get('mwan3', 'globals', 'unreachable_rule_base')) || 3000;
+	if ((IIF_BASE + iface_max) >= FWMARK_BASE ||
+	    (FWMARK_BASE + iface_max + 1) >= UNREACH_BASE) {
+		IIF_BASE    = 1000;
+		FWMARK_BASE = 2000;
+		UNREACH_BASE = 3000;
+	}
 
 	// Build ordered interface list with 1-based index (same ordering mwan3 uses)
 	const iface_order = [];
@@ -271,18 +283,18 @@ function routing_health() {
 	const valid_priorities = {};
 	for (let ifname in iface_order) {
 		const id = iface_index[ifname];
-		valid_priorities[IIF_BASE + id]    = true;
-		valid_priorities[FWMARK_BASE + id] = true;
+		valid_priorities[IIF_BASE     + id] = true;
+		valid_priorities[FWMARK_BASE  + id] = true;
+		valid_priorities[UNREACH_BASE + id] = true;
 	}
-	// Built-in policy rules are always valid: blackhole (MAX_IFACES-2) and unreachable (MAX_IFACES-1)
-	valid_priorities[FWMARK_BASE + MAX_IFACES - 2] = true;
-	valid_priorities[FWMARK_BASE + MAX_IFACES - 1] = true;
+	valid_priorities[FWMARK_BASE + mmdefault - 2] = true;
+	valid_priorities[FWMARK_BASE + mmdefault - 1] = true;
 
 	// Per-interface health report
 	const result = {};
 	for (let ifname in iface_order) {
 		const id            = iface_index[ifname];
-		const iif_pri       = IIF_BASE + id;
+		const iif_pri       = IIF_BASE    + id;
 		const fwmark_pri    = FWMARK_BASE + id;
 		const iif_rule      = rule_by_priority[iif_pri];
 		const fwmark_rule   = rule_by_priority[fwmark_pri];
@@ -321,15 +333,21 @@ function routing_health() {
 	for (let rule in all_rules) {
 		const p = rule?.priority;
 		if (p == null) continue;
-		const in_iif_range    = (p > IIF_BASE    && p <= IIF_BASE    + MAX_IFACES);
-		const in_fwmark_range = (p > FWMARK_BASE && p <= FWMARK_BASE + MAX_IFACES);
-		if ((in_iif_range || in_fwmark_range) && !valid_priorities[p])
+		const in_iif_range     = (p > IIF_BASE     && p <= IIF_BASE     + mmdefault);
+		const in_fwmark_range  = (p > FWMARK_BASE  && p <= FWMARK_BASE  + mmdefault);
+		const in_unreach_range = (p > UNREACH_BASE && p <= UNREACH_BASE + mmdefault);
+		if ((in_iif_range || in_fwmark_range || in_unreach_range) && !valid_priorities[p])
 			push(stale, { priority: p });
 	}
 
 	const mwan3_active = length(glob('/var/run/mwan3track/*/STATUS') || []) > 0;
 
-	return { interfaces: result, stale_rules: stale, mwan3_active: mwan3_active };
+	return {
+		interfaces:  result,
+		stale_rules: stale,
+		mwan3_active: mwan3_active,
+		rule_bases: { iif: IIF_BASE, fwmark: FWMARK_BASE },
+	};
 }
 
 function get_connected_ips(version) {
