@@ -296,8 +296,10 @@ function routing_health() {
 		const id            = iface_index[ifname];
 		const iif_pri       = IIF_BASE    + id;
 		const fwmark_pri    = FWMARK_BASE + id;
+		const unreach_pri   = UNREACH_BASE + id;
 		const iif_rule      = rule_by_priority[iif_pri];
 		const fwmark_rule   = rule_by_priority[fwmark_pri];
+		const unreach_rule  = rule_by_priority[unreach_pri];
 		const table_routes  = get_table_routes(id);
 		const default_routes = filter(table_routes, r =>
 			r?.dst == 'default' || r?.dst == '0.0.0.0/0' || r?.dst == '::/0'
@@ -314,6 +316,10 @@ function routing_health() {
 			fwmark_rule: {
 				present:  fwmark_rule != null,
 				priority: fwmark_pri,
+			},
+			unreach_rule: {
+				present:  unreach_rule != null,
+				priority: unreach_pri,
 			},
 			table: {
 				id:           id,
@@ -346,7 +352,7 @@ function routing_health() {
 		interfaces:  result,
 		stale_rules: stale,
 		mwan3_active: mwan3_active,
-		rule_bases: { iif: IIF_BASE, fwmark: FWMARK_BASE },
+		rule_bases: { iif: IIF_BASE, fwmark: FWMARK_BASE, unreach: UNREACH_BASE },
 	};
 }
 
