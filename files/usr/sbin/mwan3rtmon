@@ -435,6 +435,34 @@ function populate_iface_routes() {
 }
 
 // ---------------------------------------------------------------------------
+// Repopulate mwan3_custom set from extra_table_set (used on SIGHUP reload)
+// ---------------------------------------------------------------------------
+
+function repopulate_custom_sets() {
+
+	if (length(keys(extra_table_set)) == 0)
+		return;
+
+	let setname = (family_num == AF_INET) ? "mwan3_custom_v4" : "mwan3_custom_v6";
+	let routes = rtnl.request(RTM_GETROUTE, NLM_F_DUMP, { family: family_num }) ?? [];
+
+	let cmds = [ "flush set inet mwan3 " + setname ];
+	let seen = {};
+	for (let r in routes) {
+		if (!extra_table_set[r.table])
+			continue;
+		let dst = r.dst;
+		if (dst == null || is_default_route(r) || is_linklocal_route(r))
+			continue;
+		if (!seen[dst]) {
+			push(cmds, "add element inet mwan3 " + setname + " { " + dst + " }");
+			seen[dst] = true;
+		}
+	}
+	nft_batch(cmds);
+}
+
+// ---------------------------------------------------------------------------
 // Handle rt_table_lookup route events -> mwan3_custom set
 // ---------------------------------------------------------------------------
 
@@ -637,6 +665,12 @@ function main() {
 	uloop.signal("SIGINT", () => {
 		log_msg("debug", "received SIGINT, exiting");
 		uloop.end();
+	});
+
+	uloop.signal("SIGHUP", () => {
+		log_msg("debug", "received SIGHUP, reloading config");
+		load_config();
+		repopulate_custom_sets();
 	});
 
 	log_msg("debug", "entering event loop");

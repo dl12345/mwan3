@@ -180,6 +180,13 @@ reload_service() {
 	mwan3_update_iface_to_table
 	mwan3_set_general_rules
 
+	# Signal mwan3rtmon to reload UCI config and re-sync the custom sets.
+	# This is needed when rt_table_lookup changes: the running mwan3rtmon
+	# holds a stale extra_table_set in memory until it reloads. Sent after
+	# the nft commit so the sets exist when rtmon re-dumps them.
+	procd_send_signal mwan3 rtmon_ipv4 HUP
+	[ $NO_IPV6 -eq 0 ] && procd_send_signal mwan3 rtmon_ipv6 HUP
+
 	# mwan3_write_dnsmasq_fragments restarts dnsmasq internally if fragment
 	# content changed. User-defined nft sets survive the atomic reload intact
 	# so no HUP is needed here when fragments are unchanged.
