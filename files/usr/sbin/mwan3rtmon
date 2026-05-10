@@ -313,11 +313,13 @@ function is_default_route(route) {
 	        route.dst == "::/0");
 }
 
-// Check if route is fe80::/64 (link-local)
+// Check if route is link-local (fe80::/10 IPv6 or 169.254.0.0/16 IPv4)
 
 function is_linklocal_route(route) {
 
-	return (route.dst != null && match(route.dst, /^fe80::\//) != null);
+	return (route.dst != null &&
+	        (match(route.dst, /^fe80::\//) != null ||
+	         match(route.dst, /^169\.254\./) != null));
 }
 
 // Get all routes from main table (and extra lookup tables) via netlink
@@ -433,6 +435,32 @@ function populate_iface_routes() {
 }
 
 // ---------------------------------------------------------------------------
+// Handle rt_table_lookup route events -> mwan3_custom set
+// ---------------------------------------------------------------------------
+
+// Called when a route is added to or removed from a table listed in
+// rt_table_lookup.  Mirrors the change into mwan3_custom_v4/v6 so that
+// destinations reachable via those tables receive MMX_DEFAULT and bypass
+// mwan3's WAN policy selection.  Default and link-local routes are skipped.
+
+function handle_custom_set_event(route, is_new) {
+
+	let dst = route.dst;
+	if (dst == null || is_default_route(route) || is_linklocal_route(route))
+		return;
+
+	let setname = (family_num == AF_INET) ? "mwan3_custom_v4" : "mwan3_custom_v6";
+
+	if (is_new) {
+		log_msg("debug", "rt_table_lookup: adding " + dst + " to " + setname);
+		nft_exec("add element inet mwan3 " + setname + " { " + dst + " }");
+	} else {
+		log_msg("debug", "rt_table_lookup: removing " + dst + " from " + setname);
+		nft_exec("delete element inet mwan3 " + setname + " { " + dst + " }");
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Handle route events
 // ---------------------------------------------------------------------------
 
@@ -440,6 +468,13 @@ function handle_route_event(event) {
 
 	let cmd = event.cmd;
 	let route = event.msg;
+
+	// Routes in rt_table_lookup tables are mirrored into mwan3_custom_v4/v6.
+
+	if (extra_table_set[route.table]) {
+		handle_custom_set_event(route, cmd == RTM_NEWROUTE);
+		return;
+	}
 
 	// Only handle main table routes
 
