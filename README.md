@@ -1,5 +1,5 @@
 # mwan3 nftables User and Developer Reference
-### mwan3 version: 3.6
+### mwan3 version: 3.6.1
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.
 
 ---
@@ -79,27 +79,30 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.
     - 17.1 [mwan3-lb-test: Load Balancing Distribution Verifier](#171-mwan3-lb-test-load-balancing-distribution-verifier)
     - 17.2 [mwan3-diag: Network Diagnostic Report](#172-mwan3-diag-network-diagnostic-report)
 18. [Changelog](#18-changelog)
-    - 18.1 [Version 3.6](#181-version-36)
-    - 18.2 [Version 3.5.3](#182-version-353)
-    - 18.3 [Version 3.5.2](#183-version-352)
-    - 18.4 [Version 3.5.1](#184-version-351)
-    - 18.5 [Version 3.5](#185-version-35)
-    - 18.6 [Version 3.4.1 (Unreleased)](#186-version-341-unreleased)
-    - 18.7 [Version 3.4](#187-version-34)
-    - 18.8 [Version 3.3.5](#188-version-335)
-    - 18.9 [Version 3.3.4](#189-version-334)
-    - 18.10 [Version 3.3.3](#1810-version-333)
-    - 18.11 [Version 3.3.2](#1811-version-332)
-    - 18.12 [Version 3.3.1](#1812-version-331)
-    - 18.13 [Version 3.3](#1813-version-33)
-    - 18.14 [Version 3.2.3](#1814-version-323)
-    - 18.15 [Version 3.2.2](#1815-version-322)
-    - 18.16 [Version 3.2.1](#1816-version-321)
-    - 18.17 [Version 3.2](#1817-version-32)
-    - 18.18 [Version 3.1.4](#1818-version-314)
-    - 18.19 [Version 3.1.3](#1819-version-313)
-    - 18.20 [Version 3.1.2](#1820-version-312)
-    - 18.21 [Version 3.1.1](#1821-version-311)
+    - 18.1 [Version 3.6.1](#181-version-361)
+    - 18.2 [Version 3.6](#182-version-36)
+    - 18.3 [Version 3.5.3](#183-version-353)
+    - 18.4 [Version 3.5.2](#184-version-352)
+    - 18.5 [Version 3.5.1](#185-version-351)
+    - 18.6 [Version 3.5](#186-version-35)
+    - 18.7 [Version 3.4.1 (Unreleased)](#187-version-341-unreleased)
+    - 18.8 [Version 3.4](#188-version-34)
+    - 18.9 [Version 3.3.5](#189-version-335)
+    - 18.10 [Version 3.3.4](#1810-version-334)
+    - 18.11 [Version 3.3.3](#1811-version-333)
+    - 18.12 [Version 3.3.2](#1812-version-332)
+    - 18.13 [Version 3.3.1](#1813-version-331)
+    - 18.14 [Version 3.3](#1814-version-33)
+    - 18.15 [Version 3.2.3](#1815-version-323)
+    - 18.16 [Version 3.2.2](#1816-version-322)
+    - 18.17 [Version 3.2.1](#1817-version-321)
+    - 18.18 [Version 3.2](#1818-version-32)
+    - 18.19 [Version 3.1.4](#1819-version-314)
+    - 18.20 [Version 3.1.3](#1820-version-313)
+    - 18.21 [Version 3.1.2](#1821-version-312)
+    - 18.22 [Version 3.1.1](#1822-version-311)
+19. [Specific use-cases](#19-specific-use-cases)
+    - 19.1 [Tailscale](#191-tailscale)
 
 ---
 
@@ -212,7 +215,7 @@ The kernel rejects this with "Operation not supported": an nft set-statement can
 
 mwan3 synthesises the masked-restore and masked-save from a primitive the kernel does allow: OR-ing a *literal immediate* into a single register.
 
-```
+```version-311
 meta mark set meta mark | <constant>     # non-destructive: only sets bits, never clears
 ct mark   set ct   mark | <constant>     # same on the conntrack side
 ```
@@ -1893,7 +1896,33 @@ Before printing any output the script builds a map of every public routable IPv4
 
 ## 18. Changelog
 
-### 18.1 Version 3.6
+### 18.1 Version 3.6.1
+
+**Summary:** Extends the legacy mwan3 custom sets that were previously only loaded statically during `start_service()` and `reload_service()` from the tables defined in the UCI global config list option `rt_table_lookup` to be fully dynamic, using mwan3rtmon to listen for and to add and remove routes from the custom sets in response to `RTM_NEWROUTE` and `RTM_DELROUTE` events on the tables defined with `list rt_table_lookup <tableid>`. Adds a `SIGHUP` handler to mwan3rtmon to cause it to flush and repopulate these custom sets, ensuring that their contents remain in sync with any newly added or removed `list rt_table_lookup <tableid>` options in the mwan3 config.
+
+---
+
+#### mwan3: reload mwan3rtmon config on mwan3 reload via SIGHUP
+
+mwan3rtmon loads its UCI configuration once at startup and holds it in memory for the lifetime of the process.  This includes `extra_table_set`, the in-memory set of routing table IDs derived from the `rt_table_lookup` UCI option.  When mwan3 reloads without a full restart (the common path when interface count does not change), mwan3rtmon stays running with its original `extra_table_set` intact.  If the operator changes `rt_table_lookup` during that reload, mwan3rtmon will continue routing events against the old table list until it is manually restarted.
+
+Fix this by adding a `SIGHUP` handler to mwan3rtmon.  On receipt of `SIGHUP` it calls `load_config()` to refresh all in-memory UCI state and then `repopulate_custom_sets()` which performs a live netlink route dump of every table now in `extra_table_set` and rebuilds `mwan3_custom_v4/v6` from scratch. The flush-then-add pattern ensures that tables removed from rt_table_lookup have their routes evicted from the custom sets as well as tables newly added having their current routes immediately mirrored in.
+
+`reload_service()` in the init script sends `SIGHUP` to the rtmon_ipv4 (and rtmon_ipv6 if IPv6 is enabled) procd instances via `procd_send_signal` after `mwan3_nft_reload_commit` and the ip rule updates, so the nft sets and ip rules are fully consistent before mwan3rtmon re-dumps.
+
+The shell-level `mwan3_set_custom_sets()` call already present in `reload_service()` is retained. It runs inside the atomic nft batch and provides a synchronous static snapshot that ensures the sets are never empty during the reload window. The SIGHUP-triggered re-dump that follows is the authoritative update because it runs after the batch commits and picks up any route changes that occurred in the interval between the shell dump and the signal delivery.
+
+---
+
+#### mwan3: handle `rt_table_lookup` route events dynamically
+
+The `rt_table_lookup` feature populated the `mwan3_custom_v4` and `mwan3_custom_v6` nftables sets at startup by reading existing routes from the configured tables, but did not update those sets when routes changed at runtime. Route additions and deletions in `rt_table_lookup` tables were therefore not reflected until mwan3 was restarted.
+
+Add `handle_custom_set_event()`, called from `handle_route_event()` whenever a route event arrives for a table listed in `extra_table_set`. `RTM_NEWROUTE` events add the destination to the appropriate custom set; `RTM_DELROUTE` events remove it. Default routes and link-local routes are excluded, matching the exclusions already applied at startup.
+
+---
+
+### 18.2 Version 3.6
 
 **Summary:** Version 3.6 adds three user-visible features to mwan3 rules. Rules now support an `fwmark`/`fwmask` option to match packets by meta mark using a masked comparison, working alongside or instead of address and ipset matching; mwan3 logs a warning if the fwmask overlaps its internal `MMX_MASK` since such a mask would match packets already carrying an mwan3 classification mark. The ip rule priority tiers for per-interface rules are now configurable via three new globals UCI options (`iif_rule_base`, `fwmark_rule_base`, `unreachable_rule_base`), shifting from the fixed 1000/2000/3000 defaults; two ordering constraints are enforced at startup and rule deletion is rewritten to use content-based matching so it remains correct across base or `mmx_mask` changes. Rules gain `option enabled 0/1`, consistent with interfaces, ipsets, and members.
 
@@ -2054,7 +2083,7 @@ The Policy assigned column label is shortened to Policy.
 
 ---
 
-### 18.2 Version 3.5.3
+### 18.3 Version 3.5.3
 
 **Summary:** Version 3.5.3 adds two major LuCI features and a set of bug fixes and routing reliability improvements.
 
@@ -2144,7 +2173,7 @@ The address family selector controls A vs AAAA record resolution; IPv4 is prefer
 
 ---
 
-### 18.3 Version 3.5.2
+### 18.4 Version 3.5.2
 
 **Summary:** Version 3.5.2 is a bug-fix and maintenance release. It corrects a misrouting bug where kernel-generated NDP Neighbor Solicitation probes entered `mwan3_output` without a conntrack entry, fell through to `mwan3_rules`, and received a WAN policy mark that caused the kernel to probe the gateway via the wrong interface, cycling the NDP entry to FAILED state and breaking WRAP ping tracking for that interface. It updates the package dependency from `ip` to `ip-full` to ensure the full iproute2 implementation is always present, since the busybox `ip` is a minimal subset that does not support all options mwan3 requires. It adds `mwan3-diag`, a ucode diagnostic script installed to `/usr/sbin/mwan3-diag` that collects a comprehensive snapshot of mwan3 state -- interface status, policy routing rules, nftables ruleset, routing tables, conntrack summary and system log -- with all public IP addresses anonymised with stable placeholders so output can be shared safely.
 
@@ -2170,7 +2199,7 @@ Add an icmpv6 NDP accept rule at the top of mwan3_output, mirroring the equivale
 
 ---
 
-### 18.4 Version 3.5.1
+### 18.5 Version 3.5.1
 
 **Summary:** Version 3.5.1 is a bug-fix and maintenance release. It corrects a silent failure in `mwan3rtmon` where route replication to per-interface routing tables was completely non-functional, adds nft set flag-change detection on reload so that changing a set's timeout, counter, or size options takes effect immediately without requiring a full service restart, suppresses spurious stderr noise from ip rule and ip route operations during upgrades and teardown, and removes version number references from comments.
 
@@ -2220,7 +2249,7 @@ Four locations in `mwan3.sh` produced noise on stderr during package upgrades an
 
 ---
 
-### 18.5 Version 3.5
+### 18.6 Version 3.5
 
 **Summary:** Version 3.5 is a major architectural release that moves mwan3 out of `table inet fw4` and into its own `table inet mwan3`, eliminating the fw4 rebuild scaffold and the mwan3evtd debounce daemon entirely. 
 
@@ -2412,7 +2441,7 @@ mwan3 now renders port ranges using `x-y` (nft native format); the colon separat
 
 ---
 
-### 18.6 Version 3.4.1 (Unreleased)
+### 18.7 Version 3.4.1 (Unreleased)
 
 **Summary:** Builds the per-interface `mwan3_iface_in_*` chains before `mwan3_set_general_nft()` activates `mwan3_prerouting` to avoid a race condition that leads to a wrong interface mark being assigned. Fixes bugs in the `nft list chains` syntax in `stop_service()` and a grep expression that was causing a too-broad match and resulting in traffic for interface `wan` bypassing mwan3 marking.
 
@@ -2454,7 +2483,7 @@ Also removed the flush of `mwan3_postrouting` from `mwan3_set_general_nft`. That
 
 ---
 
-### 18.7 Version 3.4
+### 18.8 Version 3.4
 
 **Summary:** Version 3.4 introduces mwan3evtd, a generalised ucode debounce daemon that coalesces rapid-fire events - such as simultaneous interface flaps triggering multiple fw4 reloads - into a single handler execution after the activity settles. This prevents the repeated dnsmasq SIGHUPs that previously caused cache thrash and, in tight-timing scenarios, dnsmasq crashes during concurrent startup.
 
@@ -2493,7 +2522,7 @@ Shell injection in the handler fire path is prevented by passing the command thr
 
 ---
 
-### 18.8 Version 3.3.5
+### 18.9 Version 3.3.5
 
 **Summary:** Version 3.3.5 is a single-fix release that suppresses the per-deleted-entry output that `conntrack -D` writes to stdout, which was previously appearing on the console whenever mwan3 start or an fw4 reload triggered the zero-mark conntrack flush.
 
@@ -2507,7 +2536,7 @@ Fix: redirect stdout to `/dev/null` alongside stderr.
 
 ---
 
-### 18.9 Version 3.3.4
+### 18.10 Version 3.3.4
 
 **Summary:** Version 3.3.4 closes a class of misrouting bugs caused by the brief window between fw4 flushing `table inet fw4` and mwan3 completing its nft rebuild. Connections established during that window acquire `ct mark=0`; the new `mwan3_flush_stale_conntrack` helper removes all zero-mark conntrack entries after every rebuild and restart, preventing WireGuard persistent-keepalive and similar long-lived UDP from locking in a bad entry indefinitely. A double-rebuild race in `mwan3-fw-rebuild.sh` is also fixed by acquiring the procd lock before checking for empty chains.
 
@@ -2538,7 +2567,7 @@ Fix by acquiring `procd_lock` first and re-checking under the lock, so only one 
 
 ---
 
-### 18.10 Version 3.3.3
+### 18.11 Version 3.3.3
 
 **Summary:** Version 3.3.3 is a broad bug-fix release addressing several correctness issues: DNAT reply routing was broken by a misplaced `fib daddr type local return` rule that fired before DNAT translation, causing replies to exit via a randomly load-balanced interface; IPv6 ip rules were silently leaked on ifdown because `delete_iface_rules` queried the IPv4 rule table; `mwan3_dnsmasq_hup` never sent SIGHUP because `json_get_var` stores booleans as integers not strings; and the numgen counter was contaminated by inbound and reply traffic. Additional fixes cover a grep substring false-positive in iface chain wiring, unquoted regex variables, a dead function stub, a duplicate function, and missing `mwan3_postrouting` in the stop_service chain lists. A new `bypass_network` UCI option populates the dynamic bypass sets from config, and `mwan3-lb-test` gains fw4 reload detection.
 
@@ -2628,7 +2657,7 @@ Improve the `rt_table_lookup` field: rename label from "Routing table lookup" to
 
 ---
 
-### 18.11 Version 3.3.2
+### 18.12 Version 3.3.2
 
 **Summary:** Version 3.3.2 fixes a spurious tracked-IP entry in ubus status output caused by a naming collision between mwan3track's temporary output file and the `TRACK_*` glob used by rpcd. The `mwan3-lb-test` tool gains mandatory client isolation, a Windows test command, and a stale-artifact cleanup subcommand. LuCI receives cross-field family consistency validation in the rule editor, a fix for false "Present (unexpected)" health badges during interface bring-up, source nftset display in the overview rules column, and source nftset support in the traffic path simulator.
 
@@ -2703,7 +2732,7 @@ Grid display: Source and Destination columns now show the nftset name when no IP
 
 ---
 
-### 18.12 Version 3.3.1
+### 18.13 Version 3.3.1
 
 **Summary:** Version 3.3.1 adds source nftset matching (`ipset_src`) as a complement to the existing destination nftset, fixes three distinct numgen counter contamination bugs that caused load-balancing distributions to skew under inbound or reply traffic, sweeps orphaned policy chains that accumulate when policies are removed from UCI without an fw4 reload, and corrects IPv6 ip rule detection in the routing health check. The release also adds `nftset_info` as an rpcd ubus method and introduces the `mwan3-lb-test` CLI tool for verifying load-balancing weight distributions against configured policy members.
 
@@ -2775,7 +2804,7 @@ Fix by querying both `-4` and `-6` rule tables and merging the results, matching
 
 ---
 
-### 18.13 Version 3.3
+### 18.14 Version 3.3
 
 **Summary:** Version 3.3 adds three major LuCI diagnostic tools - a traffic path Simulator, a static Configuration analyser, and a live Routing health view - backed by two new rpcd ubus methods (`nftset_members` and `routing_health`). The configuration analyser detects undefined references, orphaned sections, and rule shadowing including correct IPv6 CIDR containment checks. The routing health view colour-codes per-interface ip rule and routing table state against live kernel state. The `apk info` vs `apk list -I` version display bug is also fixed.
 
@@ -2819,7 +2848,7 @@ Also adds `nftset_members` and `routing_health` methods to the rpcd module with 
 
 ---
 
-### 18.14 Version 3.2.3
+### 18.15 Version 3.2.3
 
 **Summary:** Version 3.2.3 improves tracking status visibility by adding per-IP latency and packet-loss detail to `mwan3 status` output and fixing the `check_quality` display to derive its state from mwan3track's runtime files rather than UCI, so changes to UCI without a restart no longer cause the status page to disagree with what is actually running. Stale gateway `TRACK_*`/`LATENCY_*`/`LOSS_*` files from previous PPPoE sessions are cleaned up on each probe list rebuild. The `luci-app-mwan3` PKG_VERSION scheme is fixed to prevent `apk upgrade` from reverting to the official package, and the GitHub Actions APK rename step is corrected to avoid i18n sub-packages overwriting the main package.
 
@@ -2880,7 +2909,7 @@ When `check_quality=1`, tracker latency/loss sentinel values (`999999ms`, `100%`
 
 ---
 
-### 18.15 Version 3.2.2
+### 18.16 Version 3.2.2
 
 **Summary:** Version 3.2.2 fixes two misrouting bugs: duplicate jump rules accumulating from repeated fw4 reload cycles caused iface_in chain deletion to fail with "Resource busy", and the unguarded catchall rule in each `mwan3_iface_in_*` chain was stamping IPv6 packets with the IPv4 interface mark on dual-stack physical devices, breaking QUIC/HTTP3 streams that resumed after conntrack expiry. The gateway IP is moved to the front of the tracking probe list so it is always tested. LuCI receives a visual redesign replacing solid alert cards with bordered flex cards, and adds latency and packet-loss columns to the tracking IP table.
 
@@ -2942,7 +2971,7 @@ When `check_quality` is disabled (the default), the columns display "Not enabled
 
 ---
 
-### 18.16 Version 3.2.1
+### 18.17 Version 3.2.1
 
 **Summary:** Version 3.2.1 fixes policy status reporting to include all members with their live traffic share percentages (not just the currently-routing member), replaces `killall -HUP dnsmasq` with a procd-aware targeted SIGHUP to avoid crashing instances still in the startup phase, adds the installed mwan3 package version to `mwan3 internal` output, and redesigns the LuCI status pages with structured collapsible sections and an IPv6 troubleshooting pane. LuCI also exposes the `snat6` IPv6 SNAT option on interface configuration.
 
@@ -2994,7 +3023,7 @@ Adds an "IPv6 SNAT" form field to the interface configuration modal, visible onl
 
 ---
 
-### 18.17 Version 3.2
+### 18.18 Version 3.2
 
 **Summary:** Version 3.2 adds two significant features. First, opt-in per-interface IPv6 SNAT via the `snat6` UCI option, which corrects BCP38/uRPF drops for router-originated traffic rerouted by `mwan3_output` onto a different WAN than the kernel initially selected at `sendto()`. Second, non-destructive vmap-dispatch mark save/restore: 126 per-mark OR-immediate setter chains replace the previous unmasked connmark operations, making mwan3 fully order-independent with respect to pbr and other fwmark-using packages without requiring coordinated chain priority ordering.
 
@@ -3020,7 +3049,7 @@ The same vmap-dispatch primitive is reused by `mwan3_create_policies_nft` for lo
 
 ---
 
-### 18.18 Version 3.1.4
+### 18.19 Version 3.1.4
 
 **Summary:** Version 3.1.4 fixes interoperability with pbr by moving mwan3's prerouting and output chains from priority `mangle + 1` to `mangle - 1`, so mwan3 restores and saves its ct mark bits before pbr injects its own marks at `mangle` priority. With the previous ordering pbr's marks were zeroed before the routing decision and its ip rules never matched.
 
@@ -3038,7 +3067,7 @@ Add `postinst` migration to flush and delete the old chains on upgrade, since nf
 
 ---
 
-### 18.19 Version 3.1.3
+### 18.20 Version 3.1.3
 
 **Summary:** Version 3.1.3 fixes three status and policy rendering bugs: single-member policies were emitting spurious "unreachable" entries because the empty-string guard on `mwan3_mark_to_name` never matched; mixed IPv4/IPv6 policies lost one family's members because both shared a single reset list; and equal-weight load-balancing entries were invisible in `mwan3 status` because nft normalises single-element numgen ranges to plain values that the reporting regex did not match.
 
@@ -3068,7 +3097,7 @@ Handle both `N-M : 0xMARK` (weight>1, range preserved by nft) and `N : 0xMARK` (
 
 ---
 
-### 18.20 Version 3.1.2
+### 18.21 Version 3.1.2
 
 **Summary:** Version 3.1.2 improves mwan3rtmon with two fixes: an in-memory route cache replaces the per-event `RTM_GETROUTE` dump for O(1) ECMP path checks, and a ucode-mod-rtnl double-destructor bug that caused a reliable segfault on clean shutdown is eliminated by letting the GC collect the route listener rather than calling `close()` explicitly.
 
@@ -3091,7 +3120,7 @@ Fix: omit the explicit `close()` call and let the GC collect the listener natura
 
 ---
 
-### 18.21 Version 3.1.1
+### 18.22 Version 3.1.1
 
 **Summary:** Version 3.1.1 is a broad mwan3track hardening release: the disconnecting threshold is raised to suppress false alarms from single transient ping losses, an exclusive flock prevents ghost duplicate tracker processes per interface, `sockopt_wrap` replaces `exit()` with graceful error returns so a stale source IP or disappearing interface does not abruptly terminate the tracked process, per-host failure logs are suppressed when the reliability threshold is still met, and interface events are processed at the top of the main loop before pinging to avoid a spurious disconnecting state on wakeup from disabled. LuCI adds a track_gateway checkbox to the interface modal and clarifies the flush_conntrack help text.
 
@@ -3146,3 +3175,203 @@ Update the help text for the `flush_conntrack` option to clarify that it flushes
 #### luci-app-mwan3: add track_gateway option to interface settings
 
 Add a "Track gateway" checkbox to the interface configuration modal, visible only when the internet protocol is set to IPv4. This exposes the `track_gateway` UCI option added to the mwan3 backend for automatic point-to-point peer/gateway tracking.
+
+---
+## 19. Specific use-cases
+
+### 19.1 Tailscale
+
+Tailscale's specific routing architecture is incompatible with legacy mwan3, meaning that Tailscale had to explicitly bypass mwan3 and to that end, has specific detection code and a bypass. Tailscale cannot be managed with legacy mwan3 policies.
+
+mwan3 nf tables, however, has the requisite functionality to enable peaceful co-existence between the two packages. If mwan3 is left in default configuration, Tailscale will continue to bypass mwan3 as it has always done and users will notice no difference. 
+
+However, mwan3 can be specifically configured to policy route Tailscale bypass-marked traffic. The rest of this section explains how to do that.
+
+#### Configuring mwan3 failover for tailscale control traffic
+
+Tailscale marks every socket it opens for its own outbound connections (DERP relay servers, coordination server, STUN) with `SO_MARK = 0x80000` at socket creation time via `SetsockoptInt`. In normal operation with mwan3, it then installs an ip rule at priority 1310 that intercepts these marked packets and routes them to the main routing table (table 254, managed by netifd), bypassing mwan3's per-interface tables entirely:
+
+```
+1310: fwmark 0x80000/0xff0000 lookup main (254)
+1330: fwmark 0x80000/0xff0000 lookup default (253)
+1350: fwmark 0x80000/0xff0000 unreachable
+1370: (unconditional) lookup tailscale (52)
+```
+
+Tailscale installs these rules at the 1300 base specifically because it detects OpenWrt with mwan3 active (`checkOpenWRTUsingMWAN3()` in `wgengine/router/osrouter/router_linux.go`) and shifts its default base from 5200 to 1300. The 1300 base is chosen to fit between mwan3's default iif rules (1001-1060) and mwan3's default fwmark lookup rules (2001-2060). The rules at 1310-1350 are an anti-loop mechanism: if tailscaled's own outbound traffic fell through to rule 1370 and was routed into `tailscale0`, it would re-enter the overlay indefinitely.
+
+The problem is that rule 1310 routes tailscale's bypass-marked traffic via the main routing table, which is maintained exclusively by netifd and is not subject to mwan3's failover machinery. In the most common real-world WAN outage (upstream unreachable with carrier still up), netifd sees carrier and leaves the primary WAN route in the main table, so tailscale's control traffic continues trying to reach DERP servers via the dead upstream while mwan3 has already failed LAN traffic over to the backup WAN.
+
+Tailscale requires this in order to prevent a routing loop, whereby bypass-marked packets enter the tailscale device via routing table 52 and was necessary when using Tailscale with legacy mwan3.
+
+Making use of three features in mwan3 nftables, it is possible to get tailscale to benefit from mwan3 while also avoiding the aforementioned loop.
+
+The solution has three parts:
+
+1. A new mwan3 rule type that matches on a fwmark/fwmask.
+
+2. The ability to shift the mwan3 rule priorities to a new base
+
+3. Dynamic route monitoring by mwan3rtmon that mirrors routes from Tailscale's table 52  defined with `list rt_table_lookup '52'` in the globals section of `/etc/config/mwan3`.  mwan3rtmon will dynamically mirror peer IP/CIDRs in table 52 to the mwan3 sets `mwan3_custom_v4/v6`. Anything present in these sets will thus bypass mwan3's rules, fall through to the next rules in the list and get correctly routed by Tailscale's table 52. 
+
+#### How the three parts work to integrate mwan3 and tailscale
+
+1. The mwan3 rule matches on `fwmark 0x80000/0xff0000` and assigns the tailscale bypass marked packets to an mwan3 policy
+2. The mwan3 rule fires before tailscale's bypass because of the route ordering priority change and routes out whichever is the active WAN. This gives the failover: the bypass marked packets are the outer tunnel / control plane
+3. Traffic destined for the tailscale inner tunnel, which is normally looked up in table 52, has matching IPs and CIDRs in the `mwan3_custom_v4/6` sets put there by mwan3rtmon. Any destination IP in those sets will now bypass mwan3's specific handling and fall through to tailscale's rule that looks them up in table 52, routing them out the `tailscale0` device.
+
+#### mwan3's fwmark and tailscale's bypass mark do not interfere with each other
+
+mwan3 uses bits 8-13 of the packet mark (`0x3f00` default mask). Tailscale's bypass mark uses bits 16-23 (`0xff0000`). The two ranges do not overlap. mwan3's mark-set operation is non-destructive: it uses a bitwise OR via vmap-dispatch setter chains, so it writes only to the bits it owns and leaves all other bits intact.
+
+After `mwan3_output` fires on a tailscale bypass packet, the packet carries both marks simultaneously in separate bit fields:
+
+- bits 16-23: `0x80000` (tailscale bypass mark, unchanged)
+- bits 8-13: `0x100` (mwan3 policy mark for interface id 1, ORed in)
+- final mark: `0x80100`
+
+#### Choosing the priority values
+
+The only constraint is that mwan3's fwmark rules must fall outside of tailscale's mwan3 detection window. `checkOpenWRTUsingMWAN3()` looks for ip rules at priorities 2001-2004 with a non-zero fwmark. If any fwmark rule falls in that range, tailscale detects mwan3 and shifts its rules to a 1300 base, which would interleave with mwan3's fwmark rules. The constraint is:
+
+```
+fwmark_rule_base + MWAN3_INTERFACE_MAX < 2001
+```
+
+With the default mask `0x3f00` (6 bits, 60 maximum interfaces), this gives `fwmark_rule_base < 1941`. The recommended value is `fwmark_rule_base = 1100`, which places the highest-numbered fwmark lookup rule at 1160, well clear of the detection window. Tailscale therefore does not detect mwan3 and installs at its default 5210 base instead.
+
+Because `iif_rule_base` defaults to 1000 and can stay there, only two UCI options need to be changed from their defaults:
+
+| Option                  | Default | Recommended for tailscale |
+| ----------------------- | ------- | ------------------------- |
+| `iif_rule_base`         | 1000    | 1000 (unchanged)          |
+| `fwmark_rule_base`      | 2000    | 1100                      |
+| `unreachable_rule_base` | 3000    | 1200                      |
+
+The ordering constraints validated by mwan3 at startup both hold:
+
+- `1000 + 60 = 1060 < 1100` (iif tier clears fwmark tier)
+- `1100 + 60 + 1 = 1161 < 1200` (fwmark tier including global blackhole/unreachable at 1161/1162 clears unreachable tier)
+
+#### Why rule 5270 (table 52) still works correctly
+
+Tailscale's rule 5270 is unconditional - it fires for every packet that reaches it. With mwan3's fwmark rules at 1101-1160, rule 5270 is reached only by packets whose `mark & 0x3f00` did not match any live per-interface id mark. The relevant case is packets carrying `MMX_DEFAULT` (mark = `0x3f00`).
+
+`mwan3_prerouting` marks packets destined for networks in `mwan3_connected_v4` and `mwan3_custom_v4` with `MMX_DEFAULT` as an early-return bypass. `MMX_DEFAULT` does not match any per-interface fwmark rule (those require specific id marks, not all-bits-set), so these packets fall through to rule 5270, which looks up table 52 and routes them to `tailscale0`.
+
+Ensuring tailscale peer destinations appear in `mwan3_custom_v4` is therefore the prerequisite for correct tailnet routing after the `fwmark_rule_base` change. This is described in the next section.
+
+#### Ensuring tailnet-destined traffic reaches `tailscale0`
+
+Tailscale installs peer routes exclusively into table 52 via netlink. The main routing table receives no tailscale peer routes. With mwan3's fwmark rules moved to 1101-1160, the default catch-all mwan3 rule assigns a WAN policy mark to all LAN traffic including packets destined for tailscale peers. That marked traffic hits rule 1101 before it reaches rule 5270. The per-interface routing table has a default route to the internet gateway but no route to the tailscale peer. The packet exits via the WAN unencrypted.
+
+Under the default mwan3 configuration (fwmark rules at 2001+), tailscale rule 1370 fires at priority 1370, before the fwmark lookup rules at 2001+. The WAN policy mark is shadowed by rule 1370 and the packet reaches tailscale0 correctly. Moving the fwmark base to 1100 removes that shadowing.
+
+The fix does not require touching routing tables. mwan3 provides `mwan3_custom_v4` and `mwan3_custom_v6`, nftables sets whose members receive `MMX_DEFAULT` in `mwan3_prerouting` and thereby bypass WAN policy selection entirely. The `rt_table_lookup` option in mwan3 globals instructs mwan3 to populate `mwan3_custom_v4/v6` from the routes in a specified routing table at start. Adding table 52 to this list:
+
+```
+list rt_table_lookup '52'
+```
+
+causes mwan3 to read all current table 52 routes at start and add their destinations to `mwan3_custom_v4/v6`. Packets to tailscale peers receive `MMX_DEFAULT`, pass through all per-interface fwmark rules without matching, and reach rule 5270 (`from all lookup tailscale`), which routes them to `tailscale0` via table 52. No per-interface routing table needs a tailscale route.
+
+This is the correct treatment for the inner tailnet packets. `tailscale0` is a locally-connected TUN device: the inner packets are delivered to the tailscale daemon, which wireguard-encapsulates them into UDP. Those outer packets carry SO_MARK=0x80000 and are subject to mwan3 WAN failover via the dual-mark mechanism. `MMX_DEFAULT` on the inner packets correctly expresses that WAN selection does not apply at this layer; it is applied at the outer encrypted layer instead.
+
+Tailscale adds and removes peer routes from table 52 dynamically as peers join and leave the tailnet. mwan3rtmon watches for `RTM_NEWROUTE` and `RTM_DELROUTE` events on tables listed in `rt_table_lookup` and updates `mwan3_custom_v4/v6` accordingly, so the set remains current without any external script or daemon.
+
+If mwan3 starts before tailscale has populated table 52 (for example, on boot), the initial `rt_table_lookup` pass reads an empty or partial table 52 and `mwan3_custom_v4` is initially partially complete. mwan3rtmon's event handler fills in the missing entries as tailscale adds routes after its own startup, so the set converges to the correct state within seconds of tailscale coming up. 
+
+#### The resulting rule layout
+
+With `fwmark_rule_base = 1100` and `unreachable_rule_base = 1200`, and four mwan3 interfaces for illustration. Tailscale's ip rules are shown in their steady-state position, explained below. The moving of mwan3's base priority means that tailscale won't actually detect mwan3 to be running and will revert its own rule priority to the default of 5210 instead of installing at 1310.
+
+```
+ 0:       from all lookup local
+ 1001:    iif <wan1-dev> lookup 1                      # mwan3 iif
+ 1002:    iif <wan2-dev> lookup 2                      # mwan3 iif
+ 1003:    iif <wan3-dev> lookup 3                      # mwan3 iif
+ 1004:    iif <wan4-dev> lookup 4                      # mwan3 iif
+ 1101:    fwmark 0x100/0x3f00 lookup 1                 # mwan3 fwmark  
+ 1102:    fwmark 0x200/0x3f00 lookup 2                 # mwan3 fwmark
+ 1103:    fwmark 0x300/0x3f00 lookup 3                 # mwan3 fwmark  
+ 1104:    fwmark 0x400/0x3f00 lookup 4                 # mwan3 fwmark
+ 1161:    fwmark 0x3d00/0x3f00 blackhole               # mwan3 blackhole
+ 1162:    fwmark 0x3e00/0x3f00 unreachable             # mwan3 unreachable
+ 1201:    fwmark 0x100/0x3f00 unreachable              # mwan3 unreachable
+ 1202:    fwmark 0x200/0x3f00 unreachable              # mwan3 unreachable
+ 1203:    fwmark 0x300/0x3f00 unreachable              # mwan3 unreachable
+ 1204:    fwmark 0x400/0x3f00 unreachable              # mwan3 unreachable
+ 5210:    fwmark 0x80000/0xff0000 lookup main (254)    # tailscale anti-loop
+ 5230:    fwmark 0x80000/0xff0000 lookup default (253) # tailscale anti-loop
+ 5250:    fwmark 0x80000/0xff0000 unreachable          # tailscale anti-loop
+ 5270:    from all lookup tailscale (52)               # tailscale overlay routing
+ 32766:   from all lookup main
+ 32767:   from all lookup default
+```
+
+Tailscale's mwan3 detection (`checkOpenWRTUsingMWAN3()` in `wgengine/router/osrouter/router_linux.go`) identifies mwan3 by looking for ip rules at priorities 2001-2004 with a non-zero fwmark. With `fwmark_rule_base = 1100` those rules are at 1101-1104, outside the detection window. Tailscale therefore does not detect mwan3 and installs its rules at its default base of 5200 (priorities 5210, 5230, 5250, 5270) .
+
+This does not affect correctness. Tailscale bypass-marked packets (`0x80000`) acquire an mwan3 policy mark in `mwan3_output` and are caught at 1101-1104, well before tailscale's rules at 5210. The anti-loop concern that motivated rules 5210-5250 does not apply: the per-interface routing tables contain internet routes, not tailscale overlay routes, so there is no loop path. Tailnet-destined LAN traffic carries `MMX_DEFAULT` (via `mwan3_custom_v4`, described above) and passes through all fwmark rules without matching before reaching rule 5270, which routes via table 52 to `tailscale0`.
+
+#### Configuration
+
+In `/etc/config/mwan3`, in the `config globals` section, change the two rule base options and add the `rt_table_lookup` entry for tailscale's routing table (this can also be done on the Globals tab in Luci:
+
+```
+config globals 'globals'
+    option mmx_mask '0x3F00'
+    option fwmark_rule_base '1100'
+    option unreachable_rule_base '1200'
+    list rt_table_lookup '52'
+```
+
+Add a rule section for tailscale bypass traffic, placed before any catch-all default rules, preferably as the very first rule in the list:
+
+```
+config rule 'tailscale_bypass'
+    option fwmark '0x80000'
+    option fwmask '0xff0000'
+    option family 'any'
+    option use_policy '<my_failover_policy>'
+    option enabled '1'
+```
+
+Replace `<my_failover_policy>` with whichever mwan3 policy should carry tailscale's control traffic. Recommend you use a failover policy and not a balanced policy for this purpose. After saving, run:
+
+```
+service mwan3 restart
+service tailscale restart
+```
+
+A reload (`service mwan3 reload`) updates the nftables rules and the ip rules atomically via `mwan3_delete_iface_rules` (which finds and removes old rules by routing table id regardless of their previous priority), so old rules at the legacy 2000/3000 bases are correctly cleaned up.
+
+After restart, verify:
+
+```sh
+# mwan3's fwmark rules at 1101-1160, tailscale's rules at 5210-5270
+ip rule list
+
+# The tailscale bypass rule appears in mwan3_rules
+nft list chain inet mwan3 mwan3_rules | grep fwmark
+# Expected: meta mark & 0x00ff0000 == 0x00080000 ... jump mwan3_policy_<name>
+
+# Tailscale peer destinations are in mwan3_custom_v4
+nft list set inet mwan3 mwan3_custom_v4
+```
+
+#### Forcing immediate failover of tailscale DERP connections
+
+DERP connections that were open at the moment of WAN failover remain on the old WAN until they close naturally. Only sockets opened after tailscale reconnects pick up the new fwmark ip rule. They should failover quite quickly anyway, but to force immediate failover, put the following into `/etc/mwan3.user`
+
+```sh
+#!/bin/sh
+[ "$ACTION" = "ifup" ] || exit 0
+
+. /lib/functions.sh
+. /lib/mwan3/common.sh
+. /lib/mwan3/mwan3.sh
+config_load mwan3
+mwan3_init
+mwan3_flush_marked_conntrack
+```
+
