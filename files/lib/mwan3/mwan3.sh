@@ -1849,6 +1849,20 @@ mwan3_flush_conntrack()
 
 mwan3_track_clean()
 {
-	rm -rf "${MWAN3_STATUS_DIR:?}/${1}" &> /dev/null
-	rmdir --ignore-fail-on-non-empty "$MWAN3_STATUS_DIR"
+	# Per-interface state lives in two places: the tracker's runtime
+	# directory under $MWAN3TRACK_STATUS_DIR/<iface>, and the hotplug
+	# state file at $MWAN3_STATUS_DIR/iface_state/<iface>. Only called
+	# from stop_service, so we're tearing down per-iface state, not
+	# session-wide state (mmx_mask and the iif_rule_base/fwmark_rule_base/
+	# unreachable_rule_base records under $MWAN3_STATUS_DIR are pinned
+	# across stop/start and must survive).
+	#
+	# Race note: at stop_service time the tracker process is still
+	# alive (procd_kill runs after stop_service returns). If the
+	# tracker is mid-iteration its next mkdir -p / echo > can recreate
+	# a few files in the directory we just removed; mwan3track is
+	# almost always sleeping so this is rare and bounded to one cycle.
+	rm -rf "${MWAN3TRACK_STATUS_DIR:?}/${1}" 2>/dev/null
+	rm -f "${MWAN3_STATUS_DIR:?}/iface_state/${1}" 2>/dev/null
+	rmdir --ignore-fail-on-non-empty "$MWAN3TRACK_STATUS_DIR" 2>/dev/null
 }
