@@ -108,8 +108,61 @@ stop_service() {
 			$IP route flush table $tid &> /dev/null
 		done
 
-		for rule in $($IP rule list | grep -E '^[1-3][0-9]{3}:' | cut -d ':' -f 1); do
-			$IP rule del pref $rule &> /dev/null
+		# Delete ip rules created by this mwan3 instance. A rule must pass
+		# both gates before it is deleted:
+		#   priority gate -- the priority lies in one of mwan3's three
+		#     configured rule-base ranges (iif, fwmark, unreachable). The
+		#     fwmark range extends to fwmark_base + MM_UNREACHABLE to cover
+		#     the global blackhole and unreachable rules at fwmark_base +
+		#     MM_BLACKHOLE / MM_UNREACHABLE.
+		#   content gate -- the line either references a mwan3-owned routing
+		#     table (lookup <N> with N in 1..MWAN3_INTERFACE_MAX) or carries
+		#     an fwmark masked by mwan3's MMX_MASK. The priority gate alone
+		#     was the original bug: it deleted any rule in the band, which
+		#     is also why an admin override or another package's rule placed
+		#     in the same band could be wiped.
+		# Both gates are derived from values mwan3_init reads back from
+		# /var/run/mwan3/mmx_mask and /var/state/mwan3 (set at start_service
+		# time), so they reflect what the running instance created, not
+		# whatever is currently in /etc/config/mwan3.
+		local line pref tbl iif_min iif_max fw_min fw_max ur_min ur_max mask
+		iif_min=$((MWAN3_IIF_RULE_BASE + 1))
+		iif_max=$((MWAN3_IIF_RULE_BASE + MWAN3_INTERFACE_MAX))
+		fw_min=$((MWAN3_FWMARK_RULE_BASE + 1))
+		fw_max=$((MWAN3_FWMARK_RULE_BASE + MM_UNREACHABLE))
+		ur_min=$((MWAN3_UNREACHABLE_RULE_BASE + 1))
+		ur_max=$((MWAN3_UNREACHABLE_RULE_BASE + MWAN3_INTERFACE_MAX))
+		# ip rule list prints fwmark masks lowercase; normalise for matching
+		mask=$(echo "$MMX_MASK" | tr 'A-Z' 'a-z')
+		$IP rule list | while read -r line; do
+			pref="${line%%:*}"
+			case "$pref" in
+				''|*[!0-9]*) continue ;;
+			esac
+			# Priority gate
+			if ! { { [ "$pref" -ge "$iif_min" ] && [ "$pref" -le "$iif_max" ]; } || \
+			       { [ "$pref" -ge "$fw_min" ] && [ "$pref" -le "$fw_max" ]; } || \
+			       { [ "$pref" -ge "$ur_min" ] && [ "$pref" -le "$ur_max" ]; }; }; then
+				continue
+			fi
+			# Content gate (a): carries an fwmark masked by mwan3's MMX_MASK
+			case "$line" in
+				*" fwmark "*"/${mask} "*|*" fwmark "*"/${mask}")
+					$IP rule del pref "$pref" &> /dev/null
+					continue ;;
+			esac
+			# Content gate (b): looks up a mwan3-owned table id
+			case "$line" in
+				*" lookup "*)
+					tbl="${line#* lookup }"
+					tbl="${tbl%% *}"
+					case "$tbl" in
+						''|*[!0-9]*) continue ;;
+					esac
+					[ "$tbl" -ge 1 ] && [ "$tbl" -le "$MWAN3_INTERFACE_MAX" ] && \
+						$IP rule del pref "$pref" &> /dev/null
+					;;
+			esac
 		done
 	done
 

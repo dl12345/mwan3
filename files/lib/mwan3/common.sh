@@ -448,16 +448,33 @@ mwan3_init()
 	# and unreachable rules at fwmark_rule_base + MM_BLACKHOLE / MM_UNREACHABLE,
 	# the highest of which is fwmark_rule_base + MWAN3_INTERFACE_MAX + 2.)
 	# If either constraint is violated, all three values are reverted to defaults.
-	config_get MWAN3_IIF_RULE_BASE globals iif_rule_base 1000
-	config_get MWAN3_FWMARK_RULE_BASE globals fwmark_rule_base 2000
-	config_get MWAN3_UNREACHABLE_RULE_BASE globals unreachable_rule_base 3000
+	#
+	# Like MMX_MASK, the post-validation values are persisted to /var/state/mwan3
+	# at start time and read back from state on subsequent mwan3_init invocations
+	# (including from stop_service). This ensures the values seen by stop_service
+	# identify the rules the running instance actually created, even if
+	# /etc/config/mwan3 has been edited since start. The mmx_mask state file
+	# doubles as the "instance started" indicator.
+	if [ -e "${MWAN3_STATUS_DIR}/mmx_mask" ]; then
+		MWAN3_IIF_RULE_BASE=$(uci_get_state mwan3 globals iif_rule_base 1000)
+		MWAN3_FWMARK_RULE_BASE=$(uci_get_state mwan3 globals fwmark_rule_base 2000)
+		MWAN3_UNREACHABLE_RULE_BASE=$(uci_get_state mwan3 globals unreachable_rule_base 3000)
+	else
+		config_get MWAN3_IIF_RULE_BASE globals iif_rule_base 1000
+		config_get MWAN3_FWMARK_RULE_BASE globals fwmark_rule_base 2000
+		config_get MWAN3_UNREACHABLE_RULE_BASE globals unreachable_rule_base 3000
 
-	if [ "$((MWAN3_IIF_RULE_BASE + MWAN3_INTERFACE_MAX))" -ge "$MWAN3_FWMARK_RULE_BASE" ] || \
-	   [ "$((MWAN3_FWMARK_RULE_BASE + MWAN3_INTERFACE_MAX + 1))" -ge "$MWAN3_UNREACHABLE_RULE_BASE" ]; then
-		LOG warn "Rule base ordering constraint violated (iif=$MWAN3_IIF_RULE_BASE, fwmark=$MWAN3_FWMARK_RULE_BASE, unreachable=$MWAN3_UNREACHABLE_RULE_BASE, max_interfaces=$MWAN3_INTERFACE_MAX); reverting all to defaults 1000/2000/3000"
-		MWAN3_IIF_RULE_BASE=1000
-		MWAN3_FWMARK_RULE_BASE=2000
-		MWAN3_UNREACHABLE_RULE_BASE=3000
+		if [ "$((MWAN3_IIF_RULE_BASE + MWAN3_INTERFACE_MAX))" -ge "$MWAN3_FWMARK_RULE_BASE" ] || \
+		   [ "$((MWAN3_FWMARK_RULE_BASE + MWAN3_INTERFACE_MAX + 1))" -ge "$MWAN3_UNREACHABLE_RULE_BASE" ]; then
+			LOG warn "Rule base ordering constraint violated (iif=$MWAN3_IIF_RULE_BASE, fwmark=$MWAN3_FWMARK_RULE_BASE, unreachable=$MWAN3_UNREACHABLE_RULE_BASE, max_interfaces=$MWAN3_INTERFACE_MAX); reverting all to defaults 1000/2000/3000"
+			MWAN3_IIF_RULE_BASE=1000
+			MWAN3_FWMARK_RULE_BASE=2000
+			MWAN3_UNREACHABLE_RULE_BASE=3000
+		fi
+
+		uci_toggle_state mwan3 globals iif_rule_base "$MWAN3_IIF_RULE_BASE"
+		uci_toggle_state mwan3 globals fwmark_rule_base "$MWAN3_FWMARK_RULE_BASE"
+		uci_toggle_state mwan3 globals unreachable_rule_base "$MWAN3_UNREACHABLE_RULE_BASE"
 	fi
 }
 
