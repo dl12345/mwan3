@@ -629,18 +629,11 @@ function main() {
 
 	uloop.init();
 
-	// Populate initial state before starting listener.
-	// Events arriving during population are queued in the kernel's
-	// netlink socket buffer and will be processed once uloop.run()
-	// begins — no SIGSTOP/SIGCONT dance needed.
-
-	log_msg("debug", "populating initial connected set");
-	populate_connected_set();
-
-	log_msg("debug", "populating initial per-interface routes");
-	populate_iface_routes();
-
-	// Create netlink route listener
+	// Bind the route listener first so its multicast socket is bound
+	// to the route group before any initial dumps run. Route changes
+	// emitted during the dump phase are then queued on the listener
+	// socket and processed when uloop.run() begins, rather than being
+	// lost to a subscribe-vs-dump race.
 
 	log_msg("debug", "creating route listener for " + family_name);
 	let route_listener = rtnl.listener(
@@ -654,6 +647,19 @@ function main() {
 			rtnl.error());
 		exit(1);
 	}
+
+	// Initial population, dump-driven. With the listener already
+	// bound, any concurrent route changes will be delivered as deltas
+	// once uloop.run() begins.
+
+	log_msg("debug", "populating initial custom sets");
+	repopulate_custom_sets();
+
+	log_msg("debug", "populating initial connected set");
+	populate_connected_set();
+
+	log_msg("debug", "populating initial per-interface routes");
+	populate_iface_routes();
 
 	// Signal handlers for clean shutdown
 
