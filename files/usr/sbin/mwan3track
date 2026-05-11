@@ -275,6 +275,20 @@ main() {
 	config_get recovery_latency $INTERFACE recovery_latency 500
 	config_get failure_loss $INTERFACE failure_loss 40
 	config_get recovery_loss $INTERFACE recovery_loss 10
+	# Only ping and httping produce loss/latency samples. For arping,
+	# nslookup, and nping-* the per-iteration case statements set
+	# $result alone, so check_quality=1 would feed empty $loss/$latency
+	# into the threshold comparisons and trigger an arithmetic error.
+	# Clamp to 0 and warn so the user's config intent is visible.
+	case "$track_method" in
+		ping|httping) ;;
+		*)
+			if [ "$check_quality" -eq 1 ]; then
+				LOG notice "check_quality is not supported for track_method '$track_method' on interface $INTERFACE; treating as disabled"
+				check_quality=0
+			fi
+		;;
+	esac
 	local sleep_time result ping_status loss latency
 	mwan3_list_track_ips()
 	{
@@ -308,6 +322,13 @@ main() {
 		done
 		local current_check_quality
 		config_get_bool current_check_quality "$INTERFACE" check_quality 0
+		# Mirror the clamp applied at startup so LATENCY_/LOSS_ files
+		# are cleaned up when the effective check_quality is disabled
+		# by virtue of an incompatible track_method.
+		case "$track_method" in
+			ping|httping) ;;
+			*) current_check_quality=0 ;;
+		esac
 		if [ "$current_check_quality" -eq 0 ]; then
 			rm -f $MWAN3TRACK_STATUS_DIR/$INTERFACE/LATENCY_* \
 			      $MWAN3TRACK_STATUS_DIR/$INTERFACE/LOSS_* 2>/dev/null
