@@ -369,7 +369,7 @@ function populate_connected_set() {
 	let seen = {};
 	let elements = [];
 	for (let route in routes) {
-		if (is_cidr_route(route) && !is_linklocal_route(route) && !seen[route.dst]) {
+		if (is_cidr_route(route) && !is_default_route(route) && !is_linklocal_route(route) && !seen[route.dst]) {
 			push(elements, route.dst);
 			seen[route.dst] = true;
 		}
