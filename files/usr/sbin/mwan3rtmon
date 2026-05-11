@@ -440,10 +440,12 @@ function populate_iface_routes() {
 
 function repopulate_custom_sets() {
 
-	if (length(keys(extra_table_set)) == 0)
-		return;
-
 	let setname = (family_num == AF_INET) ? "mwan3_custom_v4" : "mwan3_custom_v6";
+
+	if (length(keys(extra_table_set)) == 0) {
+		nft_exec("flush set inet mwan3 " + setname);
+		return;
+	}
 	let routes = rtnl.request(RTM_GETROUTE, NLM_F_DUMP, { family: family_num }) ?? [];
 
 	let cmds = [ "flush set inet mwan3 " + setname ];

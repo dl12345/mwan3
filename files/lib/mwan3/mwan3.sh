@@ -146,22 +146,24 @@ mwan3_get_iface_id()
 
 mwan3_set_custom_set()
 {
-	local custom_network table_arg routes
+	local custom_network table_arg
 
 	table_arg="$1"
 
-	routes=$($IP4 route list table "$table_arg" 2>/dev/null) || \
-		LOG warn "rt_table_lookup: routing table '$table_arg' does not exist"
-	for custom_network in $(printf '%s' "$routes" | awk '{print $1}' | grep -E "$IPv4_REGEX"); do
-		LOG notice "Adding network $custom_network from table $table_arg to mwan3_custom_v4 set"
+	for custom_network in $($IP4 route list table "$table_arg" 2>/dev/null | awk '{print $1}'); do
+		case "$custom_network" in
+			default|0.0.0.0/0|169.254.*) continue ;;
+		esac
+		echo "$custom_network" | grep -qE "$IPv4_REGEX/" || continue
 		mwan3_nft_push "add element inet mwan3 mwan3_custom_v4 { $custom_network }"
 	done
 
 	[ $NO_IPV6 -eq 0 ] || return
-	routes=$($IP6 route list table "$table_arg" 2>/dev/null) || \
-		LOG warn "rt_table_lookup: routing table '$table_arg' does not exist (IPv6)"
-	for custom_network in $(printf '%s' "$routes" | awk '{print $1}' | grep -E "$IPv6_REGEX"); do
-		LOG notice "Adding network $custom_network from table $table_arg to mwan3_custom_v6 set"
+	for custom_network in $($IP6 route list table "$table_arg" 2>/dev/null | awk '{print $1}'); do
+		case "$custom_network" in
+			::/0|fe80::*) continue ;;
+		esac
+		echo "$custom_network" | grep -qE "$IPv6_REGEX" || continue
 		mwan3_nft_push "add element inet mwan3 mwan3_custom_v6 { $custom_network }"
 	done
 }
