@@ -360,14 +360,15 @@ readfile() {
 mwan3_get_mwan3track_status()
 {
 	local interface=$2
-	local track_ips pid cmdline started
+	local track_ips track_gateway pid cmdline started
 	mwan3_list_track_ips()
 	{
 		track_ips="$1 $track_ips"
 	}
 	config_list_foreach "$interface" track_ip mwan3_list_track_ips
+	config_get_bool track_gateway "$interface" track_gateway 0
 
-	if [ -z "$track_ips" ]; then
+	if [ -z "$track_ips" ] && [ "$track_gateway" -eq 0 ]; then
 		export -n "$1=disabled"
 		return
 	fi
