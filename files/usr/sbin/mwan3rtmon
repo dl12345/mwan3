@@ -82,7 +82,9 @@ function load_config() {
 		let fam = s.family ?? "ipv4";
 		let enabled = +(s.enabled ?? "0");
 		let track_ip = s.track_ip;
-		let has_tracking = (track_ip != null &&
+		let track_gateway = +(s.track_gateway ?? "0");
+		let has_tracking = track_gateway ||
+			(track_ip != null &&
 			!(type(track_ip) == "array" && length(track_ip) == 0));
 		push(iface_list, {
 			name: ifname,
