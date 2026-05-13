@@ -62,6 +62,9 @@ if [ -z "$${IPKG_INSTROOT}" ]; then
 	# with no init script or binary after the file swap.
 	/etc/init.d/mwan3evtd stop 2>/dev/null
 	/etc/init.d/mwan3evtd disable 2>/dev/null
+	# Record whether this is a fresh install so postinst can auto-enable
+	# without overriding an explicit disable by the user on upgrade.
+	[ -f /etc/init.d/mwan3 ] || touch /tmp/mwan3_first_install
 	# Stop mwan3 before APK replaces any files. This is critical for
 	# upgrades: if mwan3 is running when the init script is replaced,
 	# procd's inotify trigger restarts the service while the old ip rules
@@ -138,6 +141,13 @@ if [ -z "$${IPKG_INSTROOT}" ]; then
 	# procd to replace the service instances) but never calls stop_service,
 	# so the ip rules from the auto-start are still present when the init
 	# hotplug events try to add them again.
+	# Auto-enable on fresh install so mwan3 starts at boot without requiring
+	# a manual /etc/init.d/mwan3 enable. On upgrade the flag is absent, so
+	# an explicit disable by the user is preserved.
+	if [ -f /tmp/mwan3_first_install ]; then
+		rm -f /tmp/mwan3_first_install
+		/etc/init.d/mwan3 enable
+	fi
 	/etc/init.d/mwan3 stop 2>/dev/null
 	/etc/init.d/mwan3 start
 fi
