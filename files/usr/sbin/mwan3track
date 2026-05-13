@@ -9,6 +9,7 @@ DEVICE=""
 
 IFDOWN_EVENT=0
 IFUP_EVENT=0
+RELOAD_EVENT=0
 WRAP_LIB=/lib/mwan3/libwrap_mwan3_sockopt.so.1.0
 
 stop_subprocs() {
@@ -38,6 +39,12 @@ if_up() {
 	IFDOWN_EVENT=0
 	IFUP_EVENT=1
 	started
+	stop_subprocs
+}
+
+config_reload() {
+	LOG info "Received configuration reload signal for interface ${INTERFACE}"
+	RELOAD_EVENT=1
 	stop_subprocs
 }
 
@@ -215,6 +222,48 @@ update_status() {
 	echo "$4" > $MWAN3TRACK_STATUS_DIR/$INTERFACE/LOSS_${track_ip}
 }
 
+load_tracking_config() {
+	config_get FAMILY $INTERFACE family ipv4
+	config_get track_method $INTERFACE track_method ping
+	config_get_bool httping_ssl $INTERFACE httping_ssl 0
+	validate_track_method $track_method || {
+		track_method=ping
+		if validate_track_method $track_method; then
+			LOG warn "Using ping to track interface $INTERFACE avaliability"
+		else
+			LOG err "No track method avaliable"
+			exit 1
+		fi
+	}
+	config_get reliability $INTERFACE reliability 1
+	config_get count $INTERFACE count 1
+	config_get timeout $INTERFACE timeout 4
+	config_get interval $INTERFACE interval 10
+	config_get down $INTERFACE down 5
+	config_get up $INTERFACE up 5
+	config_get size $INTERFACE size 56
+	config_get max_ttl $INTERFACE max_ttl 60
+	config_get failure_interval $INTERFACE failure_interval $interval
+	config_get_bool keep_failure_interval $INTERFACE keep_failure_interval 0
+	config_get recovery_interval $INTERFACE recovery_interval $interval
+	config_get_bool check_quality $INTERFACE check_quality 0
+	config_get failure_latency $INTERFACE failure_latency 1000
+	config_get recovery_latency $INTERFACE recovery_latency 500
+	config_get failure_loss $INTERFACE failure_loss 40
+	config_get recovery_loss $INTERFACE recovery_loss 10
+	# arping/nslookup/nping don't produce latency/loss samples;
+	# check_quality would trigger arithmetic errors on the empty values.
+	case "$track_method" in
+		ping|httping) ;;
+		*)
+			if [ "$check_quality" -eq 1 ]; then
+				LOG notice "check_quality is not supported for track_method '$track_method' on interface $INTERFACE; treating as disabled"
+				check_quality=0
+			fi
+		;;
+	esac
+}
+
 main() {
 	local reliability count timeout interval failure_interval
 	local recovery_interval down up size
@@ -246,49 +295,9 @@ main() {
 	trap clean_up TERM
 	trap if_down USR1
 	trap if_up USR2
+	trap config_reload HUP
 
-	config_get FAMILY $INTERFACE family ipv4
-	config_get track_method $INTERFACE track_method ping
-	config_get_bool httping_ssl $INTERFACE httping_ssl 0
-	validate_track_method $track_method || {
-		track_method=ping
-		if validate_track_method $track_method; then
-			LOG warn "Using ping to track interface $INTERFACE avaliability"
-		else
-			LOG err "No track method avaliable"
-			exit 1
-		fi
-	}
-	config_get reliability $INTERFACE reliability 1
-	config_get count $INTERFACE count 1
-	config_get timeout $INTERFACE timeout 4
-	config_get interval $INTERFACE interval 10
-	config_get down $INTERFACE down 5
-	config_get up $INTERFACE up 5
-	config_get size $INTERFACE size 56
-	config_get max_ttl $INTERFACE max_ttl 60
-	config_get failure_interval $INTERFACE failure_interval $interval
-	config_get_bool keep_failure_interval $INTERFACE keep_failure_interval 0
-	config_get recovery_interval $INTERFACE recovery_interval $interval
-	config_get_bool check_quality $INTERFACE check_quality 0
-	config_get failure_latency $INTERFACE failure_latency 1000
-	config_get recovery_latency $INTERFACE recovery_latency 500
-	config_get failure_loss $INTERFACE failure_loss 40
-	config_get recovery_loss $INTERFACE recovery_loss 10
-	# Only ping and httping produce loss/latency samples. For arping,
-	# nslookup, and nping-* the per-iteration case statements set
-	# $result alone, so check_quality=1 would feed empty $loss/$latency
-	# into the threshold comparisons and trigger an arithmetic error.
-	# Clamp to 0 and warn so the user's config intent is visible.
-	case "$track_method" in
-		ping|httping) ;;
-		*)
-			if [ "$check_quality" -eq 1 ]; then
-				LOG notice "check_quality is not supported for track_method '$track_method' on interface $INTERFACE; treating as disabled"
-				check_quality=0
-			fi
-		;;
-	esac
+	load_tracking_config
 	local sleep_time result ping_status loss latency
 	mwan3_list_track_ips()
 	{
@@ -366,6 +375,18 @@ main() {
 			mwan3_load_track_ips
 			firstconnect
 			IFUP_EVENT=0
+			continue
+		fi
+		if [ "${RELOAD_EVENT}" -eq 1 ]; then
+			LOG debug "Processing configuration reload for interface ${INTERFACE}"
+			config_load mwan3
+			load_tracking_config
+			mwan3_load_track_ips
+			if [ $score -gt $((down + up)) ]; then
+				score=$((down + up))
+			fi
+			warn_threshold=$((up + (down + 2) / 3))
+			RELOAD_EVENT=0
 			continue
 		fi
 		sleep_time=$interval
@@ -536,6 +557,17 @@ main() {
 			mwan3_load_track_ips
 			firstconnect
 			IFUP_EVENT=0
+		fi
+		if [ "${RELOAD_EVENT}" -eq 1 ]; then
+			LOG debug "Processing configuration reload for interface ${INTERFACE}"
+			config_load mwan3
+			load_tracking_config
+			mwan3_load_track_ips
+			if [ $score -gt $((down + up)) ]; then
+				score=$((down + up))
+			fi
+			warn_threshold=$((up + (down + 2) / 3))
+			RELOAD_EVENT=0
 		fi
 	done
 }

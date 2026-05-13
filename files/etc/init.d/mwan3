@@ -240,6 +240,13 @@ reload_service() {
 	procd_send_signal mwan3 rtmon_ipv4 HUP
 	[ $NO_IPV6 -eq 0 ] && procd_send_signal mwan3 rtmon_ipv6 HUP
 
+	# Signal trackers to reload UCI tracking parameters.
+	_signal_tracker() {
+		procd_running mwan3 "track_$1" && \
+			procd_send_signal mwan3 "track_$1" HUP
+	}
+	config_foreach _signal_tracker interface
+
 	# mwan3_write_dnsmasq_fragments restarts dnsmasq internally if fragment
 	# content changed. User-defined nft sets survive the atomic reload intact
 	# so no HUP is needed here when fragments are unchanged.
