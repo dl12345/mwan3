@@ -1261,10 +1261,12 @@ mwan3_set_user_nft_rule()
 	# ipv4 and ipv6 passes. Skip the ipv6 pass to avoid pushing a duplicate
 	# rule. The ipv4 pass output already matches IPv6 traffic at runtime
 	# because the match operates on family-agnostic fields (meta mark, l4proto,
-	# port, iifname).
+	# port, iifname). Exception: proto=icmp requires both passes because ICMP
+	# (protocol 1) and ICMPv6 (protocol 58) are distinct L4 protocols.
 	if [ "$family" = "any" ] && [ "$ipv" = "ipv6" ] && \
 	   [ -z "$src_ip" ] && [ -z "$dest_ip" ] && \
-	   [ -z "$ipset_name" ] && [ -z "$ipset_src" ]; then
+	   [ -z "$ipset_name" ] && [ -z "$ipset_src" ] && \
+	   [ "$proto" != "icmp" ]; then
 		return
 	fi
 
@@ -1321,7 +1323,7 @@ mwan3_set_user_nft_rule()
 	# 'icmp' in UCI means ICMPv4 (proto 1). For IPv6 rules, translate to
 	# 'ipv6-icmp' (proto 58) so the generated nftables match is not inert.
 	if [ "$proto" != "all" ]; then
-		[ "$proto" = "icmp" ] && [ "$family" = "ipv6" ] && proto="ipv6-icmp"
+		[ "$proto" = "icmp" ] && [ "$ipv" = "ipv6" ] && proto="ipv6-icmp"
 		nft_match="$nft_match meta l4proto $proto"
 	fi
 
