@@ -1204,12 +1204,35 @@ mwan3_get_policy_members_for_family()
 	config_list_foreach "$policy" use_member _mwan3_pmf_accum
 }
 
+# Look up the nft address type of a UCI-managed ipset by set name.
+# Usage: _mwan3_uci_ipset_addrtype <set_name> <output_var>
+# Sets <output_var> to "ipv4_addr" or "ipv6_addr" if a UCI ipset section with
+# option name == <set_name> exists, or to empty string if none matches.
+_mwan3_uci_ipset_addrtype() {
+	local _mwuia_target="$1" _mwuia_outvar="$2"
+	eval "$_mwuia_outvar="
+
+	_mwuia_check_section() {
+		local _mwuia_n _mwuia_f _mwuia_t
+		config_get _mwuia_n "$1" name
+		[ "$_mwuia_n" = "$_mwuia_target" ] || return
+		config_get _mwuia_f "$1" family ipv4
+		case "$_mwuia_f" in
+			ipv4) _mwuia_t="ipv4_addr" ;;
+			ipv6) _mwuia_t="ipv6_addr" ;;
+			*) return ;;
+		esac
+		eval "$_mwuia_outvar=$_mwuia_t"
+	}
+	config_foreach _mwuia_check_section ipset
+}
+
 mwan3_set_user_nft_rule()
 {
 	local ipset_name ipset_src family proto policy src_ip src_port src_iface src_dev
 	local sticky dest_ip dest_port use_policy timeout policy
 	local global_logging rule_logging loglevel rule_policy rule ipv
-	local enabled fwmark fwmask
+	local enabled fwmark fwmask _check_set _set_info
 
 	config_get_bool enabled "$1" enabled 1
 	[ "$enabled" -eq 1 ] || return
@@ -1279,6 +1302,55 @@ mwan3_set_user_nft_rule()
 			fi
 			LOG warn "invalid $ipv address $ipaddr specified for rule $rule"
 			return
+		fi
+	done
+
+	# For family=any rules with nft set references, skip the pass whose
+	# address family does not match the set's element type. Analogous to
+	# the src_ip/dest_ip address validation above: a set of type ipv4_addr
+	# cannot appear in an "ip6 daddr @set" expression, and vice versa.
+	local _ipset_name_uci_type="" _ipset_src_uci_type=""
+	for _check_set in "$ipset_name" "$ipset_src"; do
+		[ -z "$_check_set" ] && continue
+		local _set_info
+		_set_info=$($NFT list set inet mwan3 "$_check_set" 2>/dev/null)
+		if [ -n "$_set_info" ]; then
+			if [ "$ipv" = "ipv4" ] && ! echo "$_set_info" | grep -q "type ipv4_addr"; then
+				[ "$family" = "any" ] && return
+				LOG warn "Rule $rule: set '$_check_set' is not type ipv4_addr, incompatible with family $family"
+				return
+			fi
+			if [ "$ipv" = "ipv6" ] && ! echo "$_set_info" | grep -q "type ipv6_addr"; then
+				[ "$family" = "any" ] && return
+				LOG warn "Rule $rule: set '$_check_set' is not type ipv6_addr, incompatible with family $family"
+				return
+			fi
+		else
+			# Set absent from kernel. Check UCI to determine pass compatibility
+			# before falling back to the external-set guard.
+			local _uci_addrtype
+			if [ "$_check_set" = "$ipset_name" ]; then
+				[ -z "$_ipset_name_uci_type" ] && \
+					_mwan3_uci_ipset_addrtype "$_check_set" _ipset_name_uci_type
+				_uci_addrtype="$_ipset_name_uci_type"
+			else
+				[ -z "$_ipset_src_uci_type" ] && \
+					_mwan3_uci_ipset_addrtype "$_check_set" _ipset_src_uci_type
+				_uci_addrtype="$_ipset_src_uci_type"
+			fi
+			if [ -n "$_uci_addrtype" ]; then
+				# UCI-managed set: skip the incompatible pass, continue for the
+				# compatible one (bypasses the external-set guard below).
+				[ "$ipv" = "ipv4" ] && [ "$_uci_addrtype" = "ipv6_addr" ] && return
+				[ "$ipv" = "ipv6" ] && [ "$_uci_addrtype" = "ipv4_addr" ] && return
+				continue
+			fi
+			# Not UCI-managed: apply existing guard for external sets.
+			# For family=any, skip the ipv6 pass; the ipv4 pass will pre-create
+			# the set as ipv4_addr until an external creator establishes its type.
+			if [ "$family" = "any" ] && [ "$ipv" = "ipv6" ]; then
+				return
+			fi
 		fi
 	done
 
@@ -1355,7 +1427,10 @@ mwan3_set_user_nft_rule()
 		# Pre-create the set if it doesn't exist yet (e.g. dnsmasq nftset
 		# hasn't started). nft -f batch fails atomically if any referenced
 		# set is missing, which would kill ALL user rules.
-		if ! $NFT list set inet mwan3 "$ipset_name" &>/dev/null; then
+		# UCI-managed sets are already added to the batch by mwan3_render_config_ipsets;
+		# skip the kernel check and pre-creation for those.
+		if [ -z "$_ipset_name_uci_type" ] && \
+		   ! $NFT list set inet mwan3 "$ipset_name" &>/dev/null; then
 			LOG notice "Creating missing nft set '$ipset_name' for rule $rule"
 			if [ "$ipv" = "ipv4" ]; then
 				mwan3_nft_push "add set inet mwan3 $ipset_name { type ipv4_addr; flags interval; auto-merge; }"
@@ -1372,7 +1447,8 @@ mwan3_set_user_nft_rule()
 
 	# nft set source match
 	if [ -n "$ipset_src" ]; then
-		if ! $NFT list set inet mwan3 "$ipset_src" &>/dev/null; then
+		if [ -z "$_ipset_src_uci_type" ] && \
+		   ! $NFT list set inet mwan3 "$ipset_src" &>/dev/null; then
 			LOG notice "Creating missing nft set '$ipset_src' for rule $rule"
 			if [ "$ipv" = "ipv4" ]; then
 				mwan3_nft_push "add set inet mwan3 $ipset_src { type ipv4_addr; flags interval; auto-merge; }"
@@ -1462,11 +1538,10 @@ mwan3_set_user_nft_rule()
 
 		mwan3_get_policy_members_for_family "$use_policy" "$ipv"
 
-		# Create sticky rule chain (idempotent) and reset its body.
-		# Note: same flush-on-each-pass behaviour as before; sticky+family=any
-		# remains a pre-existing latent issue not addressed here.
+		# Create sticky rule chain if it doesn't exist yet. The chain was
+		# already flushed in the preamble of mwan3_set_user_rules, so both
+		# ipv4 and ipv6 passes can add their rules without interference.
 		mwan3_nft_push "add chain inet mwan3 mwan3_rule_$1"
-		mwan3_nft_push "flush chain inet mwan3 mwan3_rule_$1"
 
 		# Per-member sticky sets and lookup rules.
 		for _entry in $_policy_member_marks; do
@@ -1540,6 +1615,20 @@ mwan3_set_user_rules()
 	mwan3_nft_batch_start
 
 	mwan3_nft_push "flush chain inet mwan3 mwan3_rules"
+
+	# Pre-create and flush per-rule chains for all enabled UCI rules, before
+	# the per-family loop. Sourcing names from UCI (not the kernel) prevents
+	# chains for deleted rules from being recreated after reload. "add chain"
+	# is idempotent: it recreates a chain deleted by mwan3_nft_reload_start or
+	# is a no-op if the chain already exists (hotplug path).
+	_init_rule_chain() {
+		local _irc_enabled
+		config_get_bool _irc_enabled "$1" enabled 1
+		[ "$_irc_enabled" -eq 0 ] && return
+		mwan3_nft_push "add chain inet mwan3 mwan3_rule_$1"
+		mwan3_nft_push "flush chain inet mwan3 mwan3_rule_$1"
+	}
+	config_foreach _init_rule_chain rule
 
 	for ipv in ipv4 ipv6; do
 		[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && continue
