@@ -1,5 +1,5 @@
 # mwan3 nftables User and Developer Reference
-### mwan3 version: 3.6.2
+### mwan3 version: 3.6.3
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.
 
 ---
@@ -79,29 +79,30 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.
     - 17.1 [mwan3-lb-test: Load Balancing Distribution Verifier](#171-mwan3-lb-test-load-balancing-distribution-verifier)
     - 17.2 [mwan3-diag: Network Diagnostic Report](#172-mwan3-diag-network-diagnostic-report)
 18. [Changelog](#18-changelog)
-    - 18.1 [Version 3.6.2](#181-version-362)
-    - 18.2 [Version 3.6.1](#182-version-361)
-    - 18.3 [Version 3.6](#183-version-36)
-    - 18.4 [Version 3.5.3](#184-version-353)
-    - 18.5 [Version 3.5.2](#185-version-352)
-    - 18.6 [Version 3.5.1](#186-version-351)
-    - 18.7 [Version 3.5](#187-version-35)
-    - 18.8 [Version 3.4.1 (Unreleased)](#188-version-341-unreleased)
-    - 18.9 [Version 3.4](#189-version-34)
-    - 18.10 [Version 3.3.5](#1810-version-335)
-    - 18.11 [Version 3.3.4](#1811-version-334)
-    - 18.12 [Version 3.3.3](#1812-version-333)
-    - 18.13 [Version 3.3.2](#1813-version-332)
-    - 18.14 [Version 3.3.1](#1814-version-331)
-    - 18.15 [Version 3.3](#1815-version-33)
-    - 18.16 [Version 3.2.3](#1816-version-323)
-    - 18.17 [Version 3.2.2](#1817-version-322)
-    - 18.18 [Version 3.2.1](#1818-version-321)
-    - 18.19 [Version 3.2](#1819-version-32)
-    - 18.20 [Version 3.1.4](#1820-version-314)
-    - 18.21 [Version 3.1.3](#1821-version-313)
-    - 18.22 [Version 3.1.2](#1822-version-312)
-    - 18.23 [Version 3.1.1](#1823-version-311)
+    - 18.1 [Version 3.6.3](#181-version-363)
+    - 18.2 [Version 3.6.2](#182-version-362)
+    - 18.3 [Version 3.6.1](#183-version-361)
+    - 18.4 [Version 3.6](#184-version-36)
+    - 18.5 [Version 3.5.3](#185-version-353)
+    - 18.6 [Version 3.5.2](#186-version-352)
+    - 18.7 [Version 3.5.1](#187-version-351)
+    - 18.8 [Version 3.5](#188-version-35)
+    - 18.9 [Version 3.4.1 (Unreleased)](#189-version-341-unreleased)
+    - 18.10 [Version 3.4](#1810-version-34)
+    - 18.11 [Version 3.3.5](#1811-version-335)
+    - 18.12 [Version 3.3.4](#1812-version-334)
+    - 18.13 [Version 3.3.3](#1813-version-333)
+    - 18.14 [Version 3.3.2](#1814-version-332)
+    - 18.15 [Version 3.3.1](#1815-version-331)
+    - 18.16 [Version 3.3](#1816-version-33)
+    - 18.17 [Version 3.2.3](#1817-version-323)
+    - 18.18 [Version 3.2.2](#1818-version-322)
+    - 18.19 [Version 3.2.1](#1819-version-321)
+    - 18.20 [Version 3.2](#1820-version-32)
+    - 18.21 [Version 3.1.4](#1821-version-314)
+    - 18.22 [Version 3.1.3](#1822-version-313)
+    - 18.23 [Version 3.1.2](#1823-version-312)
+    - 18.24 [Version 3.1.1](#1824-version-311)
 19. [Specific use-cases](#19-specific-use-cases)
     - 19.1 [Tailscale](#191-tailscale)
 
@@ -1897,7 +1898,87 @@ Before printing any output the script builds a map of every public routable IPv4
 
 ## 18. Changelog
 
-### 18.1 Version 3.6.2
+### 18.1 Version 3.6.3
+
+**Summary:** Correctness fixes for edge cases and incomplete feature implementations: fixes ipset and ICMP protocol translation issues when rules use family=any; rebuilds ip rules and routing tables on reload to handle interface reordering and family changes; completes track_gateway support that was missing from two tracking status checks; adds runtime configuration reload to mwan3track via a SIGHUP handler and fixes hotplug handler initialization issues and boot race conditions.
+
+---
+
+### mwan3: fix ipset+family=any batch failure and sticky chain orphan
+
+When a rule has `family=any` and references a UCI ipset whose declared family is ipv6, both the ipv4 and ipv6 passes run. The ipv4 pass finds the set absent from the kernel and pre-creates it as `ipv4_addr`. The ipv6 pass then generates an "ip6 daddr @setname" expression against an `ipv4_addr` set, causing the atomic nft batch to fail and killing all user rules.
+
+Fix by adding a UCI lookup before the absent-set guard. The new helper `_mwan3_uci_ipset_addrtype()` maps a set name to its UCI-declared address type. When a referenced set is absent from the kernel but present in UCI, the incompatible pass is silently skipped and the compatible pass proceeds without pre-creation, since `mwan3_render_config_ipsets` will add the set to the same batch. The existing external-set guard (skip ipv6 pass, let ipv4 pre-create as `ipv4_addr`) is retained for sets absent from both kernel and UCI.
+
+Separately, the preamble in `mwan3_set_user_rules()` that pre-creates and flushes per-rule sticky chains sourced chain names by listing `mwan3_rule_*` chains already present in the kernel table. After a UCI rule section is deleted, `mwan3_nft_reload_start` removes the chain in the same batch; however, because the batch has not yet been committed when the kernel is enumerated, the chain is still visible. The old code therefore flushes and reinserts the deleted chain into the batch, causing it to survive the reload as an orphan. Change the preamble to iterate over enabled UCI rule sections instead, so only chains for active rules are created and chains for deleted rules are not recreated.
+
+---
+
+### mwan3: fix ICMP protocol translation for family=any rules
+
+UCI `proto=icmp` is family-agnostic, meaning ICMP appropriate to the address family of the rule. For `family=any` rules, mwan3 generates nft rules on two passes (ipv4 and ipv6). The ipv4 pass should emit "meta l4proto icmp" (protocol 1) and the ipv6 pass should emit "meta l4proto ipv6-icmp" (protocol 58).
+
+Two interacting defects prevented the ipv6 translation from occurring:
+
+The dedup optimisation that skips the ipv6 pass for `family=any` rules with no IP-version-specific elements incorrectly treated `proto=icmp` as family-agnostic. While TCP, UDP, and other L4 protocols share the same protocol number across families, ICMP (1) and ICMPv6 (58) are distinct protocols with distinct nft keywords. The dedup now excludes `proto=icmp` so both passes run.
+
+The ICMP translation guard checked the UCI family config value instead of the current address-family pass variable. For `family=any`, the config value is "any", never "ipv6", so the translation never fired. The guard now checks the pass variable.
+
+Without this fix, `family=any` rules with `proto=icmp` silently fail to match IPv6 ICMPv6 traffic.
+
+---
+
+### mwan3: rebuild ip rules and routing tables on reload
+
+The trigger conditions for this bug are narrow - all three must hold: mwan3 must be running with two or more interfaces, the user must reorder config interface sections in `/etc/config/mwan3` without adding or removing interfaces, and the user must trigger a reload rather than a full restart.
+
+When `reload_service` is called, it atomically rebuilds the entire nft ruleset using the current UCI configuration, but never rebuilds the kernel ip rules or per-interface routing tables. These kernel-side structures encode the interface table ID (tid), which is derived from the ordinal position of config interface sections in `/etc/config/mwan3`.
+
+If the UCI section ordering changes between start and reload, the nft rules use the new tid-to-mark mapping while the ip rules and routing tables still reflect the old mapping. Traffic is silently routed to the wrong WAN interface.
+
+A secondary manifestation of the same root cause: if an interface's family option changes (e.g. ipv4 to ipv6), the old ip rules remain in the wrong address family and new rules are never created.
+
+Add `mwan3_rebuild_iface_rules`, called from `reload_service` via `config_foreach`, which deletes and recreates ip rules and routing tables for each enabled, up interface. Modify `mwan3_delete_iface_rules` and `mwan3_delete_iface_route` to search both address families unconditionally, so that a family change cleans up rules left behind in the old family.
+
+---
+
+### mwan3: fix mwan3rtmon has_tracking ignoring track_gateway
+
+The `load_config` function in mwan3rtmon determines whether an interface has tracking enabled by checking only `track_ip`. Interfaces configured with `track_gateway` but no `track_ip` are incorrectly treated as having tracking disabled. This causes `get_track_status` to return "disabled" without consulting the tracker's PID and STARTED state files, bypassing the secondary health check guard in `handle_route_event`.
+
+The shell equivalent in `common.sh` (`mwan3_get_mwan3track_status`) and the init script (`start_tracker`) both correctly account for `track_gateway`. Align mwan3rtmon's `has_tracking` logic to match by including `track_gateway` in the check.
+
+---
+
+### mwan3: reload tracker configuration on service reload
+
+`mwan3track` reads UCI tracking parameters (interval, reliability, count, timeout, quality thresholds, etc.) once at startup and has no mechanism to update them at runtime. When `reload_service` rebuilds the nft ruleset, it does not restart tracker instances unless the tracker count changes, so any parameter changes made via UCI are silently ignored until a full service restart.
+
+Add a `load_tracking_config()` function that extracts the parameter reads from `main()` into a reusable function called both at startup and on reload. Add a HUP signal handler to `mwan3track` that sets a reload flag and interrupts the current sleep/probe cycle. The main loop checks the flag at the same two points where IFDOWN and IFUP events are processed, re-reads UCI config, refreshes tracking parameters and track IPs, and clamps the score to the new down+up ceiling if it exceeds it.
+
+In `reload_service`, send HUP to each running tracker instance after the existing rtmon HUP signals.
+
+---
+
+### mwan3: fix mwan3_get_mwan3track_status ignoring track_gateway
+
+The `mwan3_get_mwan3track_status` function in `common.sh` returns "disabled" when no `track_ip` list entries are configured, without checking the `track_gateway` option. This causes the "mwan3 interfaces" CLI command to report "tracking is disabled" for interfaces that use gateway-only tracking, even though a tracker instance is actively running and monitoring the interface.
+
+The rpcd ucode equivalent (`get_mwan3track_status`) already checks both `track_ip` and `track_gateway` before returning "disabled". Align the shell function with the same logic by also reading `track_gateway` before the early return.
+
+---
+
+### mwan3: fix hotplug handler to exit silently when mwan3 is not running
+
+Add `/etc/init.d/mwan3` enabled guard before `procd_lock` and `mwan3_init` so that hotplug events are silently ignored when mwan3 has no rc.d symlink.
+
+Move the nft table existence check to before `mwan3_init`. Previously `mwan3_init` was called unconditionally, which created `/var/run/mwan3` as a side effect and corrupted the stopped-service indicator in the case where mwan3 is enabled but has been manually stopped. With the check before `mwan3_init`, the handler exits without side effects whenever the nft table is absent, covering both the boot-race window and the stopped-but-enabled case.
+
+Remove the running check that followed `mwan3_init`. It was dead code: `mwan3_init` created `/var/run/mwan3` before the check ran, so `service_running()` always returned true and the exit path was unreachable.
+
+---
+
+### 18.2 Version 3.6.2
 
 **Summary:** A set of defensive edge-case fixes and correctness improvements. Binds the mwan3rtmon route listener before the initial netlink dumps to close a narrow startup race window, and replaces `main_route_cache` with an on-demand kernel query to eliminate a class of cache-drift failures that could only manifest if route events arrived during the dump phase. Aligns shell and mwan3rtmon custom-set filtering so both paths apply identical exclusions. Adds a dormant `is_default_route` guard to `populate_connected_set` as a forward-compatibility precaution. Clamps `check_quality` to 0 when the configured track method cannot produce quality samples, preventing an arithmetic error in the unusual case where `check_quality` is paired with a non-ping method. Fixes `mwan3_track_clean` which targeted incorrect paths and was a no-op, and tightens ip rule deletion at `stop_service` to use content-based matching rather than a priority-range regex, which matters only when rule bases are configured outside the default 1000-3999 band.
 
@@ -1986,7 +2067,7 @@ To make the gates trustworthy at stop time, `mwan3_init` now persists `iif_rule_
 
 ---
 
-### 18.2 Version 3.6.1
+### 18.3 Version 3.6.1
 
 **Summary:** Extends the legacy mwan3 custom sets that were previously only loaded statically during `start_service()` and `reload_service()` from the tables defined in the UCI global config list option `rt_table_lookup` to be fully dynamic, using mwan3rtmon to listen for and to add and remove routes from the custom sets in response to `RTM_NEWROUTE` and `RTM_DELROUTE` events on the tables defined with `list rt_table_lookup <tableid>`. Adds a `SIGHUP` handler to mwan3rtmon to cause it to flush and repopulate these custom sets, ensuring that their contents remain in sync with any newly added or removed `list rt_table_lookup <tableid>` options in the mwan3 config.
 
@@ -2012,7 +2093,7 @@ Add `handle_custom_set_event()`, called from `handle_route_event()` whenever a r
 
 ---
 
-### 18.3 Version 3.6
+### 18.4 Version 3.6
 
 **Summary:** Version 3.6 adds three user-visible features to mwan3 rules. Rules now support an `fwmark`/`fwmask` option to match packets by meta mark using a masked comparison, working alongside or instead of address and ipset matching; mwan3 logs a warning if the fwmask overlaps its internal `MMX_MASK` since such a mask would match packets already carrying an mwan3 classification mark. The ip rule priority tiers for per-interface rules are now configurable via three new globals UCI options (`iif_rule_base`, `fwmark_rule_base`, `unreachable_rule_base`), shifting from the fixed 1000/2000/3000 defaults; two ordering constraints are enforced at startup and rule deletion is rewritten to use content-based matching so it remains correct across base or `mmx_mask` changes. Rules gain `option enabled 0/1`, consistent with interfaces, ipsets, and members.
 
@@ -2173,7 +2254,7 @@ The Policy assigned column label is shortened to Policy.
 
 ---
 
-### 18.4 Version 3.5.3
+### 18.5 Version 3.5.3
 
 **Summary:** Version 3.5.3 adds two major LuCI features and a set of bug fixes and routing reliability improvements.
 
@@ -2263,7 +2344,7 @@ The address family selector controls A vs AAAA record resolution; IPv4 is prefer
 
 ---
 
-### 18.5 Version 3.5.2
+### 18.6 Version 3.5.2
 
 **Summary:** Version 3.5.2 is a bug-fix and maintenance release. It corrects a misrouting bug where kernel-generated NDP Neighbor Solicitation probes entered `mwan3_output` without a conntrack entry, fell through to `mwan3_rules`, and received a WAN policy mark that caused the kernel to probe the gateway via the wrong interface, cycling the NDP entry to FAILED state and breaking WRAP ping tracking for that interface. It updates the package dependency from `ip` to `ip-full` to ensure the full iproute2 implementation is always present, since the busybox `ip` is a minimal subset that does not support all options mwan3 requires. It adds `mwan3-diag`, a ucode diagnostic script installed to `/usr/sbin/mwan3-diag` that collects a comprehensive snapshot of mwan3 state -- interface status, policy routing rules, nftables ruleset, routing tables, conntrack summary and system log -- with all public IP addresses anonymised with stable placeholders so output can be shared safely.
 
@@ -2289,7 +2370,7 @@ Add an icmpv6 NDP accept rule at the top of mwan3_output, mirroring the equivale
 
 ---
 
-### 18.6 Version 3.5.1
+### 18.7 Version 3.5.1
 
 **Summary:** Version 3.5.1 is a bug-fix and maintenance release. It corrects a silent failure in `mwan3rtmon` where route replication to per-interface routing tables was completely non-functional, adds nft set flag-change detection on reload so that changing a set's timeout, counter, or size options takes effect immediately without requiring a full service restart, suppresses spurious stderr noise from ip rule and ip route operations during upgrades and teardown, and removes version number references from comments.
 
@@ -2339,7 +2420,7 @@ Four locations in `mwan3.sh` produced noise on stderr during package upgrades an
 
 ---
 
-### 18.7 Version 3.5
+### 18.8 Version 3.5
 
 **Summary:** Version 3.5 is a major architectural release that moves mwan3 out of `table inet fw4` and into its own `table inet mwan3`, eliminating the fw4 rebuild scaffold and the mwan3evtd debounce daemon entirely. 
 
@@ -2531,7 +2612,7 @@ mwan3 now renders port ranges using `x-y` (nft native format); the colon separat
 
 ---
 
-### 18.8 Version 3.4.1 (Unreleased)
+### 18.9 Version 3.4.1 (Unreleased)
 
 **Summary:** Builds the per-interface `mwan3_iface_in_*` chains before `mwan3_set_general_nft()` activates `mwan3_prerouting` to avoid a race condition that leads to a wrong interface mark being assigned. Fixes bugs in the `nft list chains` syntax in `stop_service()` and a grep expression that was causing a too-broad match and resulting in traffic for interface `wan` bypassing mwan3 marking.
 
@@ -2573,7 +2654,7 @@ Also removed the flush of `mwan3_postrouting` from `mwan3_set_general_nft`. That
 
 ---
 
-### 18.9 Version 3.4
+### 18.10 Version 3.4
 
 **Summary:** Version 3.4 introduces mwan3evtd, a generalised ucode debounce daemon that coalesces rapid-fire events - such as simultaneous interface flaps triggering multiple fw4 reloads - into a single handler execution after the activity settles. This prevents the repeated dnsmasq SIGHUPs that previously caused cache thrash and, in tight-timing scenarios, dnsmasq crashes during concurrent startup.
 
@@ -2612,7 +2693,7 @@ Shell injection in the handler fire path is prevented by passing the command thr
 
 ---
 
-### 18.10 Version 3.3.5
+### 18.11 Version 3.3.5
 
 **Summary:** Version 3.3.5 is a single-fix release that suppresses the per-deleted-entry output that `conntrack -D` writes to stdout, which was previously appearing on the console whenever mwan3 start or an fw4 reload triggered the zero-mark conntrack flush.
 
@@ -2626,7 +2707,7 @@ Fix: redirect stdout to `/dev/null` alongside stderr.
 
 ---
 
-### 18.11 Version 3.3.4
+### 18.12 Version 3.3.4
 
 **Summary:** Version 3.3.4 closes a class of misrouting bugs caused by the brief window between fw4 flushing `table inet fw4` and mwan3 completing its nft rebuild. Connections established during that window acquire `ct mark=0`; the new `mwan3_flush_stale_conntrack` helper removes all zero-mark conntrack entries after every rebuild and restart, preventing WireGuard persistent-keepalive and similar long-lived UDP from locking in a bad entry indefinitely. A double-rebuild race in `mwan3-fw-rebuild.sh` is also fixed by acquiring the procd lock before checking for empty chains.
 
@@ -2657,7 +2738,7 @@ Fix by acquiring `procd_lock` first and re-checking under the lock, so only one 
 
 ---
 
-### 18.12 Version 3.3.3
+### 18.13 Version 3.3.3
 
 **Summary:** Version 3.3.3 is a broad bug-fix release addressing several correctness issues: DNAT reply routing was broken by a misplaced `fib daddr type local return` rule that fired before DNAT translation, causing replies to exit via a randomly load-balanced interface; IPv6 ip rules were silently leaked on ifdown because `delete_iface_rules` queried the IPv4 rule table; `mwan3_dnsmasq_hup` never sent SIGHUP because `json_get_var` stores booleans as integers not strings; and the numgen counter was contaminated by inbound and reply traffic. Additional fixes cover a grep substring false-positive in iface chain wiring, unquoted regex variables, a dead function stub, a duplicate function, and missing `mwan3_postrouting` in the stop_service chain lists. A new `bypass_network` UCI option populates the dynamic bypass sets from config, and `mwan3-lb-test` gains fw4 reload detection.
 
@@ -2747,7 +2828,7 @@ Improve the `rt_table_lookup` field: rename label from "Routing table lookup" to
 
 ---
 
-### 18.13 Version 3.3.2
+### 18.14 Version 3.3.2
 
 **Summary:** Version 3.3.2 fixes a spurious tracked-IP entry in ubus status output caused by a naming collision between mwan3track's temporary output file and the `TRACK_*` glob used by rpcd. The `mwan3-lb-test` tool gains mandatory client isolation, a Windows test command, and a stale-artifact cleanup subcommand. LuCI receives cross-field family consistency validation in the rule editor, a fix for false "Present (unexpected)" health badges during interface bring-up, source nftset display in the overview rules column, and source nftset support in the traffic path simulator.
 
@@ -2822,7 +2903,7 @@ Grid display: Source and Destination columns now show the nftset name when no IP
 
 ---
 
-### 18.14 Version 3.3.1
+### 18.15 Version 3.3.1
 
 **Summary:** Version 3.3.1 adds source nftset matching (`ipset_src`) as a complement to the existing destination nftset, fixes three distinct numgen counter contamination bugs that caused load-balancing distributions to skew under inbound or reply traffic, sweeps orphaned policy chains that accumulate when policies are removed from UCI without an fw4 reload, and corrects IPv6 ip rule detection in the routing health check. The release also adds `nftset_info` as an rpcd ubus method and introduces the `mwan3-lb-test` CLI tool for verifying load-balancing weight distributions against configured policy members.
 
@@ -2894,7 +2975,7 @@ Fix by querying both `-4` and `-6` rule tables and merging the results, matching
 
 ---
 
-### 18.15 Version 3.3
+### 18.16 Version 3.3
 
 **Summary:** Version 3.3 adds three major LuCI diagnostic tools - a traffic path Simulator, a static Configuration analyser, and a live Routing health view - backed by two new rpcd ubus methods (`nftset_members` and `routing_health`). The configuration analyser detects undefined references, orphaned sections, and rule shadowing including correct IPv6 CIDR containment checks. The routing health view colour-codes per-interface ip rule and routing table state against live kernel state. The `apk info` vs `apk list -I` version display bug is also fixed.
 
@@ -2938,7 +3019,7 @@ Also adds `nftset_members` and `routing_health` methods to the rpcd module with 
 
 ---
 
-### 18.16 Version 3.2.3
+### 18.17 Version 3.2.3
 
 **Summary:** Version 3.2.3 improves tracking status visibility by adding per-IP latency and packet-loss detail to `mwan3 status` output and fixing the `check_quality` display to derive its state from mwan3track's runtime files rather than UCI, so changes to UCI without a restart no longer cause the status page to disagree with what is actually running. Stale gateway `TRACK_*`/`LATENCY_*`/`LOSS_*` files from previous PPPoE sessions are cleaned up on each probe list rebuild. The `luci-app-mwan3` PKG_VERSION scheme is fixed to prevent `apk upgrade` from reverting to the official package, and the GitHub Actions APK rename step is corrected to avoid i18n sub-packages overwriting the main package.
 
@@ -2999,7 +3080,7 @@ When `check_quality=1`, tracker latency/loss sentinel values (`999999ms`, `100%`
 
 ---
 
-### 18.17 Version 3.2.2
+### 18.18 Version 3.2.2
 
 **Summary:** Version 3.2.2 fixes two misrouting bugs: duplicate jump rules accumulating from repeated fw4 reload cycles caused iface_in chain deletion to fail with "Resource busy", and the unguarded catchall rule in each `mwan3_iface_in_*` chain was stamping IPv6 packets with the IPv4 interface mark on dual-stack physical devices, breaking QUIC/HTTP3 streams that resumed after conntrack expiry. The gateway IP is moved to the front of the tracking probe list so it is always tested. LuCI receives a visual redesign replacing solid alert cards with bordered flex cards, and adds latency and packet-loss columns to the tracking IP table.
 
@@ -3061,7 +3142,7 @@ When `check_quality` is disabled (the default), the columns display "Not enabled
 
 ---
 
-### 18.18 Version 3.2.1
+### 18.19 Version 3.2.1
 
 **Summary:** Version 3.2.1 fixes policy status reporting to include all members with their live traffic share percentages (not just the currently-routing member), replaces `killall -HUP dnsmasq` with a procd-aware targeted SIGHUP to avoid crashing instances still in the startup phase, adds the installed mwan3 package version to `mwan3 internal` output, and redesigns the LuCI status pages with structured collapsible sections and an IPv6 troubleshooting pane. LuCI also exposes the `snat6` IPv6 SNAT option on interface configuration.
 
@@ -3113,7 +3194,7 @@ Adds an "IPv6 SNAT" form field to the interface configuration modal, visible onl
 
 ---
 
-### 18.19 Version 3.2
+### 18.20 Version 3.2
 
 **Summary:** Version 3.2 adds two significant features. First, opt-in per-interface IPv6 SNAT via the `snat6` UCI option, which corrects BCP38/uRPF drops for router-originated traffic rerouted by `mwan3_output` onto a different WAN than the kernel initially selected at `sendto()`. Second, non-destructive vmap-dispatch mark save/restore: 126 per-mark OR-immediate setter chains replace the previous unmasked connmark operations, making mwan3 fully order-independent with respect to pbr and other fwmark-using packages without requiring coordinated chain priority ordering.
 
@@ -3139,7 +3220,7 @@ The same vmap-dispatch primitive is reused by `mwan3_create_policies_nft` for lo
 
 ---
 
-### 18.20 Version 3.1.4
+### 18.21 Version 3.1.4
 
 **Summary:** Version 3.1.4 fixes interoperability with pbr by moving mwan3's prerouting and output chains from priority `mangle + 1` to `mangle - 1`, so mwan3 restores and saves its ct mark bits before pbr injects its own marks at `mangle` priority. With the previous ordering pbr's marks were zeroed before the routing decision and its ip rules never matched.
 
@@ -3157,7 +3238,7 @@ Add `postinst` migration to flush and delete the old chains on upgrade, since nf
 
 ---
 
-### 18.21 Version 3.1.3
+### 18.22 Version 3.1.3
 
 **Summary:** Version 3.1.3 fixes three status and policy rendering bugs: single-member policies were emitting spurious "unreachable" entries because the empty-string guard on `mwan3_mark_to_name` never matched; mixed IPv4/IPv6 policies lost one family's members because both shared a single reset list; and equal-weight load-balancing entries were invisible in `mwan3 status` because nft normalises single-element numgen ranges to plain values that the reporting regex did not match.
 
@@ -3187,7 +3268,7 @@ Handle both `N-M : 0xMARK` (weight>1, range preserved by nft) and `N : 0xMARK` (
 
 ---
 
-### 18.22 Version 3.1.2
+### 18.23 Version 3.1.2
 
 **Summary:** Version 3.1.2 improves mwan3rtmon with two fixes: an in-memory route cache replaces the per-event `RTM_GETROUTE` dump for O(1) ECMP path checks, and a ucode-mod-rtnl double-destructor bug that caused a reliable segfault on clean shutdown is eliminated by letting the GC collect the route listener rather than calling `close()` explicitly.
 
@@ -3210,7 +3291,7 @@ Fix: omit the explicit `close()` call and let the GC collect the listener natura
 
 ---
 
-### 18.23 Version 3.1.1
+### 18.24 Version 3.1.1
 
 **Summary:** Version 3.1.1 is a broad mwan3track hardening release: the disconnecting threshold is raised to suppress false alarms from single transient ping losses, an exclusive flock prevents ghost duplicate tracker processes per interface, `sockopt_wrap` replaces `exit()` with graceful error returns so a stale source IP or disappearing interface does not abruptly terminate the tracked process, per-host failure logs are suppressed when the reliability threshold is still met, and interface events are processed at the top of the main loop before pinging to avoid a spurious disconnecting state on wakeup from disabled. LuCI adds a track_gateway checkbox to the interface modal and clarifies the flush_conntrack help text.
 
