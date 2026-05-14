@@ -748,6 +748,30 @@ mwan3_rebuild_iface_nft()
 	mwan3_create_iface_nft "$interface" "$l3_device"
 }
 
+mwan3_rebuild_iface_rules()
+{
+	local interface="$1"
+	local true_iface l3_device up enabled family status_json
+
+	config_get_bool enabled "$interface" enabled 0
+	[ "$enabled" -eq 1 ] || return
+
+	config_get family "$interface" family ipv4
+	[ "$family" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && return
+
+	mwan3_get_true_iface true_iface "$interface"
+	status_json=$(ubus -S call "network.interface.$true_iface" status 2>/dev/null)
+	[ -n "$status_json" ] || return
+
+	json_load "$status_json"
+	json_get_vars up l3_device
+	[ "$up" = "1" ] && [ -n "$l3_device" ] || return
+
+	mwan3_create_iface_rules "$interface" "$l3_device"
+	mwan3_delete_iface_route "$interface"
+	mwan3_create_iface_route "$interface"
+}
+
 mwan3_delete_iface_nft()
 {
 	local family handle
@@ -844,9 +868,8 @@ mwan3_create_iface_route()
 
 mwan3_delete_iface_route()
 {
-	local id family
+	local id
 
-	config_get family "$1" family ipv4
 	mwan3_get_iface_id id "$1"
 
 	if [ -z "$id" ]; then
@@ -854,11 +877,10 @@ mwan3_delete_iface_route()
 		return 0
 	fi
 
-	if [ "$family" = "ipv4" ]; then
-		$IP4 route flush table "$id" 2>/dev/null
-	elif [ "$family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
-		$IP6 route flush table "$id" 2>/dev/null
-	fi
+	# Flush both families so that a family change does not leave stale
+	# routes from the old family in the routing table.
+	$IP4 route flush table "$id" 2>/dev/null
+	[ $NO_IPV6 -eq 0 ] && $IP6 route flush table "$id" 2>/dev/null
 }
 
 mwan3_create_iface_rules()
@@ -887,49 +909,50 @@ mwan3_create_iface_rules()
 
 mwan3_delete_iface_rules()
 {
-	local id family IP pref fwmark_val
+	local id IP pref fwmark_val
 
-	config_get family "$1" family ipv4
 	mwan3_get_iface_id id "$1"
 
 	[ -n "$id" ] || return 0
 
-	if [ "$family" = "ipv4" ]; then
-		IP="$IP4"
-	elif [ "$family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
-		IP="$IP6"
-	else
-		return
-	fi
+	# Search both address families so that a family change (e.g. ipv4
+	# to ipv6) cleans up rules left behind in the old family. The
+	# routing table id is the deletion anchor and is unique per
+	# interface regardless of family, so this is unambiguous.
+	for IP in "$IP4" "$IP6"; do
+		[ "$IP" = "$IP6" ] && [ $NO_IPV6 -ne 0 ] && continue
 
-	# Delete iif rule(s): any rule with the iif keyword referencing this
-	# interface's table id. Routing tables 1..MWAN3_INTERFACE_MAX are
-	# mwan3-owned, so a match is unambiguous.
-	for pref in $($IP rule list | awk '/iif/ {
-		for (i=1; i<=NF; i++)
-			if ($i == "lookup" && $(i+1)+0 == '$id') { sub(/:$/, "", $1); print $1; next }
-	}'); do
-		$IP rule del pref "$pref" 2>/dev/null
+		# Delete iif rule(s): any rule with the iif keyword referencing
+		# this interface's table id. Routing tables
+		# 1..MWAN3_INTERFACE_MAX are mwan3-owned, so a match is
+		# unambiguous.
+		for pref in $($IP rule list | awk '/iif/ {
+			for (i=1; i<=NF; i++)
+				if ($i == "lookup" && $(i+1)+0 == '$id') { sub(/:$/, "", $1); print $1; next }
+		}'); do
+			$IP rule del pref "$pref" 2>/dev/null
+		done
+
+		# Discover fwmark/mask from the fwmark lookup rule. The routing
+		# table id is the anchor: any fwmark rule with lookup $id is
+		# mwan3's rule for this interface, regardless of priority or
+		# mask value. This handles base changes, MMX_MASK changes, and
+		# upgrade from pre-configurable-base versions transparently.
+		# Once the mark/mask is known, the matching unreachable rule
+		# can be deleted by content too.
+		fwmark_val=$($IP rule list | awk '/fwmark/ {
+			fmark=""
+			for (i=1; i<=NF; i++) {
+				if ($i == "fwmark") fmark=$(i+1)
+				if ($i == "lookup" && $(i+1)+0 == '$id' && fmark != "") { print fmark; exit }
+			}
+		}')
+
+		if [ -n "$fwmark_val" ]; then
+			$IP rule del fwmark "$fwmark_val" lookup "$id" 2>/dev/null
+			$IP rule del fwmark "$fwmark_val" unreachable 2>/dev/null
+		fi
 	done
-
-	# Discover fwmark/mask from the fwmark lookup rule. The routing table id
-	# is the anchor: any fwmark rule with lookup $id is mwan3's rule for this
-	# interface, regardless of priority or mask value. This handles base
-	# changes, MMX_MASK changes, and upgrade from pre-configurable-base
-	# versions transparently. Once the mark/mask is known, the matching
-	# unreachable rule can be deleted by content too.
-	fwmark_val=$($IP rule list | awk '/fwmark/ {
-		fmark=""
-		for (i=1; i<=NF; i++) {
-			if ($i == "fwmark") fmark=$(i+1)
-			if ($i == "lookup" && $(i+1)+0 == '$id' && fmark != "") { print fmark; exit }
-		}
-	}')
-
-	if [ -n "$fwmark_val" ]; then
-		$IP rule del fwmark "$fwmark_val" lookup "$id" 2>/dev/null
-		$IP rule del fwmark "$fwmark_val" unreachable 2>/dev/null
-	fi
 }
 
 mwan3_set_policy()

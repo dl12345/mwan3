@@ -232,6 +232,7 @@ reload_service() {
 	# update them after the nft commit so the table is already consistent.
 	mwan3_update_iface_to_table
 	mwan3_set_general_rules
+	config_foreach mwan3_rebuild_iface_rules interface
 
 	# Signal mwan3rtmon to reload UCI config and re-sync the custom sets.
 	# This is needed when rt_table_lookup changes: the running mwan3rtmon
