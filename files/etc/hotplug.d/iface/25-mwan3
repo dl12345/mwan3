@@ -13,10 +13,6 @@ SCRIPTNAME="mwan3-hotplug"
 [ -n "$INTERFACE" ] || exit 2
 [ "$FIRSTCONNECT" = "1" ] || [ "$MWAN3_SHUTDOWN" = "1" ] && exit 0
 
-# Exit silently if mwan3 is not enabled. Check before procd_lock and
-# mwan3_init to avoid unnecessary side effects when mwan3 is disabled.
-/etc/init.d/mwan3 enabled || exit 0
-
 if { [ "$ACTION" = "ifup" ] || [ "$ACTION" = "connected" ] ; } && [ -z "$DEVICE" ]; then
 	LOG notice "$ACTION called on $INTERFACE with no device set"
 	exit 3
