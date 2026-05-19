@@ -35,12 +35,8 @@ mwan3_flush_stale_conntrack()
 	# misrouting. Flush only zero-mark entries; correctly-marked connections
 	# are untouched. Requires conntrack-tools; logs a warning if absent.
 	[ -e "$CONNTRACK_FILE" ] || return
-	if command -v conntrack >/dev/null 2>&1; then
-		conntrack -D --mark 0x0/"$MMX_MASK" >/dev/null 2>&1
-		LOG notice "Flushed zero-mark conntrack entries"
-	else
-		LOG notice "conntrack not installed; stale zero-mark conntrack entries may persist - install conntrack"
-	fi
+	mwan3ct flush --mark "0x0/$MMX_MASK" 2>/dev/null
+	LOG notice "Flushed zero-mark conntrack entries"
 }
 
 mwan3_flush_marked_conntrack()
@@ -61,20 +57,7 @@ mwan3_flush_marked_conntrack()
 	# iterate the mwan3 id-space (default 6 bits => 63 ids) and issue
 	# one targeted -D per id. Bounded and fast.
 	[ -e "$CONNTRACK_FILE" ] || return
-	if ! command -v conntrack >/dev/null 2>&1; then
-		LOG notice "conntrack not installed; mwan3-marked conntrack entries may persist after reload - install conntrack"
-		return
-	fi
-
-	local bitcnt max_id id mark
-	bitcnt=$(mwan3_count_one_bits MMX_MASK)
-	max_id=$(( (1 << bitcnt) - 1 ))
-	id=1
-	while [ "$id" -le "$max_id" ]; do
-		mark=$(mwan3_id2mask "$id" "$MMX_MASK")
-		conntrack -D --mark "${mark}/${MMX_MASK}" >/dev/null 2>&1
-		id=$(( id + 1 ))
-	done
+	mwan3ct flush --mark-any "$MMX_MASK" 2>/dev/null
 	LOG notice "Flushed mwan3-marked conntrack entries for reclassification"
 }
 
@@ -1955,9 +1938,9 @@ mwan3_flush_conntrack()
 	if [ "$action" = "ifdown" ] && [ -e "$CONNTRACK_FILE" ]; then
 		local iface_id iface_mark
 		mwan3_get_iface_id iface_id "$interface"
-		if [ -n "$iface_id" ] && command -v conntrack >/dev/null 2>&1; then
+		if [ -n "$iface_id" ]; then
 			iface_mark=$(mwan3_id2mask "$iface_id" "$MMX_MASK")
-			conntrack -D --mark "${iface_mark}/${MMX_MASK}" 2>/dev/null
+			mwan3ct flush --mark "${iface_mark}/${MMX_MASK}" 2>/dev/null
 			LOG info "Selectively flushed conntrack entries for interface '$interface' (mark ${iface_mark}/${MMX_MASK})"
 		fi
 	fi
