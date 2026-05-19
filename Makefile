@@ -14,6 +14,7 @@ PKG_RELEASE:=1
 PKG_MAINTAINER:=Florian Eckert <fe@dev.tdt.de>
 PKG_LICENSE:=GPL-2.0
 PKG_CONFIG_DEPENDS:=CONFIG_IPV6
+PKG_BUILD_DEPENDS:=libnetfilter_conntrack libmnl
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -24,6 +25,7 @@ define Package/mwan3
    DEPENDS:= \
      +ip-full \
      +conntrack \
+     +libnetfilter-conntrack \
      +kmod-nft-core \
      +nftables-json \
      +rpcd-mod-ucode \
@@ -37,7 +39,6 @@ define Package/mwan3
      +ucode-mod-socket
    TITLE:=Multiwan hotplug script with connection tracking support (ucode rtmon)
    MAINTAINER:=Florian Eckert <fe@dev.tdt.de>
-   PKGARCH:=all
 endef
 
 define Package/mwan3/description
@@ -173,6 +174,10 @@ define Build/Compile
 		$(if $(CONFIG_IPV6),-DCONFIG_IPV6) \
 		$(PKG_BUILD_DIR)/sockopt_wrap.c \
 		-ldl
+	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
+		-o $(PKG_BUILD_DIR)/mwan3ct \
+		$(PKG_BUILD_DIR)/mwan3ct.c \
+		-lnetfilter_conntrack -lmnl -lnfnetlink
 endef
 
 define Package/mwan3/install
@@ -221,6 +226,8 @@ define Package/mwan3/install
 		$(1)/etc/
 
 	$(CP) $(PKG_BUILD_DIR)/libwrap_mwan3_sockopt.so.1.0 $(1)/lib/mwan3/
+
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/mwan3ct $(1)/usr/sbin/
 
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_DATA) ./files/etc/uci-defaults/mwan3-migrate-flush_conntrack \
