@@ -61,6 +61,12 @@ mwan3_flush_marked_conntrack()
 	LOG notice "Flushed mwan3-marked conntrack entries for reclassification"
 }
 
+mwan3_flush_unreplied_conntrack()
+{
+	[ -e "$CONNTRACK_FILE" ] || return
+	mwan3ct flush --mark-any "$MMX_MASK" --status 0/0x2 2>/dev/null
+}
+
 mwan3_update_dev_to_table()
 {
 	local _tid
