@@ -24,7 +24,7 @@ MAX_SLEEP=$(((1<<31)-1))
 NO_IPV6=$?
 
 NFT="nft"
-MWAN3_NFT_BATCH="/tmp/mwan3_nft_batch.$$"
+MWAN3_NFT_BATCH="$MWAN3_STATUS_DIR/mwan3_nft_batch.$$"
 MWAN3_BATCH_DEPTH=0
 MWAN3_NEED_DNSMASQ_HUP=0
 
@@ -59,7 +59,13 @@ mwan3_nft_exec()
 # without inadvertently truncating it.
 mwan3_nft_batch_start()
 {
-	[ "$MWAN3_BATCH_DEPTH" -eq 0 ] && : > "$MWAN3_NFT_BATCH"
+	if [ "$MWAN3_BATCH_DEPTH" -eq 0 ]; then
+		local old_umask
+		old_umask=$(umask)
+		umask 077
+		: > "$MWAN3_NFT_BATCH"
+		umask "$old_umask"
+	fi
 	MWAN3_BATCH_DEPTH=$((MWAN3_BATCH_DEPTH + 1))
 }
 
@@ -402,7 +408,7 @@ mwan3_init()
 
 	config_load mwan3
 
-	[ -d $MWAN3_STATUS_DIR ] || mkdir -p $MWAN3_STATUS_DIR/iface_state
+	[ -d $MWAN3_STATUS_DIR ] || { mkdir -m 0700 $MWAN3_STATUS_DIR && mkdir -m 0700 $MWAN3_STATUS_DIR/iface_state; }
 
 	# mwan3's MARKing mask (at least 3 bits should be set)
 	if [ -e "${MWAN3_STATUS_DIR}/mmx_mask" ]; then

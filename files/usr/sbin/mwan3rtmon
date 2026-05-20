@@ -221,8 +221,8 @@ function nft_exec(cmd) {
 
 function nft_batch(cmds) {
 
-	let tmpfile = "/tmp/mwan3rtmon_nft_batch";
-	let f = open(tmpfile, "w");
+	let tmpfile = "/var/run/mwan3/mwan3rtmon_nft_batch";
+	let f = open(tmpfile, "w", 0600);
 	if (!f) {
 		log_msg("warn", "cannot open nft batch file");
 		return false;
