@@ -26,6 +26,7 @@ MAX_SLEEP=$(((1<<31)-1))
 
 # nftables inet family handles both IPv4 and IPv6
 # Check if IPv6 is disabled in the kernel
+
 [ -d /proc/sys/net/ipv6 ]
 NO_IPV6=$?
 
@@ -37,15 +38,18 @@ MWAN3_NEED_DNSMASQ_HUP=0
 LOG()
 {
 	local facility=$1; shift
+
 	# in development, we want to show 'debug' level logs
 	# when this release is out of beta, the comment in the line below
 	# should be removed
+
 	[ "$facility" = "debug" ] && return
 	logger -t "${SCRIPTNAME}[$$]" -p $facility "$*"
 }
 
 # Execute an nft command. When inside a batch (MWAN3_BATCH_DEPTH > 0), push
 # the command into the batch file instead of running nft immediately.
+
 mwan3_nft_exec()
 {
 	if [ "$MWAN3_BATCH_DEPTH" -gt 0 ]; then
@@ -63,6 +67,7 @@ mwan3_nft_exec()
 # level (depth 0 -> 1). Nested calls increment depth and are otherwise no-ops,
 # so callers can open their own mini-batches inside a larger reload batch
 # without inadvertently truncating it.
+
 mwan3_nft_batch_start()
 {
 	if [ "$MWAN3_BATCH_DEPTH" -eq 0 ]; then
@@ -77,6 +82,7 @@ mwan3_nft_batch_start()
 
 # Append a line to the nft batch. Called directly with a pre-formatted nft
 # statement, or indirectly via mwan3_nft_exec when MWAN3_BATCH_DEPTH > 0.
+
 mwan3_nft_push()
 {
 	echo "$*" >> "$MWAN3_NFT_BATCH"
@@ -85,6 +91,7 @@ mwan3_nft_push()
 # Commit the nft batch. Decrements depth; only commits to the kernel when
 # reaching depth 0 (the outermost level). Inner commits from nested callers
 # are no-ops: they just decrement the counter and return.
+
 mwan3_nft_batch_commit()
 {
 	MWAN3_BATCH_DEPTH=$((MWAN3_BATCH_DEPTH - 1))
@@ -105,6 +112,7 @@ mwan3_nft_batch_commit()
 # chains (iface_in, policy, rule, or-setter, etc.).
 # Internal mwan3_* sets are deleted so mwan3_ensure_nft_framework can recreate
 # them with correct flags. User-defined sets are never touched.
+
 mwan3_nft_reload_start()
 {
 	local chain setname
@@ -113,11 +121,13 @@ mwan3_nft_reload_start()
 	             mwan3_ifaces_in mwan3_rules mwan3_connected mwan3_custom mwan3_dynamic; do
 		mwan3_nft_push "flush chain inet mwan3 $chain"
 	done
+
 	# Two-pass: flush all dynamic chains first to remove cross-references
 	# (e.g. mwan3_rule_* chains jump to mwan3_or_meta_* chains), then delete.
 	# A single-pass flush+delete in alphabetical order fails with "Device or
 	# resource busy" because mwan3_or_meta_* sorts before mwan3_rule_*, so
 	# the delete fires while the rule chain still holds a jump reference.
+
 	local _dyn_chains=""
 	for chain in $($NFT list chains inet 2>/dev/null | grep "chain mwan3_" | awk '{gsub(/ \{.*/, ""); print $2}'); do
 		case "$chain" in
@@ -142,6 +152,7 @@ mwan3_nft_reload_start()
 
 # Commit the reload batch atomically to the kernel (thin wrapper around
 # mwan3_nft_batch_commit, which handles the depth decrement and actual commit).
+
 mwan3_nft_reload_commit()
 {
 	mwan3_nft_batch_commit
@@ -152,6 +163,7 @@ mwan3_nft_reload_commit()
 # means: mark = (mark & ~MASK) | VALUE
 # nftables: meta mark set (meta mark & ~MASK) | VALUE
 # Uses & and | symbols (not 'and'/'or' keywords) to avoid parser ambiguity
+
 mwan3_nft_mark_expr()
 {
 	local value="$1" mask="$2"
@@ -163,6 +175,7 @@ mwan3_nft_mark_expr()
 # Canonicalise a mark value (e.g. 0x100, 0x00000100) to a stable chain-name suffix.
 # Used to name the per-mark OR-immediate setter chains. Always emits lowercase
 # 0x%x form so two callers computing the same mark land on the same chain name.
+
 mwan3_or_chain_suffix()
 {
 	printf "0x%x" $(($1))
@@ -180,6 +193,7 @@ mwan3_or_chain_suffix()
 # runtime source register. With these helpers in place, both restore (ct -> meta)
 # and save (meta -> ct) become non-destructive in the unmasked bits, which
 # removes mwan3's previous priority dependency on pbr.
+
 mwan3_build_or_chains_nft()
 {
 	local id mark suffix want
@@ -187,6 +201,7 @@ mwan3_build_or_chains_nft()
 	# Compute the full set of mark values that may need a setter chain:
 	# every per-iface mark id 1..MWAN3_INTERFACE_MAX, plus the three special
 	# marks (default, blackhole, unreachable).
+
 	want=""
 	for id in $(seq 1 "$MWAN3_INTERFACE_MAX"); do
 		mark=$(mwan3_id2mask id MMX_MASK)
@@ -200,6 +215,7 @@ mwan3_build_or_chains_nft()
 	# Always flush+repopulate. A previous idempotency check that only verified
 	# chain *existence* could leave empty chain bodies wedged after a partial
 	# batch failure, with no recovery path. ~126 trivial statements; cheap.
+
 	mwan3_nft_batch_start
 	for suffix in $want; do
 		mwan3_nft_push "add chain inet mwan3 mwan3_or_meta_${suffix}"
@@ -216,6 +232,7 @@ mwan3_build_or_chains_nft()
 # mark values, jumps to the matching mwan3_or_<reg>_<mark> setter chain.
 # Args: $1 = "meta" or "ct" (target register), $2... = mark values
 # Result echoed as the body for use as: <key-expr> vmap { <body> }
+
 mwan3_or_vmap_body()
 {
 	local reg="$1"; shift
@@ -234,6 +251,7 @@ mwan3_or_vmap_body()
 
 # Enumerate every mark value that needs to appear in the restore/save vmaps:
 # all per-iface marks plus the three specials. Echoes a space-separated list.
+
 mwan3_all_marks()
 {
 	local id
@@ -246,6 +264,7 @@ mwan3_all_marks()
 
 # Ensure all mwan3 nftables framework objects exist with correct flags.
 # Always deletes and recreates sets to guarantee auto-merge is present.
+
 mwan3_ensure_nft_framework()
 {
 	local setname
@@ -254,6 +273,7 @@ mwan3_ensure_nft_framework()
 	# update flags (like auto-merge) on existing sets, so we must recreate.
 	# stop_service() flushes chains first, so no rules reference the sets.
 	# Inside a reload batch the deletions are already in the preamble.
+
 	if [ "$MWAN3_BATCH_DEPTH" -eq 0 ]; then
 		for setname in mwan3_connected_v4 mwan3_connected_v6 \
 		               mwan3_custom_v4 mwan3_custom_v6 \
@@ -265,6 +285,7 @@ mwan3_ensure_nft_framework()
 	mwan3_nft_batch_start
 
 	# Sets for network classification (interval + auto-merge for CIDR support)
+
 	mwan3_nft_push "add set inet mwan3 mwan3_connected_v4 { type ipv4_addr; flags interval; auto-merge; }"
 	mwan3_nft_push "add set inet mwan3 mwan3_connected_v6 { type ipv6_addr; flags interval; auto-merge; }"
 	mwan3_nft_push "add set inet mwan3 mwan3_custom_v4 { type ipv4_addr; flags interval; auto-merge; }"
@@ -273,14 +294,17 @@ mwan3_ensure_nft_framework()
 	mwan3_nft_push "add set inet mwan3 mwan3_dynamic_v6 { type ipv6_addr; flags interval; auto-merge; }"
 
 	# Hook chains (base chains with type/hook/priority)
+
 	mwan3_nft_push "add chain inet mwan3 mwan3_prerouting { type filter hook prerouting priority mangle + 1; policy accept; }"
 	mwan3_nft_push "add chain inet mwan3 mwan3_output { type route hook output priority mangle + 1; policy accept; }"
 
 	# IPv6 SNAT chain (opt-in per interface via 'snat6'). See 10-mwan3.nft
 	# for the rationale; per-iface rules are added by mwan3_create_iface_nft.
+
 	mwan3_nft_push "add chain inet mwan3 mwan3_postrouting { type nat hook postrouting priority srcnat - 1; policy accept; }"
 
 	# Internal chains (jumped to from hook chains)
+
 	mwan3_nft_push "add chain inet mwan3 mwan3_ifaces_in"
 	mwan3_nft_push "add chain inet mwan3 mwan3_rules"
 	mwan3_nft_push "add chain inet mwan3 mwan3_connected"
@@ -323,15 +347,19 @@ mwan3_get_src_ip()
 	$addr_cmd _src_ip "$true_iface"
 	if [ -z "$_src_ip" ]; then
 		if [ "$family" = "ipv6" ]; then
+
 			# on IPv6-PD interfaces (like PPPoE interfaces) we don't
 			# have a real address, just a prefix, that can be delegated
 			# to interfaces, because using :: (the fallback above) or
 			# the link-local address will not work (reliably, if at
 			# all) try to find an address which we can use instead
+
 			network_get_prefix6 _src_ip "$true_iface"
 			if [ -n "$_src_ip" ]; then
+
 				# got a prefix like 2001:xxxx:yyyy::/48, clean it up to
 				# only contain the prefix -> 2001:xxxx:yyyy
+
 				_src_ip=$(echo "$_src_ip" | sed -e 's;:*/.*$;;')
 				_src_ip=$(${MWAN3_GET_ADDR} 6 "" "$_src_ip")
 			fi
@@ -354,6 +382,7 @@ mwan3_get_src_ip()
 
 readfile() {
 	[ -f "$2" ] || return 1
+
 	# read returns 1 on EOF
 	read -d'\0' $1 <"$2" || :
 }
@@ -422,17 +451,20 @@ mwan3_init()
 	fi
 
 	# mark mask constants
+
 	bitcnt=$(mwan3_count_one_bits MMX_MASK)
 	mmdefault=$(((1<<bitcnt)-1))
 	MM_BLACKHOLE=$((mmdefault-2))
 	MM_UNREACHABLE=$((mmdefault-1))
 
 	# MMX_DEFAULT should equal MMX_MASK
+
 	MMX_DEFAULT=$(mwan3_id2mask mmdefault MMX_MASK)
 	MMX_BLACKHOLE=$(mwan3_id2mask MM_BLACKHOLE MMX_MASK)
 	MMX_UNREACHABLE=$(mwan3_id2mask MM_UNREACHABLE MMX_MASK)
 
 	# Precompute mask complement for nft rules
+
 	MMX_MASK_COMPLEMENT=$(printf "0x%08x" $(( (~MMX_MASK) & 0xFFFFFFFF )))
 
 	# Configurable ip rule base priorities. Defaults preserve the historical
@@ -452,6 +484,7 @@ mwan3_init()
 	# identify the rules the running instance actually created, even if
 	# /etc/config/mwan3 has been edited since start. The mmx_mask state file
 	# doubles as the "instance started" indicator.
+
 	if [ -e "${MWAN3_STATUS_DIR}/mmx_mask" ]; then
 		MWAN3_IIF_RULE_BASE=$(uci_get_state mwan3 globals iif_rule_base 1000)
 		MWAN3_FWMARK_RULE_BASE=$(uci_get_state mwan3 globals fwmark_rule_base 2000)
@@ -480,6 +513,7 @@ mwan3_init()
 # 0 0 0 0 0 1 0 1 (0x05) 1st parameter
 # 1 0 1 0 1 0 1 0 (0xAA) 2nd parameter
 #     1   0   1          result
+
 mwan3_id2mask()
 {
 	local bit_msk bit_val result
@@ -498,6 +532,7 @@ mwan3_id2mask()
 
 # counts how many bits are set to 1
 # n&(n-1) clears the lowest bit set to 1
+
 mwan3_count_one_bits()
 {
 	local count n
