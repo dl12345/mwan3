@@ -24,7 +24,6 @@ define Package/mwan3
    SUBMENU:=Routing and Redirection
    DEPENDS:= \
      +ip-full \
-     +conntrack \
      +libnetfilter-conntrack \
      +kmod-nft-core \
      +nftables-json \
