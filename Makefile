@@ -204,6 +204,14 @@ define Package/mwan3/install
 		$(1)/lib/mwan3/
 	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-migrate-ipset-v4.sh \
 		$(1)/lib/mwan3/
+	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-get-addr.uc \
+		$(1)/lib/mwan3/
+	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-manage-rules.uc \
+		$(1)/lib/mwan3/
+	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-list-routes.uc \
+		$(1)/lib/mwan3/
+	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-create-iface-route.uc \
+		$(1)/lib/mwan3/
 
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/ucode/
 	$(INSTALL_BIN) ./files/usr/share/rpcd/ucode/mwan3 \

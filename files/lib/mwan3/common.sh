@@ -2,6 +2,12 @@
 
 IP4="ip -4"
 IP6="ip -6"
+UCODE="ucode"
+MWAN3_LIB_PATH="/lib/mwan3"
+MWAN3_CREATE_IFACE_ROUTE="${UCODE} ${MWAN3_LIB_PATH}/mwan3-create-iface-route.uc"
+MWAN3_GET_ADDR="${UCODE} ${MWAN3_LIB_PATH}/mwan3-get-addr.uc"
+MWAN3_LIST_ROUTES="${UCODE} ${MWAN3_LIB_PATH}/mwan3-list-routes.uc"
+MWAN3_MANAGE_RULES="${UCODE} ${MWAN3_LIB_PATH}/mwan3-manage-rules.uc"
 SCRIPTNAME="$(basename "$0")"
 
 MWAN3_STATUS_DIR="/var/run/mwan3"
@@ -300,7 +306,7 @@ mwan3_get_true_iface()
 
 mwan3_get_src_ip()
 {
-	local family _src_ip interface true_iface device addr_cmd default_ip IP sed_str
+	local family _src_ip interface true_iface device addr_cmd default_ip
 	interface=$2
 	mwan3_get_true_iface true_iface $interface
 
@@ -309,13 +315,9 @@ mwan3_get_src_ip()
 	if [ "$family" = "ipv4" ]; then
 		addr_cmd='network_get_ipaddr'
 		default_ip="0.0.0.0"
-		sed_str='s/ *inet \([^ \/]*\).*/\1/;T;p;q'
-		IP="$IP4"
 	elif [ "$family" = "ipv6" ]; then
 		addr_cmd='network_get_ipaddr6'
 		default_ip="::"
-		sed_str='s/ *inet6 \([^ \/]*\).* scope.*/\1/;T;p;q'
-		IP="$IP6"
 	fi
 
 	$addr_cmd _src_ip "$true_iface"
@@ -324,28 +326,21 @@ mwan3_get_src_ip()
 			# on IPv6-PD interfaces (like PPPoE interfaces) we don't
 			# have a real address, just a prefix, that can be delegated
 			# to interfaces, because using :: (the fallback above) or
-			# the local address (fe80:... which will be returned from
-			# the sed_str expression defined above) will not work
-			# (reliably, if at all) try to find an address which we can
-			# use instead
+			# the link-local address will not work (reliably, if at
+			# all) try to find an address which we can use instead
 			network_get_prefix6 _src_ip "$true_iface"
 			if [ -n "$_src_ip" ]; then
 				# got a prefix like 2001:xxxx:yyyy::/48, clean it up to
 				# only contain the prefix -> 2001:xxxx:yyyy
 				_src_ip=$(echo "$_src_ip" | sed -e 's;:*/.*$;;')
-				# find an interface with a delegated address, and use
-				# it, this would be sth like 2001:xxxx:yyyy:zzzz:...
-				# we just select the first address that matches the prefix
-				# NOTE: is there a better/more reliable way to get a
-				#       usable address to use as source for pings here?
-				local pfx_sed
-				pfx_sed='s/ *inet6 \('"$_src_ip"':[0-6a-f:]\+\).* scope.*/\1/'
-				_src_ip=$($IP address ls | sed -ne "${pfx_sed};T;p;q")
+				_src_ip=$(${MWAN3_GET_ADDR} 6 "" "$_src_ip")
 			fi
 		fi
 		if [ -z "$_src_ip" ]; then
 			network_get_device device $true_iface
-			_src_ip=$($IP address ls dev $device 2>/dev/null | sed -ne "$sed_str")
+			local _fam_num=4
+			[ "$family" = "ipv6" ] && _fam_num=6
+			_src_ip=$(${MWAN3_GET_ADDR} "$_fam_num" "$device")
 		fi
 		if [ -n "$_src_ip" ]; then
 			LOG warn "no src $family address found from netifd for interface '$true_iface' dev '$device' guessing $_src_ip"
@@ -425,11 +420,6 @@ mwan3_init()
 		uci_toggle_state mwan3 globals iface_max "$MWAN3_INTERFACE_MAX"
 		LOG debug "Max interface count is ${MWAN3_INTERFACE_MAX}"
 	fi
-
-	# remove "linkdown", expiry and source based routing modifiers from route lines
-	config_get_bool source_routing globals source_routing 0
-	[ $source_routing -eq 1 ] && unset source_routing
-	MWAN3_ROUTE_LINE_EXP="s/offload//; s/linkdown //; s/expires [0-9]\+sec//; s/error [0-9]\+//; ${source_routing:+s/default\(.*\) from [^ ]*/default\1/;} p"
 
 	# mark mask constants
 	bitcnt=$(mwan3_count_one_bits MMX_MASK)

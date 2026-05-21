@@ -67,30 +67,6 @@ mwan3_flush_unreplied_conntrack()
 	mwan3ct flush --mark-any "$MMX_MASK" --status 0/0x2 2>/dev/null
 }
 
-mwan3_update_dev_to_table()
-{
-	local _tid
-	# shellcheck disable=SC2034
-	mwan3_dev_tbl_ipv4=" "
-	# shellcheck disable=SC2034
-	mwan3_dev_tbl_ipv6=" "
-
-	update_table()
-	{
-		local family curr_table device enabled
-		let _tid++
-		config_get family "$1" family ipv4
-		network_get_device device "$1"
-		[ -z "$device" ] && return
-		config_get_bool enabled "$1" enabled 1
-		[ "$enabled" -eq 0 ] && return
-		curr_table=$(eval "echo	 \"\$mwan3_dev_tbl_${family}\"")
-		export "mwan3_dev_tbl_$family=${curr_table}${device}=$_tid "
-	}
-	network_flush_cache
-	config_foreach update_table interface
-}
-
 mwan3_update_iface_to_table()
 {
 	local _tid
@@ -101,27 +77,6 @@ mwan3_update_iface_to_table()
 		export mwan3_iface_tbl="${mwan3_iface_tbl}${1}=$_tid "
 	}
 	config_foreach update_table interface
-}
-
-mwan3_route_line_dev()
-{
-	# must have mwan3 config already loaded
-	# arg 1 is route device
-	local _tid route_line route_device route_family entry curr_table
-	route_line=$2
-	route_family=$3
-	route_device=$(echo "$route_line" | sed -ne "s/.*dev \([^ ]*\).*/\1/p")
-	unset "$1"
-	[ -z "$route_device" ] && return
-
-	curr_table=$(eval "echo \"\$mwan3_dev_tbl_${route_family}\"")
-	for entry in $curr_table; do
-		if [ "${entry%%=*}" = "$route_device" ]; then
-			_tid=${entry##*=}
-			export "$1=$_tid"
-			return
-		fi
-	done
 }
 
 mwan3_get_iface_id()
@@ -139,20 +94,12 @@ mwan3_set_custom_set()
 
 	table_arg="$1"
 
-	for custom_network in $($IP4 route list table "$table_arg" 2>/dev/null | awk '{print $1}'); do
-		case "$custom_network" in
-			default|0.0.0.0/0|169.254.*) continue ;;
-		esac
-		echo "$custom_network" | grep -qE "$IPv4_REGEX/" || continue
+	for custom_network in $(${MWAN3_LIST_ROUTES} 4 "$table_arg"); do
 		mwan3_nft_push "add element inet mwan3 mwan3_custom_v4 { $custom_network }"
 	done
 
 	[ $NO_IPV6 -eq 0 ] || return
-	for custom_network in $($IP6 route list table "$table_arg" 2>/dev/null | awk '{print $1}'); do
-		case "$custom_network" in
-			::/0|fe80::*) continue ;;
-		esac
-		echo "$custom_network" | grep -qE "$IPv6_REGEX" || continue
+	for custom_network in $(${MWAN3_LIST_ROUTES} 6 "$table_arg"); do
 		mwan3_nft_push "add element inet mwan3 mwan3_custom_v6 { $custom_network }"
 	done
 }
@@ -175,10 +122,7 @@ mwan3_set_connected_ipv4()
 	mwan3_nft_batch_start
 	mwan3_nft_push "flush set inet mwan3 mwan3_connected_v4"
 
-	# Add CIDR routes from the main routing table. Skip host routes — they
-	# are either within a CIDR already (local/broadcast from table 0) or are
-	# remote destinations that should NOT bypass mwan3.
-	for connected_network_v4 in $($IP4 route | awk '{print $1}' | grep -E "$IPv4_REGEX/" | sort -u); do
+	for connected_network_v4 in $(${MWAN3_LIST_ROUTES} 4 main); do
 		mwan3_nft_push "add element inet mwan3 mwan3_connected_v4 { $connected_network_v4 }"
 	done
 
@@ -195,7 +139,7 @@ mwan3_set_connected_ipv6()
 	[ $NO_IPV6 -eq 0 ] || return
 
 	elements=""
-	for connected_network_v6 in $($IP6 route | awk '{print $1}' | grep -E "$IPv6_REGEX" | sort -u); do
+	for connected_network_v6 in $(${MWAN3_LIST_ROUTES} 6 main); do
 		[ -n "$elements" ] && elements="$elements, "
 		elements="$elements$connected_network_v6"
 	done
@@ -485,20 +429,15 @@ mwan3_write_dnsmasq_fragments()
 
 mwan3_set_general_rules()
 {
-	local IP
-
-	for IP in "$IP4" "$IP6"; do
-		[ "$IP" = "$IP6" ] && [ $NO_IPV6 -ne 0 ] && continue
-		RULE_NO=$((MM_BLACKHOLE+MWAN3_FWMARK_RULE_BASE))
-		if [ -z "$($IP rule list | awk -v var="$RULE_NO:" '$1 == var')" ]; then
-			$IP rule add pref $RULE_NO fwmark $MMX_BLACKHOLE/$MMX_MASK blackhole
-		fi
-
-		RULE_NO=$((MM_UNREACHABLE+MWAN3_FWMARK_RULE_BASE))
-		if [ -z "$($IP rule list | awk -v var="$RULE_NO:" '$1 == var')" ]; then
-			$IP rule add pref $RULE_NO fwmark $MMX_UNREACHABLE/$MMX_MASK unreachable
-		fi
-	done
+	${MWAN3_MANAGE_RULES} add-general \
+		4 "$((MM_BLACKHOLE+MWAN3_FWMARK_RULE_BASE))" "$MMX_BLACKHOLE" \
+		  "$((MM_UNREACHABLE+MWAN3_FWMARK_RULE_BASE))" "$MMX_UNREACHABLE" \
+		  "$MMX_MASK"
+	[ $NO_IPV6 -eq 0 ] || return
+	${MWAN3_MANAGE_RULES} add-general \
+		6 "$((MM_BLACKHOLE+MWAN3_FWMARK_RULE_BASE))" "$MMX_BLACKHOLE" \
+		  "$((MM_UNREACHABLE+MWAN3_FWMARK_RULE_BASE))" "$MMX_UNREACHABLE" \
+		  "$MMX_MASK"
 }
 
 mwan3_set_general_nft()
@@ -813,46 +752,16 @@ mwan3_delete_iface_map_entries()
 	done
 }
 
-mwan3_extra_tables_routes()
-{
-	$IP route list table "$1" 2>/dev/null
-}
-
-mwan3_get_routes()
-{
-	{
-		$IP route list table main
-		config_list_foreach "globals" "rt_table_lookup" mwan3_extra_tables_routes
-	} | sed -ne "$MWAN3_ROUTE_LINE_EXP" | sort -u
-}
-
 mwan3_create_iface_route()
 {
-	local tid route_line family IP id tbl
+	local family id source_routing _fam_num
 	config_get family "$1" family ipv4
 	mwan3_get_iface_id id "$1"
-
 	[ -n "$id" ] || return 0
-
-	if [ "$family" = "ipv4" ]; then
-		IP="$IP4"
-	elif [ "$family" = "ipv6" ]; then
-		IP="$IP6"
-	fi
-
-	tbl=$($IP route list table $id 2>/dev/null)$'\n'
-	mwan3_update_dev_to_table
-	mwan3_get_routes | while read -r route_line; do
-		mwan3_route_line_dev "tid" "$route_line" "$family"
-		{ [ -z "${route_line##default*}" ] || [ -z "${route_line##fe80::/64*}" ]; } && [ "$tid" != "$id" ] && continue
-		if [ -z "$tid" ] || [ "$tid" = "$id" ]; then
-			# possible that routes are already in the table
-			# if 'connected' was called after 'ifup'
-			[ -n "$tbl" ] && [ -z "${tbl##*$route_line$'\n'*}" ] && continue
-			$IP route replace table $id $route_line
-		fi
-
-	done
+	config_get_bool source_routing globals source_routing 0
+	_fam_num=4
+	[ "$family" = "ipv6" ] && _fam_num=6
+	${MWAN3_CREATE_IFACE_ROUTE} "$_fam_num" "$id" "$source_routing"
 }
 
 mwan3_delete_iface_route()
@@ -898,50 +807,14 @@ mwan3_create_iface_rules()
 
 mwan3_delete_iface_rules()
 {
-	local id IP pref fwmark_val
+	local id
 
 	mwan3_get_iface_id id "$1"
-
 	[ -n "$id" ] || return 0
 
-	# Search both address families so that a family change (e.g. ipv4
-	# to ipv6) cleans up rules left behind in the old family. The
-	# routing table id is the deletion anchor and is unique per
-	# interface regardless of family, so this is unambiguous.
-	for IP in "$IP4" "$IP6"; do
-		[ "$IP" = "$IP6" ] && [ $NO_IPV6 -ne 0 ] && continue
-
-		# Delete iif rule(s): any rule with the iif keyword referencing
-		# this interface's table id. Routing tables
-		# 1..MWAN3_INTERFACE_MAX are mwan3-owned, so a match is
-		# unambiguous.
-		for pref in $($IP rule list | awk '/iif/ {
-			for (i=1; i<=NF; i++)
-				if ($i == "lookup" && $(i+1)+0 == '$id') { sub(/:$/, "", $1); print $1; next }
-		}'); do
-			$IP rule del pref "$pref" 2>/dev/null
-		done
-
-		# Discover fwmark/mask from the fwmark lookup rule. The routing
-		# table id is the anchor: any fwmark rule with lookup $id is
-		# mwan3's rule for this interface, regardless of priority or
-		# mask value. This handles base changes, MMX_MASK changes, and
-		# upgrade from pre-configurable-base versions transparently.
-		# Once the mark/mask is known, the matching unreachable rule
-		# can be deleted by content too.
-		fwmark_val=$($IP rule list | awk '/fwmark/ {
-			fmark=""
-			for (i=1; i<=NF; i++) {
-				if ($i == "fwmark") fmark=$(i+1)
-				if ($i == "lookup" && $(i+1)+0 == '$id' && fmark != "") { print fmark; exit }
-			}
-		}')
-
-		if [ -n "$fwmark_val" ]; then
-			$IP rule del fwmark "$fwmark_val" lookup "$id" 2>/dev/null
-			$IP rule del fwmark "$fwmark_val" unreachable 2>/dev/null
-		fi
-	done
+	${MWAN3_MANAGE_RULES} delete-iface "$id" \
+		"$MWAN3_IIF_RULE_BASE" "$MWAN3_FWMARK_RULE_BASE" \
+		"$MWAN3_UNREACHABLE_RULE_BASE" "$MMX_MASK"
 }
 
 mwan3_set_policy()
@@ -1742,21 +1615,13 @@ mwan3_get_iface_hotplug_state() {
 
 mwan3_report_iface_status()
 {
-	local device result tracking IP
+	local device result tracking
 	local status online uptime result
 
 	mwan3_get_iface_id id "$1"
 	network_get_device device "$1"
 	config_get_bool enabled "$1" enabled 0
 	config_get family "$1" family ipv4
-
-	if [ "$family" = "ipv4" ]; then
-		IP="$IP4"
-	fi
-
-	if [ "$family" = "ipv6" ]; then
-		IP="$IP6"
-	fi
 
 	if [ -f "$MWAN3TRACK_STATUS_DIR/${1}/STATUS" ]; then
 		readfile status "$MWAN3TRACK_STATUS_DIR/${1}/STATUS"
@@ -1772,15 +1637,19 @@ mwan3_report_iface_status()
 		result="$(mwan3_get_iface_hotplug_state $1) $online, uptime $uptime"
 	else
 		result=0
-		[ -n "$($IP rule | awk '$1 == "'$((id+MWAN3_IIF_RULE_BASE)):'"')" ] ||
-			result=$((result+1))
-		[ -n "$($IP rule | awk '$1 == "'$((id+MWAN3_FWMARK_RULE_BASE)):'"')" ] ||
-			result=$((result+2))
-		[ -n "$($IP rule | awk '$1 == "'$((id+MWAN3_UNREACHABLE_RULE_BASE)):'"')" ] ||
-			result=$((result+4))
+		local _fam_num=4
+		[ "$family" = "ipv6" ] && _fam_num=6
+		local _check
+		_check=$(${MWAN3_MANAGE_RULES} check "$_fam_num" \
+			"$((id+MWAN3_IIF_RULE_BASE))" \
+			"$((id+MWAN3_FWMARK_RULE_BASE))" \
+			"$((id+MWAN3_UNREACHABLE_RULE_BASE))")
+		[ $((_check & 1)) -eq 0 ] || result=$((result+1))
+		[ $((_check & 2)) -eq 0 ] || result=$((result+2))
+		[ $((_check & 4)) -eq 0 ] || result=$((result+4))
 		[ -n "$($NFT list chain inet mwan3 mwan3_iface_in_$1 2>/dev/null)" ] ||
 			result=$((result+8))
-		[ -n "$($IP route list table $id default dev $device 2> /dev/null)" ] ||
+		${MWAN3_MANAGE_RULES} check-route "$_fam_num" "$id" "$device" ||
 			result=$((result+16))
 		[ "$result" = "0" ] && result=""
 	fi

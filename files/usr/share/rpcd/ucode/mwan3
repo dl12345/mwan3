@@ -2,6 +2,7 @@
 
 import { popen, readfile, glob } from 'fs';
 import { cursor } from 'uci';
+import * as rtnl from 'rtnl';
 
 const ubus = require('ubus').connect();
 
@@ -193,37 +194,23 @@ function get_nftset_elements(setname, max_count) {
 
 function get_ip_rules() {
 	const rules = [];
-	for (let family in ['-4', '-6']) {
-		const proc = popen(sprintf('ip %s -j rule list 2>/dev/null', family), 'r');
-		if (!proc) continue;
-		const raw = proc.read('all');
-		proc.close();
-		if (!raw || length(raw) == 0) continue;
-		try {
-			const parsed = json(raw);
-			if (type(parsed) == 'array')
-				for (let r in parsed)
-					push(rules, r);
-		} catch(e) {}
+	for (let family in [2, 10]) {
+		const result = rtnl.request(rtnl.const.RTM_GETRULE, rtnl.const.NLM_F_DUMP,
+			{ family: family }) ?? [];
+		for (let r in result)
+			push(rules, r);
 	}
 	return rules;
 }
 
 function get_table_routes(table_id) {
 	const routes = [];
-	for (let family in ['-4', '-6']) {
-		const proc = popen(sprintf('ip %s -j route list table %d 2>/dev/null', family, table_id), 'r');
-		if (!proc) continue;
-		const raw = proc.read('all');
-		proc.close();
-		if (!raw || length(raw) == 0) continue;
-		try {
-			const parsed = json(raw);
-			if (type(parsed) == 'array') {
-				for (let r in parsed)
-					push(routes, r);
-			}
-		} catch(e) {}
+	for (let family in [2, 10]) {
+		const result = rtnl.request(rtnl.const.RTM_GETROUTE, rtnl.const.NLM_F_DUMP,
+			{ family: family }) ?? [];
+		for (let r in result)
+			if (r.table == table_id)
+				push(routes, r);
 	}
 	return routes;
 }
@@ -302,7 +289,7 @@ function routing_health() {
 		const unreach_rule  = rule_by_priority[unreach_pri];
 		const table_routes  = get_table_routes(id);
 		const default_routes = filter(table_routes, r =>
-			r?.dst == 'default' || r?.dst == '0.0.0.0/0' || r?.dst == '::/0'
+			r?.dst == null || r?.dst == '0.0.0.0/0' || r?.dst == '::/0'
 		);
 		const status = get_str(ifname, 'STATUS') || 'unknown';
 
@@ -325,10 +312,10 @@ function routing_health() {
 				id:           id,
 				has_default:  length(default_routes) > 0,
 				default_routes: map(default_routes, r => ({
-					dst: r.dst,
+					dst: r.dst ?? 'default',
 					gateway: r.gateway,
-					dev: r.dev,
-					family: (r.dst == '::/0') ? 'ipv6' : 'ipv4',
+					dev: r.oif,
+					family: (r.family == 10) ? 'ipv6' : 'ipv4',
 				})),
 			},
 		};
