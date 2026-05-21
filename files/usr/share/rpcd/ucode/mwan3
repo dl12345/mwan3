@@ -534,7 +534,7 @@ const methods = {
 	nftset_info: {
 		args: {},
 		call: function(request) {
-			const nft = popen('nft -j list sets inet mwan3 2>/dev/null', 'r');
+			const nft = popen('nft -j list table inet mwan3 2>/dev/null', 'r');
 			if (!nft)
 				return { sets: {} };
 			const raw = nft.read('all');
@@ -562,7 +562,7 @@ const methods = {
 									}
 								}
 							}
-							sets[s.name] = { type: s.type, flags: s.flags || [], counters: counters, count: count_nftset_elements(s.name) };
+							sets[s.name] = { type: s.type, flags: s.flags || [], counters: counters, count: type(s.elem) == 'array' ? length(s.elem) : 0 };
 						}
 					}
 				}
