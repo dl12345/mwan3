@@ -26,6 +26,8 @@ jobs:
           - version: openwrt-25.12
             target: aarch64_cortex-a76
           - version: openwrt-25.12
+            target: aarch64_cortex-a72
+          - version: openwrt-25.12
             target: aarch64_generic
           - version: openwrt-25.12
             target: arm_cortex-a7
