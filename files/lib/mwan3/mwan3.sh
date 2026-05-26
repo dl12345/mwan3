@@ -544,12 +544,9 @@ mwan3_set_general_nft()
 	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_rules"
 
 	# Save mark to conntrack — non-destructive in unmasked bits of ct mark.
-	# Two-step: clear the MMX bits in ct mark (single-source masked write),
-	# then vmap-dispatch on (meta mark & MMX) into a per-mark "ct mark set
-	# ct mark | <imm>" chain. Net effect: ct mark's MMX bits are replaced
-	# with meta mark's MMX bits, every other bit of ct mark untouched.
-
-	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting ct mark set ct mark & $MMX_MASK_COMPLEMENT"
+	# Vmap-dispatch on (meta mark & MMX) into per-mark setter chains that
+	# atomically clear+set the MMX bits in a single nft expression, so ct
+	# mark is never visible with zeroed MMX bits to concurrent packets.
 	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta mark & $MMX_MASK vmap { $save_vmap }"
 
 	# Post-rules: check custom/connected/dynamic for non-default marks
@@ -586,9 +583,7 @@ mwan3_set_general_nft()
 
 	mwan3_nft_push "add rule inet mwan3 mwan3_output meta mark & $MMX_MASK == 0 jump mwan3_rules"
 
-	# Save mark to conntrack (see prerouting comment above)
-
-	mwan3_nft_push "add rule inet mwan3 mwan3_output ct mark set ct mark & $MMX_MASK_COMPLEMENT"
+	# Save mark to conntrack - atomic clear+set (see prerouting comment)
 	mwan3_nft_push "add rule inet mwan3 mwan3_output meta mark & $MMX_MASK vmap { $save_vmap }"
 
 	# Post-rules: check custom/connected/dynamic for non-default marks

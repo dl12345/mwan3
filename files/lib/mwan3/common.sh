@@ -223,7 +223,7 @@ mwan3_build_or_chains_nft()
 		mwan3_nft_push "flush chain inet mwan3 mwan3_or_meta_${suffix}"
 		mwan3_nft_push "flush chain inet mwan3 mwan3_or_ct_${suffix}"
 		mwan3_nft_push "add rule inet mwan3 mwan3_or_meta_${suffix} meta mark set meta mark | ${suffix}"
-		mwan3_nft_push "add rule inet mwan3 mwan3_or_ct_${suffix} ct mark set ct mark | ${suffix}"
+		mwan3_nft_push "add rule inet mwan3 mwan3_or_ct_${suffix} ct mark set ct mark & $MMX_MASK_COMPLEMENT | ${suffix}"
 	done
 	mwan3_nft_batch_commit
 }
