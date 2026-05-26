@@ -177,6 +177,9 @@ define Build/Compile
 		-o $(PKG_BUILD_DIR)/mwan3ct \
 		$(PKG_BUILD_DIR)/mwan3ct.c \
 		-lnetfilter_conntrack -lmnl -lnfnetlink
+	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
+		-o $(PKG_BUILD_DIR)/mwan3ipcheck \
+		$(PKG_BUILD_DIR)/mwan3ipcheck.c
 endef
 
 define Package/mwan3/install
@@ -235,6 +238,9 @@ define Package/mwan3/install
 	$(CP) $(PKG_BUILD_DIR)/libwrap_mwan3_sockopt.so.1.0 $(1)/lib/mwan3/
 
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/mwan3ct $(1)/usr/sbin/
+
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/mwan3ipcheck $(1)/usr/bin/
 
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_DATA) ./files/etc/uci-defaults/mwan3-migrate-flush_conntrack \
