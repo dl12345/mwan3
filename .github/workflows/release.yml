@@ -44,7 +44,7 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set PKG_NAME from repo
         run: echo "PKG_NAME=${{ github.event.repository.name }}" >> "$GITHUB_ENV"
@@ -67,7 +67,7 @@ jobs:
           fi
 
       - name: Build with OpenWrt SDK
-        uses: openwrt/gh-action-sdk@v8
+        uses: openwrt/gh-action-sdk@v11
         env:
           ARCH: ${{ env.ARCH }}
           FEEDNAME: mwan3nft
@@ -95,7 +95,7 @@ jobs:
           done
 
       - name: Upload artifact for ${{ matrix.target }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.PKG_NAME }}-${{ matrix.target }}-${{ matrix.version }}
           path: |
@@ -111,7 +111,7 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Extract version and release from Makefile
         id: version
@@ -123,7 +123,7 @@ jobs:
           echo "version=$COMBINED_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: ./release-assets
 
