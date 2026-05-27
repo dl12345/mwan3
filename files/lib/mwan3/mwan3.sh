@@ -1866,31 +1866,59 @@ mwan3_report_policies_v6()
 	_mwan3_report_policies_for_family "ipv6"
 }
 
-IPv6_REGEX="([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|"
-IPv6_REGEX="${IPv6_REGEX}([0-9a-fA-F]{1,4}:){1,7}:|"
-IPv6_REGEX="${IPv6_REGEX}([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|"
-IPv6_REGEX="${IPv6_REGEX}([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|"
-IPv6_REGEX="${IPv6_REGEX}([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|"
-IPv6_REGEX="${IPv6_REGEX}([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|"
-IPv6_REGEX="${IPv6_REGEX}([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|"
-IPv6_REGEX="${IPv6_REGEX}[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|"
-IPv6_REGEX="${IPv6_REGEX}:((:[0-9a-fA-F]{1,4}){1,7}|:)|"
-IPv6_REGEX="${IPv6_REGEX}fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|"
-IPv6_REGEX="${IPv6_REGEX}::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|"
-IPv6_REGEX="${IPv6_REGEX}([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])"
-IPv4_REGEX="((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)"
+_mwan3_report_connected_set()
+{
+	local json nft_keys idx type elem_keys eidx etype addr len rstart rend
+
+	json=$($NFT -j list set inet mwan3 "$1" 2>/dev/null) || return
+	json_load "$json"
+	json_select "nftables" || return
+
+	json_get_keys nft_keys
+	for idx in $nft_keys; do
+		json_select "$idx"
+		json_get_type type "set"
+		if [ "$type" = "object" ]; then
+			json_select "set"
+			json_select "elem" || { json_select ".."; json_select ".."; continue; }
+			json_get_keys elem_keys
+			for eidx in $elem_keys; do
+				json_select "$eidx"
+				json_get_type etype "prefix"
+				if [ "$etype" = "object" ]; then
+					json_select "prefix"
+					json_get_var addr addr
+					json_get_var len len
+					echo "$addr/$len"
+					json_select ".."
+				else
+					json_get_type etype "range"
+					if [ "$etype" = "array" ]; then
+						json_select "range"
+						json_get_var rstart 1
+						json_get_var rend 2
+						echo "$rstart-$rend"
+						json_select ".."
+					fi
+				fi
+				json_select ".."
+			done
+			json_select ".."
+			json_select ".."
+		fi
+		json_select ".."
+	done
+}
 
 mwan3_report_connected_v4()
 {
-	$NFT list set inet mwan3 mwan3_connected_v4 2>/dev/null | \
-		sed -n '/elements/,/}/p' | grep -oE "$IPv4_REGEX(/[0-9]+)?"
+	_mwan3_report_connected_set mwan3_connected_v4
 }
 
 mwan3_report_connected_v6()
 {
 	[ $NO_IPV6 -ne 0 ] && return
-	$NFT list set inet mwan3 mwan3_connected_v6 2>/dev/null | \
-		sed -n '/elements/,/}/p' | grep -oE "$IPv6_REGEX(/[0-9]+)?"
+	_mwan3_report_connected_set mwan3_connected_v6
 }
 
 mwan3_report_rules_v4()
