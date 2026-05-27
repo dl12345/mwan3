@@ -1224,7 +1224,7 @@ mwan3_set_user_nft_rule()
 		[ -z "$ipaddr" ] && continue
 		local _addr_family
 		_addr_family=$($MWAN3IPCHECK "$ipaddr")
-		if [ "$_addr_family" = "invalid" ]; then
+		if [ "$_addr_family" = "invalid" ] || [ "$_addr_family" = "mixed" ]; then
 			LOG warn "invalid address $ipaddr specified for rule $rule"
 			return
 		fi
@@ -1342,10 +1342,14 @@ mwan3_set_user_nft_rule()
 	# Source IP
 
 	if [ -n "$src_ip" ]; then
+		local nft_src_ip="$src_ip"
+		if echo "$src_ip" | grep -q ','; then
+			nft_src_ip="{ $(echo "$src_ip" | sed 's/,/, /g') }"
+		fi
 		if [ "$ipv" = "ipv4" ]; then
-			nft_match="$nft_match ip saddr $src_ip"
+			nft_match="$nft_match ip saddr $nft_src_ip"
 		else
-			nft_match="$nft_match ip6 saddr $src_ip"
+			nft_match="$nft_match ip6 saddr $nft_src_ip"
 		fi
 	fi
 
@@ -1358,10 +1362,14 @@ mwan3_set_user_nft_rule()
 	# Destination IP
 
 	if [ -n "$dest_ip" ]; then
+		local nft_dest_ip="$dest_ip"
+		if echo "$dest_ip" | grep -q ','; then
+			nft_dest_ip="{ $(echo "$dest_ip" | sed 's/,/, /g') }"
+		fi
 		if [ "$ipv" = "ipv4" ]; then
-			nft_match="$nft_match ip daddr $dest_ip"
+			nft_match="$nft_match ip daddr $nft_dest_ip"
 		else
-			nft_match="$nft_match ip6 daddr $dest_ip"
+			nft_match="$nft_match ip6 daddr $nft_dest_ip"
 		fi
 	fi
 
