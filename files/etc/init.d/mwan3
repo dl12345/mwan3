@@ -37,6 +37,15 @@ start_service() {
 
 	mwan3_init
 
+	local _any_enabled=0
+	_check_iface_enabled() {
+		local _e
+		config_get_bool _e "$1" enabled 0
+		[ "$_e" -eq 1 ] && _any_enabled=1
+	}
+	config_foreach _check_iface_enabled interface
+	[ "$_any_enabled" -eq 0 ] && return 0
+
 	# Load the standalone mwan3 nftables table skeleton. This creates
 	# (or atomically re-creates) `table inet mwan3` with its base chains
 	# and sets. Must succeed before any `nft add ... inet mwan3 ...`
