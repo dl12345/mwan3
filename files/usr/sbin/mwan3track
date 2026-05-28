@@ -519,7 +519,7 @@ main() {
 			fi
 		else
 			if [ $score -lt $((down+up)) ] && [ $lost -gt 0 ]; then
-				LOG info "Lost $((lost*count)) ping(s) on interface $INTERFACE ($DEVICE). Current score: $score"
+				LOG info "Lost $lost host(s) on interface $INTERFACE ($DEVICE). Current score: $score"
 			fi
 
 			let score++
