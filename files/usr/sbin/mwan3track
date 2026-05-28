@@ -460,7 +460,7 @@ main() {
 						let host_up_count++
 						update_status "$track_ip" "up"
 
-						[ $score -le $up ] && LOG info "Check ($track_method) success for target \"$track_ip\" on interface $INTERFACE ($DEVICE). Current score: $score"
+						[ $score -le $up ] && LOG debug "Check ($track_method) success for target \"$track_ip\" on interface $INTERFACE ($DEVICE). Current score: $score"
 					else
 						let lost++
 						update_status "$track_ip" "down"
@@ -477,7 +477,7 @@ main() {
 						let host_up_count++
 						update_status "$track_ip" "up" $latency $loss
 
-						[ $score -le $up ] && LOG info "Check (${track_method}: latency=${latency}ms loss=${loss}%) success for target \"$track_ip\" on interface $INTERFACE ($DEVICE). Current score: $score"
+						[ $score -le $up ] && LOG debug "Check (${track_method}: latency=${latency}ms loss=${loss}%) success for target \"$track_ip\" on interface $INTERFACE ($DEVICE). Current score: $score"
 					else
 						echo "skipped" > $MWAN3TRACK_STATUS_DIR/$INTERFACE/TRACK_${track_ip}
 					fi
