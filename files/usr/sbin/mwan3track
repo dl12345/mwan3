@@ -483,7 +483,16 @@ main() {
 			else
 				echo "skipped" > $MWAN3TRACK_STATUS_DIR/$INTERFACE/TRACK_${track_ip}
 			fi
+			if [ "${IFDOWN_EVENT}" -eq 1 ] || [ "${IFUP_EVENT}" -eq 1 ] || [ "${RELOAD_EVENT}" -eq 1 ]; then
+				break
+			fi
 		done
+
+		if [ "${IFDOWN_EVENT}" -eq 1 ] || [ "${IFUP_EVENT}" -eq 1 ] || [ "${RELOAD_EVENT}" -eq 1 ]; then
+			host_up_count=0
+			failed_hosts=""
+			continue
+		fi
 
 		# Log failures only when the round actually failed (reliability not met).
 		# Per-host failures are suppressed when a later host met the threshold,
