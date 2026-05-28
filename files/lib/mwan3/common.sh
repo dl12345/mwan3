@@ -39,11 +39,7 @@ LOG()
 {
 	local facility=$1; shift
 
-	# in development, we want to show 'debug' level logs
-	# when this release is out of beta, the comment in the line below
-	# should be removed
-
-	[ "$facility" = "debug" ] && return
+	[ "$facility" = "debug" ] && [ "${MWAN3_VERBOSE_LOGGING:-0}" = "0" ] && return
 	logger -t "${SCRIPTNAME}[$$]" -p $facility "$*"
 }
 
@@ -431,6 +427,7 @@ mwan3_init()
 	local bitcnt mmdefault source_routing
 
 	config_load mwan3
+	config_get_bool MWAN3_VERBOSE_LOGGING globals verbose_logging 0
 
 	[ -d $MWAN3_STATUS_DIR ] || { mkdir -m 0700 $MWAN3_STATUS_DIR && mkdir -m 0700 $MWAN3_STATUS_DIR/iface_state; }
 

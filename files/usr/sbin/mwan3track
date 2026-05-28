@@ -223,6 +223,7 @@ update_status() {
 }
 
 load_tracking_config() {
+	config_get_bool MWAN3_VERBOSE_LOGGING globals verbose_logging 0
 	config_get FAMILY $INTERFACE family ipv4
 	config_get track_method $INTERFACE track_method ping
 	config_get_bool httping_ssl $INTERFACE httping_ssl 0
