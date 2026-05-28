@@ -133,7 +133,7 @@ disconnected() {
 		LOG notice "Interface $INTERFACE ($DEVICE) is offline"
 		env -i ACTION="disconnected" INTERFACE="$INTERFACE" DEVICE="$DEVICE" /sbin/hotplug-call iface
 	else
-		LOG notice "Skip disconnected event for $INTERFACE ($DEVICE)"
+		LOG debug "Skip disconnected event for $INTERFACE ($DEVICE)"
 	fi
 }
 
