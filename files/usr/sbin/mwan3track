@@ -499,8 +499,14 @@ main() {
 		# Log failures only when the round actually failed (reliability not met).
 		# Per-host failures are suppressed when a later host met the threshold,
 		# since logging them would falsely imply the interface is degraded.
+		# Also suppress when hotplug has already marked the interface offline
+		# (e.g. manual ifdown) — the USR1 signal may still be in transit.
 		if [ $host_up_count -lt $reliability ] && [ -n "$failed_hosts" ] && [ $score -gt $up ]; then
-			LOG info "Check ($track_method) failed for target(s) \"$failed_hosts\" on interface $INTERFACE ($DEVICE). Current score: $score"
+			local hp_state
+			readfile hp_state "$MWAN3_STATUS_DIR/iface_state/$INTERFACE" 2>/dev/null
+			if [ "$hp_state" != "offline" ]; then
+				LOG info "Check ($track_method) failed for target(s) \"$failed_hosts\" on interface $INTERFACE ($DEVICE). Current score: $score"
+			fi
 		fi
 
 		if [ $host_up_count -lt $reliability ]; then
