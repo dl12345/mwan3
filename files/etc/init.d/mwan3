@@ -99,6 +99,21 @@ start_service() {
 stop_service() {
 	service_running || exit 0
 
+	# Stop mwan3track instances before tearing down routing
+	# infrastructure. procd sends TERM only after stop_service returns,
+	# so without this the trackers keep pinging while ip rules and nft
+	# chains are deleted underneath them, producing spurious failure logs.
+	# Uses procd_kill (not direct kill) so procd marks the instances as
+	# stopped and does not trigger respawn.
+	local _f _iface _killed=""
+	for _f in "$MWAN3TRACK_STATUS_DIR"/*/PID; do
+		[ -f "$_f" ] || continue
+		_iface="${_f%/PID}"
+		_iface="${_iface##*/}"
+		procd_kill mwan3 "track_$_iface" && _killed=1
+	done
+	[ -n "$_killed" ] && sleep 1
+
 	local chain_name IP family table tid
 
 	mwan3_init
