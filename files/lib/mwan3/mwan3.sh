@@ -388,7 +388,7 @@ mwan3_write_dnsmasq_fragments()
 
 		config_get confdir "$cfg" confdir "/tmp/dnsmasq${cfg:+.$cfg}.d"
 		final="${confdir}/mwan3-nftsets.conf"
-		tmp="${final}.new"
+		tmp="${MWAN3_STATUS_DIR}/dnsmasq-nftset.${cfg:-default}.$$"
 
 		mkdir -p "$confdir"
 
