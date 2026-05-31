@@ -354,18 +354,16 @@ mwan3_write_dnsmasq_fragments()
 {
 	local any_changed=0
 
-	_wdf_emit_domains()
+	_wdf_collect_mappings()
 	{
-		local section="$1" confdir="$2"
-		local enabled name family fam_ch final tmp elements
+		local section="$1" mapfile="$2"
+		local enabled name family fam_ch elements
 
 		config_get_bool enabled "$section" enabled 1
 		[ "$enabled" -eq 1 ] || return
 		config_get name   "$section" name
 		config_get family "$section" family ipv4
 		[ -n "$name" ] || return
-
-		# Check whether this section has any domain entries before writing
 
 		elements=""
 		_check_domain() { elements="yes"; }
@@ -374,11 +372,33 @@ mwan3_write_dnsmasq_fragments()
 
 		[ "$family" = "ipv4" ] && fam_ch=4 || fam_ch=6
 
-		_emit_domain()
+		_record_mapping()
 		{
-			printf 'nftset=/%s/%s#inet#mwan3#%s\n' "$1" "$fam_ch" "$name"
+			printf '%s %s\n' "$1" "$fam_ch#inet#mwan3#$name" >> "$mapfile"
 		}
-		config_list_foreach "$section" domain _emit_domain
+		config_list_foreach "$section" domain _record_mapping
+	}
+
+	_wdf_emit_grouped()
+	{
+		local mapfile="$1"
+		local prev_domain="" sets="" domain setspec sorted
+
+		[ -s "$mapfile" ] || return
+
+		sorted="${mapfile}.sorted"
+		LC_ALL=C sort -u "$mapfile" > "$sorted"
+		while IFS=' ' read -r domain setspec; do
+			if [ "$domain" != "$prev_domain" ]; then
+				[ -n "$prev_domain" ] && printf 'nftset=/%s/%s\n' "$prev_domain" "$sets"
+				prev_domain="$domain"
+				sets="$setspec"
+			else
+				sets="$sets,$setspec"
+			fi
+		done < "$sorted"
+		[ -n "$prev_domain" ] && printf 'nftset=/%s/%s\n' "$prev_domain" "$sets"
+		rm -f "$sorted"
 	}
 
 	_wdf_for_instance()
@@ -392,11 +412,13 @@ mwan3_write_dnsmasq_fragments()
 
 		mkdir -p "$confdir"
 
-		# Emit all domain directives for all ipset sections into a temp file
-
 		(
 			config_load mwan3
-			config_foreach _wdf_emit_domains ipset "$confdir"
+			_mapfile="${MWAN3_STATUS_DIR}/dnsmasq-nftset-map.${cfg:-default}.$$"
+			: > "$_mapfile"
+			config_foreach _wdf_collect_mappings ipset "$_mapfile"
+			_wdf_emit_grouped "$_mapfile"
+			rm -f "$_mapfile"
 		) > "$tmp"
 
 		if [ ! -s "$tmp" ]; then
