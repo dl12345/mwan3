@@ -519,6 +519,20 @@ mwan3_set_general_nft()
 
 	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, nd-redirect } accept"
 
+	# Clear mwan3's mark bits on ingress, before the restore below. A packet
+	# decapsulated from a tunnel WAN (a tunnel broker or an L2TP link, for
+	# example) can inherit the outer packet's skb mark, so it can arrive
+	# already carrying mwan3 bits. That stale mark would skip the conntrack
+	# restore (which is guarded on the mark being clear) and then be saved
+	# back to the connection, clobbering the real classification and pinning
+	# later packets of the flow to the wrong table. Re-deriving from a clean
+	# slate fixes this; it is a no-op for ordinary traffic and preserves bits
+	# outside mwan3's mask. The inherited mark is independent of the inner
+	# address family, and mwan3 owns its mask exclusively (pbr and fw4 use
+	# disjoint bits), so the clear is unconditional and covers IPv4 and IPv6.
+
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta mark set meta mark & $MMX_MASK_COMPLEMENT"
+
 	# Bypass single-link IPv6 destinations: link-local unicast (fe80::/10)
 	# and interface-/link-scope multicast (ff01::/16, ff02::/16) are confined
 	# to one link by definition (RFC 4291) and must never be policy-routed or
