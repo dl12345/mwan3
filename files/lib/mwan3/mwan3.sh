@@ -1228,8 +1228,8 @@ mwan3_set_user_nft_rule()
 			LOG warn "invalid address $ipaddr specified for rule $rule"
 			return
 		fi
-		if [ "$ipv" = "ipv4" ] && [ "$_addr_family" = "ipv6" ] ||
-		   [ "$ipv" = "ipv6" ] && [ "$_addr_family" = "ipv4" ]; then
+		if { [ "$ipv" = "ipv4" ] && [ "$_addr_family" = "ipv6" ]; } ||
+		   { [ "$ipv" = "ipv6" ] && [ "$_addr_family" = "ipv4" ]; }; then
 			if [ "$family" = "any" ]; then
 				return
 			fi
