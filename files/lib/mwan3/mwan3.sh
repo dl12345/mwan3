@@ -497,6 +497,14 @@ mwan3_set_general_nft()
 
 	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, nd-redirect } accept"
 
+	# Bypass single-link IPv6 destinations: link-local unicast (fe80::/10)
+	# and interface-/link-scope multicast (ff01::/16, ff02::/16) are confined
+	# to one link by definition (RFC 4291) and must never be policy-routed or
+	# ct-marked. Keeps inbound link-local flows (e.g. DHCPv6 Solicits to
+	# ff02::1:2) out of mwan3_rules and avoids writing pointless ct marks.
+
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting ip6 daddr { fe80::/10, ff01::/16, ff02::/16 } accept"
+
 	# Restore mark from conntrack — non-destructive in unmasked bits.
 	# A direct compound "meta mark set (meta mark & ~MMX) | (ct mark & MMX)"
 	# is rejected by the kernel (a set-statement expression tree may reference
@@ -547,11 +555,24 @@ mwan3_set_general_nft()
 
 	mwan3_nft_push "flush chain inet mwan3 mwan3_output"
 
-	# Bypass NDP: kernel-generated NS/NA probes (mark=0) would match fe80::/64 in
-	# mwan3_connected, receive MMX_DEFAULT, and be re-routed via main table to the wrong
-	# interface, cycling NDP state to FAILED and dropping subsequent ping probes.
+	# Bypass NDP: NS/NA may legitimately target global unicast addresses
+	# (NUD probes, NA replies to global-sourced NS), which the link-local
+	# daddr bypass below does not cover. Kernel-generated probes (mark=0)
+	# must not be classified and re-routed, or NDP state cycles to FAILED.
 
 	mwan3_nft_push "add rule inet mwan3 mwan3_output icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, nd-redirect } accept"
+
+	# Bypass single-link IPv6 destinations: without this, a catch-all
+	# 'dest_ip ::/0' user rule marks router-originated link-local traffic
+	# (e.g. odhcpd DHCPv6 replies, fe80 -> fe80 UDP 547 -> 546) with a WAN
+	# member's fwmark; this type-route hook then re-routes it into the WAN's
+	# per-interface table, which (correctly) contains no fe80::/64 route for
+	# LAN devices, and the 'fwmark ... unreachable' ip rule at pref
+	# unreachable_rule_base + id returns ENETUNREACH to the sender's
+	# sendmsg(). Link-local and link-scope multicast destinations must
+	# always be routed via the main table.
+
+	mwan3_nft_push "add rule inet mwan3 mwan3_output ip6 daddr { fe80::/10, ff01::/16, ff02::/16 } accept"
 
 	# Restore mark from conntrack (see prerouting comment above)
 
