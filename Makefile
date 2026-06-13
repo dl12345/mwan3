@@ -217,6 +217,14 @@ define Package/mwan3/install
 		$(1)/lib/mwan3/
 	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-get-prefix.uc \
 		$(1)/lib/mwan3/
+	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-get-reserved-prefixes.uc \
+		$(1)/lib/mwan3/
+	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-get-delegated-segments.uc \
+		$(1)/lib/mwan3/
+	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-get-ula-segments.uc \
+		$(1)/lib/mwan3/
+	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-translate-allocator.uc \
+		$(1)/lib/mwan3/
 
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/ucode/
 	$(INSTALL_BIN) ./files/usr/share/rpcd/ucode/mwan3 \

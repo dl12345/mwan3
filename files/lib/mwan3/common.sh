@@ -6,14 +6,19 @@ UCODE="ucode"
 MWAN3_LIB_PATH="/lib/mwan3"
 MWAN3_CREATE_IFACE_ROUTE="${UCODE} ${MWAN3_LIB_PATH}/mwan3-create-iface-route.uc"
 MWAN3_GET_ADDR="${UCODE} ${MWAN3_LIB_PATH}/mwan3-get-addr.uc"
+MWAN3_GET_DELEGATED_SEGMENTS="${UCODE} ${MWAN3_LIB_PATH}/mwan3-get-delegated-segments.uc"
 MWAN3_GET_PREFIX="${UCODE} ${MWAN3_LIB_PATH}/mwan3-get-prefix.uc"
+MWAN3_GET_RESERVED_PREFIXES="${UCODE} ${MWAN3_LIB_PATH}/mwan3-get-reserved-prefixes.uc"
+MWAN3_GET_ULA_SEGMENTS="${UCODE} ${MWAN3_LIB_PATH}/mwan3-get-ula-segments.uc"
 MWAN3_LIST_ROUTES="${UCODE} ${MWAN3_LIB_PATH}/mwan3-list-routes.uc"
 MWAN3_MANAGE_RULES="${UCODE} ${MWAN3_LIB_PATH}/mwan3-manage-rules.uc"
+MWAN3_TRANSLATE_ALLOCATOR="${UCODE} ${MWAN3_LIB_PATH}/mwan3-translate-allocator.uc"
 SCRIPTNAME="$(basename "$0")"
 
 MWAN3_STATUS_DIR="/var/run/mwan3"
 MWAN3TRACK_STATUS_DIR="/var/run/mwan3track"
 MWAN3_PREFIX_CACHE_DIR="/var/run/mwan3/prefix_cache"
+MWAN3_SEGMENT_CACHE_DIR="/var/run/mwan3/segment_cache"
 
 MWAN3_INTERFACE_MAX=""
 
@@ -120,8 +125,8 @@ mwan3_nft_reload_start()
 		mwan3_nft_push "flush chain inet mwan3 $chain"
 	done
 
-	# mwan3_src_routing_v6 and the IPv6 foreign-source SNAT chain mwan3_snat_v6 are
-	# intentionally NOT flushed here. Their bodies are owned and flushed by
+	# mwan3_src_routing_v6 and the IPv6 translation NAT chains (mwan3_snat_v6,
+	# mwan3_dnat_v6) are intentionally NOT flushed here. Their bodies are owned and flushed by
 	# mwan3_set_src_routing_nft, and on the first reload after an upgrade that
 	# introduces a chain it does not yet exist in the running ruleset, so flushing
 	# it here would fail the atomic batch. They are recreated (idempotently) by
@@ -139,7 +144,7 @@ mwan3_nft_reload_start()
 		case "$chain" in
 			mwan3_prerouting|mwan3_output|mwan3_postrouting|\
 			mwan3_ifaces_in|mwan3_rules|mwan3_connected|mwan3_custom|mwan3_dynamic|\
-			mwan3_src_routing_v6|mwan3_snat_v6)
+			mwan3_src_routing_v6|mwan3_snat_v6|mwan3_dnat_v6)
 				;;
 			*)
 				mwan3_nft_push "flush chain inet mwan3 $chain"
@@ -324,12 +329,16 @@ mwan3_ensure_nft_framework()
 
 	mwan3_nft_push "add chain inet mwan3 mwan3_src_routing_v6"
 
-	# IPv6 foreign-source SNAT chain (the masquerade floor). Recreated idempotently
-	# here so a reload restores it; its body is owned by mwan3_set_src_routing_nft. The
-	# mwan3_postrouting jump into it is (re)added here too, because a reload flushes
-	# mwan3_postrouting; keeping it out of the skeleton avoids a duplicate at start.
+	# IPv6 1:1 prefix-translation NAT chains: the SNAT chain (a per-WAN snat
+	# prefix-map followed by the masquerade floor) and the inverse DNAT chain (the
+	# prerouting prefix-map for inbound reachability of the targets). Recreated
+	# idempotently here so a reload restores them; their bodies are owned by
+	# mwan3_set_src_routing_nft. The mwan3_postrouting jump into the SNAT chain is
+	# (re)added here too, because a reload flushes mwan3_postrouting; keeping it out
+	# of the skeleton avoids a duplicate at start.
 
 	mwan3_nft_push "add chain inet mwan3 mwan3_snat_v6"
+	mwan3_nft_push "add chain inet mwan3 mwan3_dnat_v6 { type nat hook prerouting priority dstnat - 1; policy accept; }"
 	mwan3_nft_push "add rule inet mwan3 mwan3_postrouting meta nfproto ipv6 jump mwan3_snat_v6"
 
 	mwan3_nft_batch_commit

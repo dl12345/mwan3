@@ -36,6 +36,25 @@ fi
 
 config_get_bool enabled $INTERFACE 'enabled' '0'
 [ "${enabled}" -eq 1 ] || {
+	# An interface mwan3 does not manage can still affect the IPv6 1:1
+	# translation: a newly added interface's address assignment can land on
+	# an active carve target, and the reserved-prefix sweep only sees it at
+	# the next rebuild. Rebuild the source-routing chain set here on ifup or
+	# prefix refresh of any such interface, when source routing is on and a
+	# translator is configured (a floor-only deployment places no carve
+	# targets, so it skips this). Not run from the parallel startup section,
+	# which performs one serialized rebuild itself after the per-interface
+	# handlers complete; outside startup this path holds the procd lock, so
+	# the rebuild is serialized with every other rebuild.
+
+	if [ "$MWAN3_STARTUP" != "init" ] && \
+		{ [ "$ACTION" = "ifup" ] || { [ "$ACTION" = "ifupdate" ] && [ "$IFUPDATE_PREFIXES" = "1" ]; }; }; then
+		config_get ipv6_routing globals ipv6_routing off
+		if [ "$ipv6_routing" = "on" ] && mwan3_translate_configured; then
+			LOG notice "Rebuilding IPv6 source routing: $ACTION on non-mwan3 interface $INTERFACE"
+			mwan3_set_src_routing_nft
+		fi
+	fi
 	LOG notice "mwan3 hotplug on $INTERFACE not called because interface disabled"
 	exit 0
 }
