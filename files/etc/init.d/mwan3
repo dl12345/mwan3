@@ -199,7 +199,7 @@ stop_service() {
 	# Delete dynamic per-interface and per-policy chains (not the skeleton ones from 10-mwan3.nft)
 	for chain_name in $($NFT list chains inet 2>/dev/null | grep "chain mwan3_" | awk '{print $2}'); do
 		case "$chain_name" in
-			mwan3_prerouting|mwan3_output|mwan3_postrouting|mwan3_ifaces_in|mwan3_rules|mwan3_connected|mwan3_custom|mwan3_dynamic)
+			mwan3_prerouting|mwan3_output|mwan3_postrouting|mwan3_ifaces_in|mwan3_rules|mwan3_connected|mwan3_custom|mwan3_dynamic|mwan3_src_routing_v6)
 				# These are skeleton chains from the static .nft file; keep them
 				;;
 			*)
@@ -209,7 +209,7 @@ stop_service() {
 	done
 
 	# Final safety flush of skeleton chains (handles any transient failures above)
-	for chain_name in mwan3_prerouting mwan3_output mwan3_postrouting mwan3_ifaces_in mwan3_rules mwan3_connected mwan3_custom mwan3_dynamic; do
+	for chain_name in mwan3_prerouting mwan3_output mwan3_postrouting mwan3_ifaces_in mwan3_rules mwan3_connected mwan3_custom mwan3_dynamic mwan3_src_routing_v6; do
 		$NFT flush chain inet mwan3 "$chain_name" >/dev/null 2>&1
 	done
 

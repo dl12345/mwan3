@@ -9,7 +9,7 @@ initscript=/etc/init.d/mwan3
 
 
 SCRIPTNAME="mwan3-hotplug"
-[ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifdown" ] || [ "$ACTION" = "connected" ] || [ "$ACTION" = "disconnected" ] || exit 1
+[ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifdown" ] || [ "$ACTION" = "connected" ] || [ "$ACTION" = "disconnected" ] || [ "$ACTION" = "ifupdate" ] || exit 1
 [ -n "$INTERFACE" ] || exit 2
 [ "$FIRSTCONNECT" = "1" ] || [ "$MWAN3_SHUTDOWN" = "1" ] && exit 0
 
@@ -110,6 +110,11 @@ case "$ACTION" in
 		mwan3_set_policies_nft
 		mwan3_delete_iface_map_entries $INTERFACE
 		mwan3_nft_batch_commit
+		;;
+	ifupdate)
+		# Prefix refresh (e.g. DHCPv6-PD renewal): rebuild the IPv6
+		# source-derived routing chain so it tracks the current prefixes.
+		[ "$IFUPDATE_PREFIXES" = "1" ] && mwan3_set_src_routing_nft
 		;;
 	ifdown)
 		# Drop the member from the policy before tearing down its routing, so the

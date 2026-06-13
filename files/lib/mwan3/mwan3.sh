@@ -632,6 +632,13 @@ mwan3_set_general_nft()
 
 	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta mark & $MMX_MASK == 0 jump mwan3_rules"
 
+	# IPv6 source-derived routing fallback: mark still-unmarked forwarded IPv6
+	# by its source prefix so each delegated prefix egresses its own WAN's table.
+	# Runs after the user rules so per-rule NAT66 steering takes precedence; the
+	# chain is empty unless ipv6_routing=on, making this jump a no-op otherwise.
+
+	mwan3_nft_push "add rule inet mwan3 mwan3_prerouting meta nfproto ipv6 meta mark & $MMX_MASK == 0 jump mwan3_src_routing_v6"
+
 	# Save mark to conntrack — non-destructive in unmasked bits of ct mark.
 	# Vmap-dispatch on (meta mark & MMX) into per-mark setter chains that
 	# atomically clear+set the MMX bits in a single nft expression, so ct
@@ -1288,6 +1295,69 @@ mwan3_set_policies_nft()
 	fi
 
 	config_foreach mwan3_create_policies_nft policy
+
+	# Rebuild the IPv6 source-derived routing chain alongside the policies so it
+	# tracks interface online and offline transitions on the same events.
+
+	mwan3_set_src_routing_nft
+}
+
+# Populate the IPv6 source-derived routing chain. When globals ipv6_routing is
+# 'on', forwarded IPv6 that no user rule has marked is stamped by its source
+# prefix so each delegated prefix egresses its own WAN's table, with no NAT.
+# Flushed and rebuilt on every event that rebuilds policies, plus the ifupdate
+# (prefix refresh) hotplug event. When ipv6_routing is not 'on' the chain is
+# left empty, so the jump from mwan3_prerouting is a no-op.
+mwan3_set_src_routing_nft()
+{
+	local ipv6_routing _v6_mark_records="" _len _prefix _mark
+
+	[ $NO_IPV6 -eq 0 ] || return
+	config_get ipv6_routing globals ipv6_routing off
+
+	mwan3_nft_batch_start
+	mwan3_nft_push "flush chain inet mwan3 mwan3_src_routing_v6"
+	[ "$ipv6_routing" = "on" ] && config_foreach mwan3_add_src_routing_iface interface
+
+	# The source-prefix marking rules are non-terminal mark sets where the last match wins,
+	# so a packet inside two nested delegations takes the mark of whichever rule comes last.
+	# mwan3_add_src_routing_iface accumulates "<length> <prefix> <mark>" records rather than
+	# pushing rules directly; emit them here sorted by ascending prefix length so the most
+	# specific delegation is emitted last and wins regardless of configuration order. The
+	# emission runs in a pipeline subshell, which is fine because mwan3_nft_push appends to
+	# the batch file, not to shell state.
+
+	printf '%s' "$_v6_mark_records" | sort -n | while read -r _len _prefix _mark; do
+		[ -n "$_prefix" ] || continue
+		mwan3_nft_push "add rule inet mwan3 mwan3_src_routing_v6 ip6 saddr $_prefix $(mwan3_nft_mark_expr $_mark $MMX_MASK)"
+	done
+
+	mwan3_nft_batch_commit
+}
+
+# Emit one source-prefix marking rule per delegated prefix of an enabled,
+# online IPv6 mwan3 interface. The mark is the interface's own mark, so the
+# existing fwmark ip rule routes the packet out that interface's table.
+mwan3_add_src_routing_iface()
+{
+	local iface="$1"
+	local enabled family id mark true_iface prefix
+
+	config_get_bool enabled "$iface" enabled 0
+	[ "$enabled" -eq 1 ] || return
+	config_get family "$iface" family ipv4
+	[ "$family" = "ipv6" ] || return
+	[ "$(mwan3_get_iface_hotplug_state "$iface")" = "online" ] || return
+
+	mwan3_get_iface_id id "$iface"
+	[ -n "$id" ] || return
+	mark=$(mwan3_id2mask id MMX_MASK)
+
+	mwan3_get_true_iface true_iface "$iface"
+	for prefix in $(${MWAN3_GET_PREFIX} "$true_iface"); do
+		_v6_mark_records="${_v6_mark_records}${prefix##*/} $prefix $mark
+"
+	done
 }
 
 # Enumerate the iface members of a policy whose family matches $2 (ipv4|ipv6).

@@ -6,6 +6,7 @@ UCODE="ucode"
 MWAN3_LIB_PATH="/lib/mwan3"
 MWAN3_CREATE_IFACE_ROUTE="${UCODE} ${MWAN3_LIB_PATH}/mwan3-create-iface-route.uc"
 MWAN3_GET_ADDR="${UCODE} ${MWAN3_LIB_PATH}/mwan3-get-addr.uc"
+MWAN3_GET_PREFIX="${UCODE} ${MWAN3_LIB_PATH}/mwan3-get-prefix.uc"
 MWAN3_LIST_ROUTES="${UCODE} ${MWAN3_LIB_PATH}/mwan3-list-routes.uc"
 MWAN3_MANAGE_RULES="${UCODE} ${MWAN3_LIB_PATH}/mwan3-manage-rules.uc"
 SCRIPTNAME="$(basename "$0")"
@@ -118,6 +119,13 @@ mwan3_nft_reload_start()
 		mwan3_nft_push "flush chain inet mwan3 $chain"
 	done
 
+	# mwan3_src_routing_v6 is intentionally NOT flushed here. Its body is owned
+	# and flushed by mwan3_set_src_routing_nft, and on the first reload after an
+	# upgrade that introduces the chain it does not yet exist in the running
+	# ruleset, so flushing it here would fail the atomic batch. It is recreated
+	# (idempotently) by mwan3_ensure_nft_framework before any rule references it.
+	# It stays in the skeleton case below so it is never deleted as a dynamic chain.
+
 	# Two-pass: flush all dynamic chains first to remove cross-references
 	# (e.g. mwan3_rule_* chains jump to mwan3_or_meta_* chains), then delete.
 	# A single-pass flush+delete in alphabetical order fails with "Device or
@@ -128,7 +136,8 @@ mwan3_nft_reload_start()
 	for chain in $($NFT list chains inet 2>/dev/null | grep "chain mwan3_" | awk '{gsub(/ \{.*/, ""); print $2}'); do
 		case "$chain" in
 			mwan3_prerouting|mwan3_output|mwan3_postrouting|\
-			mwan3_ifaces_in|mwan3_rules|mwan3_connected|mwan3_custom|mwan3_dynamic)
+			mwan3_ifaces_in|mwan3_rules|mwan3_connected|mwan3_custom|mwan3_dynamic|\
+			mwan3_src_routing_v6)
 				;;
 			*)
 				mwan3_nft_push "flush chain inet mwan3 $chain"
@@ -306,6 +315,12 @@ mwan3_ensure_nft_framework()
 	mwan3_nft_push "add chain inet mwan3 mwan3_connected"
 	mwan3_nft_push "add chain inet mwan3 mwan3_custom"
 	mwan3_nft_push "add chain inet mwan3 mwan3_dynamic"
+
+	# IPv6 source-derived routing chain (no-NAT regime). Jumped from
+	# mwan3_prerouting after the user-rules jump; body populated by
+	# mwan3_set_src_routing_nft only when globals ipv6_routing is 'on'.
+
+	mwan3_nft_push "add chain inet mwan3 mwan3_src_routing_v6"
 
 	mwan3_nft_batch_commit
 }

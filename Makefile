@@ -215,6 +215,8 @@ define Package/mwan3/install
 		$(1)/lib/mwan3/
 	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-create-iface-route.uc \
 		$(1)/lib/mwan3/
+	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-get-prefix.uc \
+		$(1)/lib/mwan3/
 
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/ucode/
 	$(INSTALL_BIN) ./files/usr/share/rpcd/ucode/mwan3 \
