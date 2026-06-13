@@ -1302,12 +1302,59 @@ mwan3_set_policies_nft()
 	mwan3_set_src_routing_nft
 }
 
-# Populate the IPv6 source-derived routing chain. When globals ipv6_routing is
-# 'on', forwarded IPv6 that no user rule has marked is stamped by its source
-# prefix so each delegated prefix egresses its own WAN's table, with no NAT.
-# Flushed and rebuilt on every event that rebuilds policies, plus the ifupdate
-# (prefix refresh) hotplug event. When ipv6_routing is not 'on' the chain is
-# left empty, so the jump from mwan3_prerouting is a no-op.
+# IPv6 translate failover, prefix cache. At failover the orphaned WAN's prefix
+# must be re-marked and translated, but a long outage can age it out of ubus
+# (the delegation lease expires while the interface stays up), so each IPv6 WAN's
+# last-known prefix is cached while it is online and read back at failover. The
+# refresh is a no-op on empty input so a transient empty discovery never clobbers
+# a good entry.
+mwan3_prefix_cache_refresh()
+{
+	[ -n "$2" ] || return 0
+	mkdir -p "$MWAN3_PREFIX_CACHE_DIR"
+	printf '%s\n' "$2" > "$MWAN3_PREFIX_CACHE_DIR/$1"
+}
+
+mwan3_prefix_cache_read()
+{
+	cat "$MWAN3_PREFIX_CACHE_DIR/$1" 2>/dev/null
+}
+
+# Find the surviving IPv6 WAN for a failed one: an enabled, online IPv6 mwan3
+# interface other than the failed interface. Sets the variable named by $1;
+# returns 1 if there is none.
+mwan3_get_ipv6_survivor()
+{
+	local _failed="$2" _surv=""
+
+	_mwan3_pick_survivor()
+	{
+		local cand="$1" en fam
+		[ -z "$_surv" ] || return
+		[ "$cand" != "$_failed" ] || return
+		config_get_bool en "$cand" enabled 0
+		[ "$en" -eq 1 ] || return
+		config_get fam "$cand" family ipv4
+		[ "$fam" = "ipv6" ] || return
+		[ "$(mwan3_get_iface_hotplug_state "$cand")" = "online" ] || return
+		_surv="$cand"
+	}
+
+	config_foreach _mwan3_pick_survivor interface
+	[ -n "$_surv" ] || return 1
+	export "$1=$_surv"
+}
+
+# Populate the IPv6 source-derived routing chain and the foreign-source SNAT
+# chain. When globals ipv6_routing is 'on', forwarded IPv6 that no user rule has
+# marked is stamped by its source prefix so each delegated prefix egresses its
+# own WAN's table with no NAT, and each WAN gets an always-on masquerade that
+# makes a foreign source valid on it (the substrate failover and per-rule
+# steering both reuse), scoped so native traffic stays transparent. Both chains
+# are flushed and rebuilt on every event that rebuilds policies, plus the ifupdate
+# (prefix refresh) hotplug event. When ipv6_routing is not 'on' both chains are
+# left empty, so their jumps and hooks are no-ops.
+
 mwan3_set_src_routing_nft()
 {
 	local ipv6_routing _v6_mark_records="" _len _prefix _mark
@@ -1317,6 +1364,7 @@ mwan3_set_src_routing_nft()
 
 	mwan3_nft_batch_start
 	mwan3_nft_push "flush chain inet mwan3 mwan3_src_routing_v6"
+	mwan3_nft_push "flush chain inet mwan3 mwan3_snat_v6"
 	[ "$ipv6_routing" = "on" ] && config_foreach mwan3_add_src_routing_iface interface
 
 	# The source-prefix marking rules are non-terminal mark sets where the last match wins,
@@ -1335,27 +1383,95 @@ mwan3_set_src_routing_nft()
 	mwan3_nft_batch_commit
 }
 
-# Emit one source-prefix marking rule per delegated prefix of an enabled,
-# online IPv6 mwan3 interface. The mark is the interface's own mark, so the
-# existing fwmark ip rule routes the packet out that interface's table.
+# Install one online IPv6 WAN's always-on, foreign-source-scoped egress
+# translation. This is the substrate both failover and per-rule steering/balancing
+# reuse: anything that marks a flow onto this WAN whose source is not the WAN's own
+# delegated prefix has that source made valid on the wire, while native traffic
+# stays transparent. The WAN gets a stateful masquerade of forwarded traffic whose
+# source is not one of the WAN's own delegated prefixes, to the WAN's address.
+# Native forwarded traffic is excluded by the source match; router-originated
+# traffic is excluded by fib saddr type and left to the per-interface snat6 option.
+# $1 iface, $2 its true (ubus) iface, $3 its delegated prefix(es) (may be empty).
+
+mwan3_install_translate_iface()
+{
+	local iface="$1" true_iface="$2" prefixes="$3"
+	local dev p native_set
+
+	network_get_device dev "$true_iface"
+
+	# Without a resolvable egress device this WAN gets no floor this rebuild; its marking is
+	# still in place, so log the gap rather than returning silently.
+
+	if [ -z "$dev" ]; then
+		LOG warn "ipv6 translate ($iface): no egress device for $true_iface, leaving it with marking but no floor this rebuild"
+		return
+	fi
+
+	# Stateful: masquerade forwarded foreign-source traffic out this WAN. The
+	# source match leaves the WAN's own delegated prefix(es) transparent; with
+	# no delegation every forwarded source is foreign, so the match is dropped.
+
+	native_set=""
+	for p in $prefixes; do
+		native_set="${native_set:+$native_set, }$p"
+	done
+
+	if [ -n "$native_set" ]; then
+		mwan3_nft_push "add rule inet mwan3 mwan3_snat_v6 oifname \"$dev\" ip6 saddr != { $native_set } fib saddr type != local masquerade"
+	else
+		mwan3_nft_push "add rule inet mwan3 mwan3_snat_v6 oifname \"$dev\" meta nfproto ipv6 fib saddr type != local masquerade"
+	fi
+}
+
+# For an enabled IPv6 mwan3 interface. When online: emit native source-prefix
+# marking (each delegated prefix to the interface's own mark), refresh the prefix
+# cache, and install this WAN's always-on foreign-source egress translation. When
+# offline under ipv6_failover_type 'translate': carry the orphaned prefix over the
+# surviving WAN by re-marking the cached prefix to the survivor's mark. That
+# re-mark is the only failover-specific step, since the survivor's always-on
+# translation is what makes the carried-over source valid on the wire. The offline
+# path is scoped to a soft failure, where the interface is still up at netifd but
+# its path is dead; network_is_up rejects an admin or hard ifdown (netifd down), so
+# those tear down cleanly without engaging failover.
+
 mwan3_add_src_routing_iface()
 {
 	local iface="$1"
-	local enabled family id mark true_iface prefix
+	local enabled family id mark true_iface prefix prefixes ipv6_failover_type
+	local surv surv_id surv_mark
 
 	config_get_bool enabled "$iface" enabled 0
 	[ "$enabled" -eq 1 ] || return
 	config_get family "$iface" family ipv4
 	[ "$family" = "ipv6" ] || return
-	[ "$(mwan3_get_iface_hotplug_state "$iface")" = "online" ] || return
 
 	mwan3_get_iface_id id "$iface"
 	[ -n "$id" ] || return
 	mark=$(mwan3_id2mask id MMX_MASK)
-
 	mwan3_get_true_iface true_iface "$iface"
-	for prefix in $(${MWAN3_GET_PREFIX} "$true_iface"); do
-		_v6_mark_records="${_v6_mark_records}${prefix##*/} $prefix $mark
+
+	if [ "$(mwan3_get_iface_hotplug_state "$iface")" = "online" ]; then
+		prefixes=$(${MWAN3_GET_PREFIX} "$true_iface")
+		for prefix in $prefixes; do
+			_v6_mark_records="${_v6_mark_records}${prefix##*/} $prefix $mark
+"
+		done
+		mwan3_prefix_cache_refresh "$iface" "$prefixes"
+		mwan3_install_translate_iface "$iface" "$true_iface" "$prefixes"
+		return
+	fi
+
+	config_get ipv6_failover_type globals ipv6_failover_type off
+	[ "$ipv6_failover_type" = "translate" ] || return
+	network_is_up "$true_iface" || return
+	mwan3_get_ipv6_survivor surv "$iface" || return
+	mwan3_get_iface_id surv_id "$surv"
+	[ -n "$surv_id" ] || return
+	surv_mark=$(mwan3_id2mask surv_id MMX_MASK)
+
+	for prefix in $(mwan3_prefix_cache_read "$iface"); do
+		_v6_mark_records="${_v6_mark_records}${prefix##*/} $prefix $surv_mark
 "
 	done
 }

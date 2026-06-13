@@ -13,6 +13,7 @@ SCRIPTNAME="$(basename "$0")"
 
 MWAN3_STATUS_DIR="/var/run/mwan3"
 MWAN3TRACK_STATUS_DIR="/var/run/mwan3track"
+MWAN3_PREFIX_CACHE_DIR="/var/run/mwan3/prefix_cache"
 
 MWAN3_INTERFACE_MAX=""
 
@@ -119,12 +120,13 @@ mwan3_nft_reload_start()
 		mwan3_nft_push "flush chain inet mwan3 $chain"
 	done
 
-	# mwan3_src_routing_v6 is intentionally NOT flushed here. Its body is owned
-	# and flushed by mwan3_set_src_routing_nft, and on the first reload after an
-	# upgrade that introduces the chain it does not yet exist in the running
-	# ruleset, so flushing it here would fail the atomic batch. It is recreated
-	# (idempotently) by mwan3_ensure_nft_framework before any rule references it.
-	# It stays in the skeleton case below so it is never deleted as a dynamic chain.
+	# mwan3_src_routing_v6 and the IPv6 foreign-source SNAT chain mwan3_snat_v6 are
+	# intentionally NOT flushed here. Their bodies are owned and flushed by
+	# mwan3_set_src_routing_nft, and on the first reload after an upgrade that
+	# introduces a chain it does not yet exist in the running ruleset, so flushing
+	# it here would fail the atomic batch. They are recreated (idempotently) by
+	# mwan3_ensure_nft_framework before any rule references them. They stay in the
+	# skeleton case below so they are never deleted as dynamic chains.
 
 	# Two-pass: flush all dynamic chains first to remove cross-references
 	# (e.g. mwan3_rule_* chains jump to mwan3_or_meta_* chains), then delete.
@@ -137,7 +139,7 @@ mwan3_nft_reload_start()
 		case "$chain" in
 			mwan3_prerouting|mwan3_output|mwan3_postrouting|\
 			mwan3_ifaces_in|mwan3_rules|mwan3_connected|mwan3_custom|mwan3_dynamic|\
-			mwan3_src_routing_v6)
+			mwan3_src_routing_v6|mwan3_snat_v6)
 				;;
 			*)
 				mwan3_nft_push "flush chain inet mwan3 $chain"
@@ -321,6 +323,14 @@ mwan3_ensure_nft_framework()
 	# mwan3_set_src_routing_nft only when globals ipv6_routing is 'on'.
 
 	mwan3_nft_push "add chain inet mwan3 mwan3_src_routing_v6"
+
+	# IPv6 foreign-source SNAT chain (the masquerade floor). Recreated idempotently
+	# here so a reload restores it; its body is owned by mwan3_set_src_routing_nft. The
+	# mwan3_postrouting jump into it is (re)added here too, because a reload flushes
+	# mwan3_postrouting; keeping it out of the skeleton avoids a duplicate at start.
+
+	mwan3_nft_push "add chain inet mwan3 mwan3_snat_v6"
+	mwan3_nft_push "add rule inet mwan3 mwan3_postrouting meta nfproto ipv6 jump mwan3_snat_v6"
 
 	mwan3_nft_batch_commit
 }
