@@ -92,17 +92,32 @@ table inet mwan3 {
 	chain mwan3_src_routing_v6 {
 	}
 
-	# IPv6 stateful foreign-source SNAT. Reached from mwan3_postrouting via a jump
+	# IPv6 foreign-source SNAT (NAT hook). Reached from mwan3_postrouting via a jump
 	# added by mwan3_ensure_nft_framework (kept out of this skeleton so a reload,
 	# which flushes mwan3_postrouting, re-adds it without duplicating it at start).
-	# Body populated dynamically by mwan3.sh (mwan3_set_src_routing_nft) with one
-	# rule per online IPv6 WAN: masquerade
-	# forwarded traffic egressing that WAN whose source is not the WAN's own
-	# delegated prefix, to the WAN's address. This carries a failover orphan or a
-	# steered/balanced flow out a WAN with a foreign source; native traffic stays
+	# Body populated dynamically by mwan3.sh (mwan3_set_src_routing_nft): per online
+	# IPv6 WAN, first a 1:1 snat prefix-map rule when it is a translating WAN with
+	# accepted maps, then the masquerade floor. NAT statements are terminal for the
+	# flow's NAT lookup, so a mapped flow binds to its 1:1 target and never reaches
+	# the floor, while an uncovered foreign source falls through to the floor and is
+	# masqueraded to the WAN's address. This carries a failover orphan or a steered
+	# or balanced flow out a WAN with a foreign source; native traffic stays
 	# transparent. A no-op until such a flow egresses; empty when ipv6_routing is off.
 
 	chain mwan3_snat_v6 {
+	}
+
+	# IPv6 1:1 prefix-translation inbound map (NAT hook). Reached on the prerouting
+	# nat hook at dstnat - 1, mirroring the srcnat - 1 of mwan3_postrouting so a
+	# carried flow's binding is established before fw4's dstnat rules could act. Body
+	# populated dynamically by mwan3.sh (mwan3_set_src_routing_nft) with one inverse
+	# dnat prefix-map rule per translating WAN, so a peer-initiated packet to a carved
+	# target is reverse-mapped to the carried segment and each carried host is
+	# individually reachable; empty (no-op) when no WAN has accepted maps or when
+	# ipv6_routing is off.
+
+	chain mwan3_dnat_v6 {
+		type nat hook prerouting priority dstnat - 1; policy accept;
 	}
 
 	# IPv6 SNAT for router-originated traffic rerouted by mwan3_output. fw4 does
@@ -114,6 +129,6 @@ table inet mwan3 {
 	# IP). Runs at srcnat - 1 so it fires before fw4's srcnat hook.
 	chain mwan3_postrouting {
 		type nat hook postrouting priority srcnat - 1; policy accept;
-		# the IPv6 failover-SNAT jump is added by mwan3_ensure_nft_framework
+		# the IPv6 foreign-source SNAT jump is added by mwan3_ensure_nft_framework
 	}
 }
