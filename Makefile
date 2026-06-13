@@ -223,6 +223,8 @@ define Package/mwan3/install
 		$(1)/lib/mwan3/
 	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-get-ula-segments.uc \
 		$(1)/lib/mwan3/
+	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-ipv6-deprecate.uc \
+		$(1)/lib/mwan3/
 	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-translate-allocator.uc \
 		$(1)/lib/mwan3/
 

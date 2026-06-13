@@ -10,6 +10,7 @@ MWAN3_GET_DELEGATED_SEGMENTS="${UCODE} ${MWAN3_LIB_PATH}/mwan3-get-delegated-seg
 MWAN3_GET_PREFIX="${UCODE} ${MWAN3_LIB_PATH}/mwan3-get-prefix.uc"
 MWAN3_GET_RESERVED_PREFIXES="${UCODE} ${MWAN3_LIB_PATH}/mwan3-get-reserved-prefixes.uc"
 MWAN3_GET_ULA_SEGMENTS="${UCODE} ${MWAN3_LIB_PATH}/mwan3-get-ula-segments.uc"
+MWAN3_IPV6_DEPRECATE="${UCODE} ${MWAN3_LIB_PATH}/mwan3-ipv6-deprecate.uc"
 MWAN3_LIST_ROUTES="${UCODE} ${MWAN3_LIB_PATH}/mwan3-list-routes.uc"
 MWAN3_MANAGE_RULES="${UCODE} ${MWAN3_LIB_PATH}/mwan3-manage-rules.uc"
 MWAN3_TRANSLATE_ALLOCATOR="${UCODE} ${MWAN3_LIB_PATH}/mwan3-translate-allocator.uc"

@@ -421,6 +421,6 @@ printf('%s\n', pcmd('nft list chain inet fw4 output 2>/dev/null'));
 
 // --- recent mwan3 log ---
 printf('=== Recent mwan3 Log (last 200 lines) ===\n');
-printf('%s\n', pcmd('logread 2>/dev/null | grep -E "mwan3track\\[|mwan3-hotplug\\[|mwan3-init\\[|mwan3\\[|mwan3rtmon\\[|mwan3-manage-rules\\[|mwan3-create-iface-route\\[|mwan3-translate-allocator\\[" | tail -200'));
+printf('%s\n', pcmd('logread 2>/dev/null | grep -E "mwan3track\\[|mwan3-hotplug\\[|mwan3-init\\[|mwan3\\[|mwan3rtmon\\[|mwan3-manage-rules\\[|mwan3-create-iface-route\\[|mwan3-translate-allocator\\[|mwan3-ipv6-deprecate\\[" | tail -200'));
 
 printf('=== End of Report ===\n');

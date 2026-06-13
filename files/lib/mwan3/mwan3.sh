@@ -1980,6 +1980,71 @@ mwan3_add_src_routing_iface()
 	done
 }
 
+# IPv6 prefix-deprecation failover (ipv6_failover_type=deprecate), the strictly-no-NAT
+# alternative to translate for a dual-prefix LAN. On a soft failure of an IPv6 WAN it
+# deprecates the downstream LAN router-address(es) in that WAN's delegated prefix
+# (preferred_lft 0); odhcpd then advertises the prefix deprecated (RFC 4862), and RFC
+# 6724 rule 3 moves clients' new connections to the surviving WAN's prefix, which the
+# source-derived routing chain sends out the survivor with no NAT. On recovery the
+# preferred lifetime is restored. This acts on downstream addresses, not on the
+# egress translation substrate (which stays installed under ipv6_routing), so NAT66
+# steering keeps working under deprecate. The failed prefix needs no source-routing
+# entry: the offline branch of mwan3_add_src_routing_iface already returns unless the
+# mode is translate, so under deprecate the orphan is simply omitted, which is
+# correct once its clients have migrated off it.
+#
+# Discovery and the lifetime change are both done by mwan3-ipv6-deprecate.uc: it
+# finds the LAN addresses from netifd delegation state (ubus) and (un)deprecates them
+# by a netlink read-modify-write (rtnl), preserving valid_lft and the address flags,
+# with no forked ip command. $1 = mwan3 interface, $2 = "deprecate" or "restore".
+# Scoped to a soft failure: network_is_up rejects an admin or hard ifdown, where
+# netifd owns the prefix lifecycle and there is nothing for mwan3 to do.
+
+mwan3_ipv6_deprecate_lan()
+{
+	local iface="$1" action="$2"
+	local family ipv6_failover_type true_iface
+
+	[ $NO_IPV6 -eq 0 ] || return
+	config_get family "$iface" family ipv4
+	[ "$family" = "ipv6" ] || return
+	config_get ipv6_failover_type globals ipv6_failover_type off
+	[ "$ipv6_failover_type" = "deprecate" ] || return
+
+	mwan3_get_true_iface true_iface "$iface"
+	network_is_up "$true_iface" || return
+
+	${MWAN3_IPV6_DEPRECATE} "$true_iface" "$action"
+	LOG notice "ipv6_failover_type deprecate ($iface): $action"
+}
+
+# Re-assert deprecation after a prefix refresh. netifd can overwrite preferred_lft 0
+# when it re-applies a refreshed prefix at DHCPv6-PD renewal (NLM_F_REPLACE) and it
+# signals that refresh with an ifupdate hotplug event (IFUPDATE_PREFIXES=1). Re-apply
+# preferred_lft 0 to every IPv6 WAN still tracked-down under deprecate mode,
+# idempotently and regardless of which interface the event named, so the deprecation
+# survives the renewal with no polling or timer.
+
+mwan3_ipv6_redeprecate_all()
+{
+	local ipv6_failover_type
+
+	[ $NO_IPV6 -eq 0 ] || return
+	config_get ipv6_failover_type globals ipv6_failover_type off
+	[ "$ipv6_failover_type" = "deprecate" ] || return
+
+	_mwan3_redeprecate_one() {
+		local cand="$1" en fam
+		config_get_bool en "$cand" enabled 0
+		[ "$en" -eq 1 ] || return
+		config_get fam "$cand" family ipv4
+		[ "$fam" = "ipv6" ] || return
+		[ "$(mwan3_get_iface_hotplug_state "$cand")" = "online" ] && return
+		mwan3_ipv6_deprecate_lan "$cand" deprecate
+	}
+	config_foreach _mwan3_redeprecate_one interface
+}
+
 # Enumerate the iface members of a policy whose family matches $2 (ipv4|ipv6).
 # Sets _policy_member_marks to a space-separated list of "id:mark" tuples.
 # Used by the sticky implementation to size the per-member sticky set fan-out.
