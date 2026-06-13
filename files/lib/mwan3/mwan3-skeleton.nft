@@ -92,6 +92,19 @@ table inet mwan3 {
 	chain mwan3_src_routing_v6 {
 	}
 
+	# IPv6 stateful foreign-source SNAT. Reached from mwan3_postrouting via a jump
+	# added by mwan3_ensure_nft_framework (kept out of this skeleton so a reload,
+	# which flushes mwan3_postrouting, re-adds it without duplicating it at start).
+	# Body populated dynamically by mwan3.sh (mwan3_set_src_routing_nft) with one
+	# rule per online IPv6 WAN: masquerade
+	# forwarded traffic egressing that WAN whose source is not the WAN's own
+	# delegated prefix, to the WAN's address. This carries a failover orphan or a
+	# steered/balanced flow out a WAN with a foreign source; native traffic stays
+	# transparent. A no-op until such a flow egresses; empty when ipv6_routing is off.
+
+	chain mwan3_snat_v6 {
+	}
+
 	# IPv6 SNAT for router-originated traffic rerouted by mwan3_output. fw4 does
 	# not masquerade IPv6 by default, so packets rerouted from WAN-A onto WAN-B
 	# would egress with WAN-A's source prefix and be dropped upstream. Opt-in
@@ -101,5 +114,6 @@ table inet mwan3 {
 	# IP). Runs at srcnat - 1 so it fires before fw4's srcnat hook.
 	chain mwan3_postrouting {
 		type nat hook postrouting priority srcnat - 1; policy accept;
+		# the IPv6 failover-SNAT jump is added by mwan3_ensure_nft_framework
 	}
 }
