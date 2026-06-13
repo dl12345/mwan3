@@ -89,6 +89,12 @@ case "$ACTION" in
 		mwan3_set_policies_nft
 		mwan3_nft_batch_commit
 		mwan3_flush_worse_metric_sticky $INTERFACE
+
+		# Under ipv6_failover_type=deprecate, lift the deprecation on this WAN's
+		# downstream LAN prefix now that it is back online.
+
+		mwan3_ipv6_deprecate_lan "$INTERFACE" restore
+
 		mwan3_flush_unreplied_conntrack
 		;;
 	ifup)
@@ -129,11 +135,22 @@ case "$ACTION" in
 		mwan3_set_policies_nft
 		mwan3_delete_iface_map_entries $INTERFACE
 		mwan3_nft_batch_commit
+
+		# Under ipv6_failover_type=deprecate, deprecate this WAN's downstream LAN
+		# prefix so RFC 6724 clients migrate to the surviving WAN.
+
+		mwan3_ipv6_deprecate_lan "$INTERFACE" deprecate
 		;;
 	ifupdate)
 		# Prefix refresh (e.g. DHCPv6-PD renewal): rebuild the IPv6
 		# source-derived routing chain so it tracks the current prefixes.
+
 		[ "$IFUPDATE_PREFIXES" = "1" ] && mwan3_set_src_routing_nft
+
+		# Re-assert prefix deprecation for any WAN still tracked-down: netifd
+		# can re-apply a refreshed prefix and overwrite preferred_lft 0.
+
+		[ "$IFUPDATE_PREFIXES" = "1" ] && mwan3_ipv6_redeprecate_all
 		;;
 	ifdown)
 		# Drop the member from the policy before tearing down its routing, so the

@@ -214,7 +214,7 @@ let nft_mwan3_txt      = strip_set_elements(rcmd(sprintf('nft list table %s 2>/d
 let fw4_mangle_pre_txt = rcmd('nft list chain inet fw4 mangle_prerouting 2>/dev/null');
 let fw4_mangle_out_txt = rcmd('nft list chain inet fw4 mangle_output 2>/dev/null');
 let fw4_output_txt     = rcmd('nft list chain inet fw4 output 2>/dev/null');
-let log_txt            = rcmd('logread 2>/dev/null | grep -E "mwan3track\\[|mwan3-hotplug\\[|mwan3-init\\[|mwan3\\[|mwan3rtmon\\[|mwan3-manage-rules\\[|mwan3-create-iface-route\\[|mwan3-translate-allocator\\[" | tail -200');
+let log_txt            = rcmd('logread 2>/dev/null | grep -E "mwan3track\\[|mwan3-hotplug\\[|mwan3-init\\[|mwan3\\[|mwan3rtmon\\[|mwan3-manage-rules\\[|mwan3-create-iface-route\\[|mwan3-translate-allocator\\[|mwan3-ipv6-deprecate\\[" | tail -200');
 
 scan_text(nft_mwan3_txt);
 scan_text(fw4_mangle_pre_txt);
