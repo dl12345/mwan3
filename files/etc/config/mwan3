@@ -6,6 +6,7 @@ config globals 'globals'
 	# option iif_rule_base '1000'
 	# option fwmark_rule_base '2000'
 	# option unreachable_rule_base '3000'
+	# option ipv6_routing 'off'    # 'on' = mwan3 source-routes all IPv6 WANs
 
 config interface 'wan'
 	option enabled '0'
