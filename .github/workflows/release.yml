@@ -34,6 +34,8 @@ jobs:
           - version: openwrt-25.12
             target: arm_cortex-a9
           - version: openwrt-25.12
+            target: arm_cortex-a9_vfpv3-d16
+          - version: openwrt-25.12
             target: arm_cortex-a15_neon-vfpv4
           - version: openwrt-25.12
             target: mips_24kc
