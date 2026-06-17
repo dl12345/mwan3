@@ -266,7 +266,8 @@ _mwan3_render_one_ipset()
 
 	set_decl="type ${addr_type}; flags interval"
 	[ "$timeout" -gt 0 ] && set_decl="$set_decl, timeout"
-	set_decl="$set_decl; auto-merge;"
+	set_decl="$set_decl;"
+	[ "$timeout" -eq 0 ] && set_decl="$set_decl auto-merge;"
 	[ "$counters" -eq 1 ] && set_decl="$set_decl counter;"
 	[ "$timeout" -gt 0 ] && set_decl="$set_decl timeout ${timeout}s;"
 	[ "$maxelem" -gt 0 ] && set_decl="$set_decl size ${maxelem};"
