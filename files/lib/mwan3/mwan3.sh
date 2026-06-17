@@ -922,7 +922,7 @@ mwan3_delete_iface_rules()
 
 mwan3_set_policy()
 {
-	local id iface family metric weight device is_lowest is_offline
+	local id iface family metric weight is_lowest is_offline
 
 	is_lowest=0
 	config_get iface "$1" interface
@@ -930,7 +930,6 @@ mwan3_set_policy()
 	config_get weight "$1" weight 1
 
 	[ -n "$iface" ] || return 0
-	network_get_device device "$iface"
 	[ "$metric" -gt $DEFAULT_LOWEST_METRIC ] && LOG warn "Member interface $iface has >$DEFAULT_LOWEST_METRIC metric. Not appending to policy" && return 0
 
 	mwan3_get_iface_id id "$iface"
@@ -984,23 +983,17 @@ mwan3_set_policy()
 		else
 			policy_members_v6="$policy_members_v6 $iface:$id:$weight"
 		fi
-	elif [ -n "$device" ]; then
-
-		# Offline interface with device: record for fallback out-device rule
-
-		policy_offline_devices="$policy_offline_devices $iface:$device"
 	fi
 }
 
 mwan3_create_policies_nft()
 {
 	local last_resort lowest_metric_v4 lowest_metric_v6 total_weight_v4 total_weight_v6
-	local policy policy_members_v4 policy_members_v6 policy_offline_devices
+	local policy policy_members_v4 policy_members_v6
 
 	policy="$1"
 	policy_members_v4=""
 	policy_members_v6=""
-	policy_offline_devices=""
 
 	config_get last_resort "$1" last_resort unreachable
 
@@ -1095,22 +1088,6 @@ mwan3_create_policies_nft()
 					$nfproto_guard meta mark \& "$MMX_MASK" == 0 \
 					"numgen inc mod $_total_fam vmap { $map_entries }"
 			fi
-		done
-	fi
-
-	# Add offline device fallback rules
-
-	local dev_entry offline_iface offline_device
-
-	# Only add if no online members
-
-	if [ "$total_weight" -eq 0 ]; then
-		for dev_entry in $policy_offline_devices; do
-			offline_iface="${dev_entry%%:*}"
-			offline_device="${dev_entry#*:}"
-			mwan3_nft_exec add rule inet mwan3 "mwan3_policy_$policy" \
-				oifname "$offline_device" meta mark \& "$MMX_MASK" == 0 \
-				"$(mwan3_nft_mark_expr $MMX_DEFAULT $MMX_MASK)"
 		done
 	fi
 
