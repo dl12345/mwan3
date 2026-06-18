@@ -52,8 +52,13 @@ LOG notice "Execute $ACTION event on interface $INTERFACE (${DEVICE:-unknown})"
 
 case "$ACTION" in
 	connected)
+		# A tracker recovery must restore the member's routing before the policy
+		# re-selects it, so the member is routable the instant it is marked.
+
 		mwan3_set_iface_hotplug_state $INTERFACE "online"
 		mwan3_create_iface_nft $INTERFACE $DEVICE
+		mwan3_create_iface_rules $INTERFACE $DEVICE
+		mwan3_create_iface_route $INTERFACE $DEVICE
 		mwan3_set_policies_nft
 		mwan3_flush_unreplied_conntrack
 		;;
@@ -77,13 +82,17 @@ case "$ACTION" in
 		mwan3_set_policies_nft
 		;;
 	ifdown)
+		# Drop the member from the policy before tearing down its routing, so the
+		# policy never marks for a member whose rules are already gone; flush its
+		# sticky sets after the rebuild so the rebuild cannot re-seed them.
+
 		mwan3_set_iface_hotplug_state $INTERFACE "offline"
+		mwan3_set_policies_nft
 		mwan3_delete_iface_map_entries $INTERFACE
 		mwan3_delete_iface_rules $INTERFACE
 		mwan3_delete_iface_route $INTERFACE
 		mwan3_delete_iface_nft $INTERFACE
 		procd_running mwan3 "track_$INTERFACE" && procd_send_signal mwan3 "track_$INTERFACE" USR1
-		mwan3_set_policies_nft
 	;;
 esac
 
