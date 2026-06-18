@@ -854,6 +854,99 @@ mwan3_delete_iface_map_entries()
 	done
 }
 
+mwan3_flush_worse_metric_sticky()
+{
+	# On recovery of a better-metric member, snap new flows off the worse-metric
+	# backups it is now preferred over. For each policy the recovered interface
+	# participates in, flush the per-rule sticky sets of that policy's same-family
+	# members whose metric is strictly worse, scoped to the rules that use the
+	# policy, so pinned sources re-evaluate to the recovered member on their next
+	# new flow while established flows ride their conntrack marks to completion
+	# undisturbed. The scope is per policy and per rule by construction: each set
+	# name is built from the rule name and the member id rather than flushing
+	# every set ending in an id, so a member that is also a deliberate-stickiness
+	# member of a separate load-balance policy keeps those pins.
+
+	local recovered="$1" recovered_id rec_family rec_fam_short
+	local _snap_pairs=""
+
+	mwan3_get_iface_id recovered_id "$recovered"
+	[ -n "$recovered_id" ] || return 0
+
+	# mwan3 runs an independent metric contest per address family, so only
+	# same-family members compete with the recovered one; resolve its family once
+	# and snap only that family's backups.
+
+	config_get rec_family "$recovered" family ipv4
+	if [ "$rec_family" = "ipv6" ]; then
+		rec_fam_short="v6"
+	else
+		rec_fam_short="v4"
+	fi
+
+	# Record one "policy=worse-id" pair per strictly-worse-metric same-family
+	# member of each policy the recovered interface is in. The recovered
+	# interface's own id is excluded so its own pins are never cleared.
+
+	_mwan3_snap_collect() {
+		local policy="$1" rec_metric=""
+
+		# The recovered interface's metric in this policy sets the threshold;
+		# take the lowest if it appears more than once.
+
+		_mwan3_snap_rec_metric() {
+			local m_iface m_metric
+			config_get m_iface "$1" interface
+			[ "$m_iface" = "$recovered" ] || return
+			config_get m_metric "$1" metric 1
+			{ [ -z "$rec_metric" ] || [ "$m_metric" -lt "$rec_metric" ]; } && rec_metric="$m_metric"
+		}
+		config_list_foreach "$policy" use_member _mwan3_snap_rec_metric
+
+		# Policy does not include the recovered interface: nothing to snap.
+
+		[ -n "$rec_metric" ] || return
+
+		_mwan3_snap_worse() {
+			local m_iface m_metric m_id m_family
+			config_get m_iface "$1" interface
+			[ -n "$m_iface" ] || return
+			config_get m_family "$m_iface" family ipv4
+			[ "$m_family" = "$rec_family" ] || return
+			config_get m_metric "$1" metric 1
+			[ "$m_metric" -gt "$rec_metric" ] || return
+			mwan3_get_iface_id m_id "$m_iface"
+			[ -n "$m_id" ] || return
+			[ "$m_id" = "$recovered_id" ] && return
+			case " $_snap_pairs " in
+				*" ${policy}=${m_id} "*) ;;
+				*) _snap_pairs="$_snap_pairs ${policy}=${m_id}" ;;
+			esac
+		}
+		config_list_foreach "$policy" use_member _mwan3_snap_worse
+	}
+	config_foreach _mwan3_snap_collect policy
+
+	[ -n "$_snap_pairs" ] || return 0
+
+	# For every rule, flush the worse-metric members' per-rule sticky sets of the
+	# policy that rule uses, in the recovered member's family. A set name that
+	# does not exist is a harmless no-op.
+
+	_mwan3_snap_flush() {
+		local r_policy pair p_name p_id
+		config_get r_policy "$1" use_policy
+		[ -n "$r_policy" ] || return
+		for pair in $_snap_pairs; do
+			p_name="${pair%=*}"
+			p_id="${pair##*=}"
+			[ "$p_name" = "$r_policy" ] || continue
+			$NFT flush set inet mwan3 "mwan3_sticky_${rec_fam_short}_${1}_${p_id}" 2>/dev/null
+		done
+	}
+	config_foreach _mwan3_snap_flush rule
+}
+
 mwan3_create_iface_route()
 {
 	local family id source_routing _fam_num
@@ -1996,12 +2089,13 @@ mwan3_flush_conntrack()
 		config_list_foreach "$interface" flush_conntrack handle_flush "$action"
 	fi
 
-	# On ifdown, selectively flush conntrack entries for this interface's mark.
-	# This forces flows that were using the failed WAN to immediately re-establish
-	# via the new policy rather than waiting for a TCP retransmit timeout.
-	# More targeted than the UCI flush_conntrack mechanism which flushes everything.
+	# On a teardown transition (a hard ifdown or a soft tracker disconnect),
+	# selectively flush conntrack entries carrying this interface's mark. This
+	# forces flows that were using the failed WAN to immediately re-establish via
+	# the new policy rather than waiting for a TCP retransmit timeout. More
+	# targeted than the UCI flush_conntrack mechanism which flushes everything.
 
-	if [ "$action" = "ifdown" ] && [ -e "$CONNTRACK_FILE" ]; then
+	if { [ "$action" = "ifdown" ] || [ "$action" = "disconnected" ]; } && [ -e "$CONNTRACK_FILE" ]; then
 		local iface_id iface_mark
 		mwan3_get_iface_id iface_id "$interface"
 		if [ -n "$iface_id" ]; then

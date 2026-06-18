@@ -53,13 +53,15 @@ LOG notice "Execute $ACTION event on interface $INTERFACE (${DEVICE:-unknown})"
 case "$ACTION" in
 	connected)
 		# A tracker recovery must restore the member's routing before the policy
-		# re-selects it, so the member is routable the instant it is marked.
+		# re-selects it, so the member is routable the instant it is marked, then
+		# snap new flows off the worse-metric backups back toward it.
 
 		mwan3_set_iface_hotplug_state $INTERFACE "online"
 		mwan3_create_iface_nft $INTERFACE $DEVICE
 		mwan3_create_iface_rules $INTERFACE $DEVICE
 		mwan3_create_iface_route $INTERFACE $DEVICE
 		mwan3_set_policies_nft
+		mwan3_flush_worse_metric_sticky $INTERFACE
 		mwan3_flush_unreplied_conntrack
 		;;
 	ifup)
@@ -72,14 +74,21 @@ case "$ACTION" in
 			mwan3_set_general_rules
 			if [ "$status" = "online" ]; then
 				mwan3_set_policies_nft
+				mwan3_flush_worse_metric_sticky $INTERFACE
 				mwan3_flush_unreplied_conntrack
 			fi
 		fi
 		[ "$ACTION" = ifup ] && procd_running mwan3 "track_$INTERFACE" && procd_send_signal mwan3 "track_$INTERFACE" USR2
 		;;
 	disconnected)
+		# A soft tracker failure drops the member from the policy; flush its
+		# sticky pins after the rebuild so a pinned source re-evaluates to the
+		# survivor, the same treatment a hard ifdown gets. Its marked flows are
+		# cleared by the conntrack flush at the handler tail.
+
 		mwan3_set_iface_hotplug_state $INTERFACE "offline"
 		mwan3_set_policies_nft
+		mwan3_delete_iface_map_entries $INTERFACE
 		;;
 	ifdown)
 		# Drop the member from the policy before tearing down its routing, so the
