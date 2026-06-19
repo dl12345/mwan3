@@ -59,16 +59,13 @@ if (mode == "check") {
 	let id = +ARGV[1];
 	let iif_base = +ARGV[2];
 	let fwmark_base = +ARGV[3];
-	let unreachable_base = +ARGV[4];
-	let mmx_mask = +ARGV[5];
+	let mmx_mask = +ARGV[4];
 
 	let iif_prio = iif_base + id;
 	let fwmark_prio = fwmark_base + id;
-	let unreachable_prio = unreachable_base + id;
 
 	for (let family in [AF_INET, AF_INET6]) {
 		let rules = rtnl.request(RTM_GETRULE, NLM_F_DUMP, { family: family }) ?? [];
-		let fwmark_val = null;
 
 		for (let rule in rules) {
 			if (rule.table != id) continue;
@@ -86,7 +83,6 @@ if (mode == "check") {
 				if (err)
 					warn(sprintf("mwan3-manage-rules: delete iif rule failed: %s\n", err));
 			} else if (rule.fwmark != null && rule.priority == fwmark_prio && rule.fwmask == mmx_mask) {
-				fwmark_val = rule.fwmark;
 				rtnl.request(RTM_DELRULE, 0, {
 					family: family,
 					priority: rule.priority,
@@ -98,26 +94,6 @@ if (mode == "check") {
 				let err = rtnl.error();
 				if (err)
 					warn(sprintf("mwan3-manage-rules: delete fwmark rule failed: %s\n", err));
-			}
-		}
-
-		if (fwmark_val != null) {
-			for (let rule in rules) {
-				if (rule.fwmark != fwmark_val) continue;
-				if (rule.action != FR_ACT_UNREACHABLE) continue;
-				if (rule.priority != unreachable_prio) continue;
-				if (rule.fwmask != mmx_mask) continue;
-				if (rule.src != null || rule.dst != null) continue;
-				rtnl.request(RTM_DELRULE, 0, {
-					family: family,
-					priority: rule.priority,
-					fwmark: rule.fwmark,
-					fwmask: rule.fwmask,
-					action: rule.action
-				});
-				let err = rtnl.error();
-				if (err)
-					warn(sprintf("mwan3-manage-rules: delete unreachable rule failed: %s\n", err));
 			}
 		}
 	}
@@ -158,5 +134,29 @@ if (mode == "check") {
 		let err = rtnl.error();
 		if (err)
 			warn(sprintf("mwan3-manage-rules: add unreachable rule failed: %s\n", err));
+	}
+
+} else if (mode == "add-backstop") {
+	let family_num = (ARGV[1] == "6") ? AF_INET6 : AF_INET;
+	let prio = +ARGV[2], mark = +ARGV[3];
+	let mask = +ARGV[4];
+
+	let rules = rtnl.request(RTM_GETRULE, NLM_F_DUMP, { family: family_num }) ?? [];
+	let existing = {};
+	for (let r in rules)
+		if (r.priority != null)
+			existing[r.priority] = true;
+
+	if (!existing[prio]) {
+		rtnl.request(RTM_NEWRULE, NLM_F_CREATE, {
+			family: family_num,
+			priority: prio,
+			fwmark: mark,
+			fwmask: mask,
+			action: FR_ACT_UNREACHABLE
+		});
+		let err = rtnl.error();
+		if (err)
+			warn(sprintf("mwan3-manage-rules: add backstop rule failed: %s\n", err));
 	}
 }

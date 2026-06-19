@@ -66,6 +66,7 @@ start_service() {
 	mwan3_set_connected_sets
 	mwan3_set_custom_sets
 	mwan3_set_general_rules
+	mwan3_set_member_backstops
 	config_foreach mwan3_ifup interface "init"
 	wait $hotplug_pids
 	mwan3_set_general_nft
@@ -256,6 +257,7 @@ reload_service() {
 	# update them after the nft commit so the table is already consistent.
 	mwan3_update_iface_to_table
 	mwan3_set_general_rules
+	mwan3_set_member_backstops
 	config_foreach mwan3_rebuild_iface_rules interface
 
 	# Signal mwan3rtmon to reload UCI config and re-sync the custom sets.

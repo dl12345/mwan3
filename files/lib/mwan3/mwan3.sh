@@ -467,6 +467,41 @@ mwan3_set_general_rules()
 		  "$MMX_MASK"
 }
 
+# Install a static unreachable ip rule for every configured interface mark, in
+# the per-member unreachable priority band. These are created at service start
+# and reload and removed only at stop, so a packet carrying a member mark whose
+# fwmark rule is currently absent (the member is down, disabled, or briefly
+# between a delete and re-add) is rejected instead of leaking to the main
+# routing table. One rule per member is required because an fwmark rule matches
+# an exact value under the mask, not "any member mark"; the reserved last_resort
+# marks are never enumerated here, so last_resort behaviour is unaffected.
+
+mwan3_set_member_backstops()
+{
+	mwan3_add_backstop()
+	{
+		local id family fam
+
+		config_get family "$1" family ipv4
+		mwan3_get_iface_id id "$1"
+		[ -n "$id" ] || return 0
+
+		if [ "$family" = "ipv4" ]; then
+			fam=4
+		elif [ "$family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
+			fam=6
+		else
+			return 0
+		fi
+
+		${MWAN3_MANAGE_RULES} add-backstop "$fam" \
+			"$((id+MWAN3_UNREACHABLE_RULE_BASE))" \
+			"$(mwan3_id2mask id MMX_MASK)" "$MMX_MASK"
+	}
+
+	config_foreach mwan3_add_backstop interface
+}
+
 mwan3_set_general_nft()
 {
 	local chain_exists restore_vmap save_vmap all_marks
@@ -998,7 +1033,6 @@ mwan3_create_iface_rules()
 
 	$IP rule add pref $((id+MWAN3_IIF_RULE_BASE)) iif "$2" lookup "$id" 2>/dev/null
 	$IP rule add pref $((id+MWAN3_FWMARK_RULE_BASE)) fwmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK" lookup "$id" 2>/dev/null
-	$IP rule add pref $((id+MWAN3_UNREACHABLE_RULE_BASE)) fwmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK" unreachable 2>/dev/null
 }
 
 mwan3_delete_iface_rules()
@@ -1009,8 +1043,7 @@ mwan3_delete_iface_rules()
 	[ -n "$id" ] || return 0
 
 	${MWAN3_MANAGE_RULES} delete-iface "$id" \
-		"$MWAN3_IIF_RULE_BASE" "$MWAN3_FWMARK_RULE_BASE" \
-		"$MWAN3_UNREACHABLE_RULE_BASE" "$MMX_MASK"
+		"$MWAN3_IIF_RULE_BASE" "$MWAN3_FWMARK_RULE_BASE" "$MMX_MASK"
 }
 
 mwan3_set_policy()
