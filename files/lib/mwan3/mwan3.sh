@@ -879,12 +879,15 @@ mwan3_delete_iface_map_entries()
 	# Sticky scheme: one set per (rule, family, iface_id) holding
 	# only saddrs (no value side). Removing an interface invalidates every
 	# such set whose name ends in "_<id>"; we flush rather than delete since
-	# rule chains may still reference the set name.
+	# rule chains may still reference the set name. The flush lines are pushed
+	# into the caller's open nft batch so they commit in the same transaction
+	# as the policy rebuild; the set enumeration reads committed kernel state
+	# and so stays outside the batch. Call only within an open nft batch.
 
 	for setname in $($NFT list sets inet 2>/dev/null | \
 			 awk '$1=="set" && $2 ~ /^mwan3_sticky_v[46]_/ { print $2 }'); do
 		case "$setname" in
-			*_"$id") $NFT flush set inet mwan3 "$setname" 2>/dev/null ;;
+			*_"$id") mwan3_nft_push "flush set inet mwan3 $setname" ;;
 		esac
 	done
 }

@@ -54,13 +54,21 @@ case "$ACTION" in
 	connected)
 		# A tracker recovery must restore the member's routing before the policy
 		# re-selects it, so the member is routable the instant it is marked, then
-		# snap new flows off the worse-metric backups back toward it.
+		# snap new flows off the worse-metric backups back toward it. The policy
+		# rebuild commits as one nft transaction so no packet classifies against a
+		# half-rebuilt policy chain. The snap-back stays outside that batch on
+		# purpose: a recovery's worse-metric pins point at backups that are still
+		# up, so a source re-pinned in the window before the snap reaches a live
+		# member, not a dead one, unlike a teardown whose pins must be flushed in
+		# the same transaction because they point at the departing member.
 
 		mwan3_set_iface_hotplug_state $INTERFACE "online"
 		mwan3_create_iface_nft $INTERFACE $DEVICE
 		mwan3_create_iface_rules $INTERFACE $DEVICE
 		mwan3_create_iface_route $INTERFACE $DEVICE
+		mwan3_nft_batch_start
 		mwan3_set_policies_nft
+		mwan3_nft_batch_commit
 		mwan3_flush_worse_metric_sticky $INTERFACE
 		mwan3_flush_unreplied_conntrack
 		;;
@@ -73,7 +81,15 @@ case "$ACTION" in
 		if [ "$MWAN3_STARTUP" != "init" ]; then
 			mwan3_set_general_rules
 			if [ "$status" = "online" ]; then
+
+				# Same atomic policy rebuild and out-of-batch snap-back as the
+				# connected arm above; see that comment for why the snap-back is
+				# not folded into the batch. The batch sits inside the online
+				# guard so the init path never opens one.
+
+				mwan3_nft_batch_start
 				mwan3_set_policies_nft
+				mwan3_nft_batch_commit
 				mwan3_flush_worse_metric_sticky $INTERFACE
 				mwan3_flush_unreplied_conntrack
 			fi
@@ -83,21 +99,30 @@ case "$ACTION" in
 	disconnected)
 		# A soft tracker failure drops the member from the policy; flush its
 		# sticky pins after the rebuild so a pinned source re-evaluates to the
-		# survivor, the same treatment a hard ifdown gets. Its marked flows are
-		# cleared by the conntrack flush at the handler tail.
+		# survivor, the same treatment a hard ifdown gets. The policy rebuild
+		# and the sticky flush commit as one nft transaction so no packet
+		# classifies against a half-rebuilt policy. The member's marked flows
+		# are cleared by the conntrack flush at the handler tail, which is
+		# kernel state outside nftables and stays a separate operation.
 
 		mwan3_set_iface_hotplug_state $INTERFACE "offline"
+		mwan3_nft_batch_start
 		mwan3_set_policies_nft
 		mwan3_delete_iface_map_entries $INTERFACE
+		mwan3_nft_batch_commit
 		;;
 	ifdown)
 		# Drop the member from the policy before tearing down its routing, so the
 		# policy never marks for a member whose rules are already gone; flush its
-		# sticky sets after the rebuild so the rebuild cannot re-seed them.
+		# sticky sets after the rebuild so the rebuild cannot re-seed them. The
+		# policy rebuild and the sticky flush commit as one nft transaction; the
+		# routing teardown and the conntrack flush follow as separate steps.
 
 		mwan3_set_iface_hotplug_state $INTERFACE "offline"
+		mwan3_nft_batch_start
 		mwan3_set_policies_nft
 		mwan3_delete_iface_map_entries $INTERFACE
+		mwan3_nft_batch_commit
 		mwan3_delete_iface_rules $INTERFACE
 		mwan3_delete_iface_route $INTERFACE
 		mwan3_delete_iface_nft $INTERFACE
