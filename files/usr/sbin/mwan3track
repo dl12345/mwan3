@@ -299,7 +299,7 @@ main() {
 	trap config_reload HUP
 
 	load_tracking_config
-	local sleep_time result ping_status loss latency
+	local sleep_time result ping_status loss latency route_state route_state_prev probe_ips
 	mwan3_list_track_ips()
 	{
 		track_ips="$track_ips $1"
@@ -352,6 +352,7 @@ main() {
 	local lost=0
 	local turn=0
 	local failed_hosts=""
+	route_state_prev=""
 
 	firstconnect
 	while true; do
@@ -391,7 +392,26 @@ main() {
 			continue
 		fi
 		sleep_time=$interval
-		for track_ip in $track_ips; do
+
+		# An interface can be reachable to its tracking target yet hold no
+		# usable default route in its own table, in which case mwan3 marks
+		# traffic to it and the per-interface backstop drops it. mwan3rtmon
+		# writes the interface's default-route state to ROUTE_STATUS; treat
+		# "down" as a failed round and skip probing so the existing score
+		# machinery carries the interface offline, and back online when the
+		# route returns. An absent file means no route monitor has evaluated
+		# this interface, so probe exactly as before.
+
+		route_state=$(cat "$MWAN3TRACK_STATUS_DIR/$INTERFACE/ROUTE_STATUS" 2>/dev/null)
+		probe_ips=$track_ips
+		if [ "$route_state" = "down" ]; then
+			probe_ips=""
+			[ "$route_state_prev" != "down" ] && LOG warn "Interface $INTERFACE ($DEVICE) has no usable default route in its table; treating tracking round as failed"
+		elif [ "$route_state_prev" = "down" ]; then
+			LOG notice "Interface $INTERFACE ($DEVICE) default route restored"
+		fi
+		route_state_prev=$route_state
+		for track_ip in $probe_ips; do
 			if [ $host_up_count -lt $reliability ]; then
 				case "$track_method" in
 					ping)
