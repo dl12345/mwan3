@@ -203,6 +203,8 @@ define Package/mwan3/install
 		$(1)/lib/mwan3/
 	$(INSTALL_DATA) ./files/lib/mwan3/mwan3.sh \
 		$(1)/lib/mwan3/
+	$(INSTALL_DATA) ./files/lib/mwan3/mwan3-ipv6.sh \
+		$(1)/lib/mwan3/
 	$(INSTALL_DATA) ./files/lib/mwan3/mwan3-skeleton.nft \
 		$(1)/lib/mwan3/
 	$(INSTALL_BIN) ./files/lib/mwan3/mwan3-migrate-ipset-v4.sh \
