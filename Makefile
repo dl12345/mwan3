@@ -35,7 +35,8 @@ define Package/mwan3
      +ucode-mod-uci \
      +ucode-mod-ubus \
      +ucode-mod-fs \
-     +ucode-mod-socket
+     +ucode-mod-socket \
+     +ucode-mod-log
    TITLE:=Multiwan hotplug script with connection tracking support (ucode rtmon)
    MAINTAINER:=Florian Eckert <fe@dev.tdt.de>
 endef
@@ -218,6 +219,10 @@ define Package/mwan3/install
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/ucode/
 	$(INSTALL_BIN) ./files/usr/share/rpcd/ucode/mwan3 \
 		$(1)/usr/share/rpcd/ucode/
+
+	$(INSTALL_DIR) $(1)/usr/share/ucode/mwan3
+	$(INSTALL_DATA) ./files/usr/share/ucode/mwan3/common.uc \
+		$(1)/usr/share/ucode/mwan3/
 
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) ./files/usr/sbin/mwan3 \

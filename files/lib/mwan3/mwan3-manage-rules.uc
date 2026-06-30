@@ -2,6 +2,7 @@
 'use strict';
 
 import * as rtnl from "rtnl";
+import { log_open, log_msg } from 'mwan3.common';
 
 const RTM_GETRULE = rtnl.const.RTM_GETRULE;
 const RTM_DELRULE = rtnl.const.RTM_DELRULE;
@@ -21,6 +22,8 @@ function is_default_route(route) {
 	        route.dst == "0.0.0.0/0" ||
 	        route.dst == "::/0");
 }
+
+log_open("mwan3-manage-rules");
 
 let mode = ARGV[0];
 
@@ -81,7 +84,7 @@ if (mode == "check") {
 				});
 				let err = rtnl.error();
 				if (err)
-					warn(sprintf("mwan3-manage-rules: delete iif rule failed: %s\n", err));
+					log_msg("err", sprintf("delete iif rule failed: %s", err));
 			} else if (rule.fwmark != null && rule.priority == fwmark_prio && rule.fwmask == mmx_mask) {
 				rtnl.request(RTM_DELRULE, 0, {
 					family: family,
@@ -93,7 +96,7 @@ if (mode == "check") {
 				});
 				let err = rtnl.error();
 				if (err)
-					warn(sprintf("mwan3-manage-rules: delete fwmark rule failed: %s\n", err));
+					log_msg("err", sprintf("delete fwmark rule failed: %s", err));
 			}
 		}
 	}
@@ -120,7 +123,7 @@ if (mode == "check") {
 		});
 		let err = rtnl.error();
 		if (err)
-			warn(sprintf("mwan3-manage-rules: add blackhole rule failed: %s\n", err));
+			log_msg("err", sprintf("add blackhole rule failed: %s", err));
 	}
 
 	if (!existing[ur_prio]) {
@@ -133,7 +136,7 @@ if (mode == "check") {
 		});
 		let err = rtnl.error();
 		if (err)
-			warn(sprintf("mwan3-manage-rules: add unreachable rule failed: %s\n", err));
+			log_msg("err", sprintf("add unreachable rule failed: %s", err));
 	}
 
 } else if (mode == "add-backstop") {
@@ -157,6 +160,6 @@ if (mode == "check") {
 		});
 		let err = rtnl.error();
 		if (err)
-			warn(sprintf("mwan3-manage-rules: add backstop rule failed: %s\n", err));
+			log_msg("err", sprintf("add backstop rule failed: %s", err));
 	}
 }

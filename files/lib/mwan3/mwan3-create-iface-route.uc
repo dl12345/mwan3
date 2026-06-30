@@ -4,6 +4,7 @@
 import * as rtnl from "rtnl";
 import * as uci from "uci";
 import * as ubus from "ubus";
+import { log_open, log_msg } from 'mwan3.common';
 
 const RTM_GETROUTE = rtnl.const.RTM_GETROUTE;
 const RTM_NEWROUTE = rtnl.const.RTM_NEWROUTE;
@@ -62,6 +63,8 @@ cur.foreach("mwan3", "interface", function(s) {
 });
 cur.unload("mwan3");
 
+log_open("mwan3-create-iface-route");
+
 let dev_table_map = {};
 let uconn = ubus.connect();
 if (uconn) {
@@ -117,5 +120,5 @@ for (let route in source_routes) {
 	rtnl.request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_REPLACE, r);
 	let err = rtnl.error();
 	if (err)
-		warn(sprintf("mwan3-create-iface-route: table %d: %s\n", table_id, err));
+		log_msg("err", sprintf("table %d: %s", table_id, err));
 }

@@ -6,6 +6,7 @@ import * as uloop from "uloop";
 import * as uci from "uci";
 import * as ubus from "ubus";
 import { open, readfile, popen, stat, mkdir, rename, unlink } from "fs";
+import { log_open, log_verbose, log_msg as mlog, ucibool } from 'mwan3.common';
 
 const RTM_NEWROUTE = rtnl.const.RTM_NEWROUTE;
 const RTM_DELROUTE = rtnl.const.RTM_DELROUTE;
@@ -41,7 +42,7 @@ let ubus_conn;
 
 function log_msg(level, msg) {
 
-	warn(`mwan3rtmon[${family_name}] ${level}: ${msg}\n`);
+	mlog(level, `[${family_name}] ${msg}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -52,6 +53,10 @@ function load_config() {
 
 	let cur = uci.cursor();
 	cur.load("mwan3");
+
+	// Verbose logging gate
+
+	log_verbose(ucibool(cur.get("mwan3", "globals", "verbose_logging") ?? "0"));
 
 	// MMX mask
 
@@ -719,6 +724,7 @@ function main() {
 	// Parse args
 
 	family_name = ARGV[0] ?? "ipv4";
+	log_open("mwan3rtmon");
 
 	if (family_name == "ipv6") {
 		if (stat("/proc/sys/net/ipv6") == null) {
@@ -735,6 +741,7 @@ function main() {
 	}
 
 	load_config();
+	log_msg("notice", "started");
 
 	// Connect to ubus
 
