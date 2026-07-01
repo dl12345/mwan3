@@ -75,6 +75,16 @@ function parse_elem_val(v) {
 	return null;
 }
 
+// Allowlist for nft set elements written back to the kernel: IPv4 and IPv6
+// addresses, CIDR prefixes and hyphen-written ranges only, which is exactly
+// what the apply path emits. These values are interpolated into an nft add
+// element command line built with popen, so anything carrying a character
+// outside this class is dropped before it can break out of the element list.
+
+function valid_nft_element(v) {
+	return match(v, /^[0-9A-Fa-f:.\/-]+$/) != null;
+}
+
 function count_nftset_elements(setname) {
 	if (!match(setname, /^[a-zA-Z0-9_-]+$/))
 		return 0;
@@ -216,6 +226,13 @@ function get_table_routes(table_id) {
 }
 
 function nslookup_resolve(host, type) {
+	// Reject any host outside the hostname character class before it is
+	// interpolated into the /bin/sh -c command line below. This is the single
+	// chokepoint for both resolve_host and the nftset_resolve domain path,
+	// whose UCI-supplied domain values are otherwise unvalidated.
+
+	if (!match(host, /^[a-zA-Z0-9._-]+$/))
+		return [];
 	const p = popen(sprintf('/bin/busybox nslookup -type=%s %s 127.0.0.1 2>/dev/null', type, host), 'r');
 	if (!p) return [];
 	const raw = p.read('all');
@@ -694,7 +711,7 @@ const methods = {
 			if (type(entries) != 'array') entries = [entries];
 			for (let e in entries) {
 				const ev = ltrim(rtrim(e, ' \t\r\n'), ' \t\r\n');
-				if (length(ev) > 0) push(elements, ev);
+				if (length(ev) > 0 && valid_nft_element(ev)) push(elements, ev);
 			}
 			if (cfg.loadfile) {
 				const content = readfile(cfg.loadfile);
@@ -703,7 +720,7 @@ const methods = {
 						const ci = index(line, '#');
 						if (ci >= 0) line = substr(line, 0, ci);
 						line = ltrim(rtrim(line, ' \t\r\n'), ' \t\r\n');
-						if (length(line) > 0) push(elements, line);
+						if (length(line) > 0 && valid_nft_element(line)) push(elements, line);
 					}
 				}
 			}

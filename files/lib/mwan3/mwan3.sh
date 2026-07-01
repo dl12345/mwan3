@@ -292,14 +292,35 @@ _mwan3_render_one_ipset()
 	fi
 
 	# Collect all elements (inline list + loadfile) before entering batch.
+	# Every element is validated against the nft set element grammar (IPv4 and
+	# IPv6 addresses, CIDR prefixes and hyphen ranges) so a crafted value
+	# cannot close the element braces early and inject nft statements into the
+	# batch that is later committed with nft -f. Anything carrying a character
+	# outside that class is dropped.
+
 	local elements="" line
-	_add_entry() { elements="${elements:+$elements, }$1"; }
+	_add_entry() {
+		case "$1" in
+			""|*[!0-9A-Fa-f:./-]*)
+				LOG warn "config ipset '$name': dropping invalid entry"
+				return 0
+				;;
+		esac
+		elements="${elements:+$elements, }$1"
+	}
 	config_list_foreach "$section" entry _add_entry
 	if [ -n "$loadfile" ] && [ -f "$loadfile" ]; then
 		while IFS= read -r line; do
 			line="${line%%#*}"
 			line=$(echo "$line" | xargs 2>/dev/null)
-			[ -n "$line" ] && elements="${elements:+$elements, }$line"
+			[ -n "$line" ] || continue
+			case "$line" in
+				*[!0-9A-Fa-f:./-]*)
+					LOG warn "config ipset '$name': dropping invalid loadfile element"
+					continue
+					;;
+			esac
+			elements="${elements:+$elements, }$line"
 		done < "$loadfile"
 	fi
 
