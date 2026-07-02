@@ -1,5 +1,5 @@
 # mwan3 nftables User and Developer Reference
-### mwan3 version: 3.6.9
+### mwan3 version: 3.6.10
 Covers the nftables port of the mwan3 multi-WAN policy routing framework.
 
 ---
@@ -20,40 +20,45 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.
 6. [File Reference](#6-file-reference)
    - 6.1 [mwan3-skeleton.nft](#61-libmwan3mwan3-skeletonnft-static)
    - 6.2 [common.sh](#62-libmwan3commonsh)
-   - 6.3 [mwan3.sh](#63-libmwan3mwan3sh)
-   - 6.4 [init.d/mwan3](#64-etcinitdmwan3)
-   - 6.5 [25-mwan3 - hotplug](#65-etchotplugdiface25-mwan3)
-   - 6.6 [usr/sbin/mwan3 - CLI](#66-usrsbinmwan3-cli)
-   - 6.7 [mwan3rtmon](#67-usrsbinmwan3rtmon)
-   - 6.8 [rpcd/ucode/mwan3](#68-usrsharerpcducodemwan3)
-   - 6.9 [Makefile](#69-makefile)
-   - 6.10 [mwan3track](#610-usrsbinmwan3track)
-   - 6.11 [mwan3-lb-test](#611-usrsbinmwan3-lb-test)
-   - 6.12 [mwan3-diag](#612-usrsbinmwan3-diag)
-   - 6.13 [mwan3ct](#613-usrsbinmwan3ct)
-   - 6.14 [mwan3-get-addr.uc](#614-libmwan3mwan3-get-addruc)
-   - 6.15 [mwan3-manage-rules.uc](#615-libmwan3mwan3-manage-rulesuc)
-   - 6.16 [mwan3-list-routes.uc](#616-libmwan3mwan3-list-routesuc)
-   - 6.17 [mwan3-create-iface-route.uc](#617-libmwan3mwan3-create-iface-routeuc)
-   - 6.18 [mwan3ipcheck](#618-usrbinmwan3ipcheck)
+   - 6.3 [common.uc](#63-usrshareucodemwan3commonuc)
+   - 6.4 [mwan3.sh](#64-libmwan3mwan3sh)
+   - 6.5 [init.d/mwan3](#65-etcinitdmwan3)
+   - 6.6 [25-mwan3 - hotplug](#66-etchotplugdiface25-mwan3)
+   - 6.7 [usr/sbin/mwan3 - CLI](#67-usrsbinmwan3-cli)
+   - 6.8 [mwan3rtmon](#68-usrsbinmwan3rtmon)
+   - 6.9 [rpcd/ucode/mwan3](#69-usrsharerpcducodemwan3)
+   - 6.10 [Makefile](#610-makefile)
+   - 6.11 [mwan3track](#611-usrsbinmwan3track)
+   - 6.12 [mwan3-lb-test](#612-usrsbinmwan3-lb-test)
+   - 6.13 [mwan3-diag](#613-usrsbinmwan3-diag)
+   - 6.14 [mwan3ct](#614-usrsbinmwan3ct)
+   - 6.15 [mwan3-get-addr.uc](#615-libmwan3mwan3-get-addruc)
+   - 6.16 [mwan3-manage-rules.uc](#616-libmwan3mwan3-manage-rulesuc)
+   - 6.17 [mwan3-list-routes.uc](#617-libmwan3mwan3-list-routesuc)
+   - 6.18 [mwan3-create-iface-route.uc](#618-libmwan3mwan3-create-iface-routeuc)
+   - 6.19 [mwan3ipcheck](#619-usrbinmwan3ipcheck)
 7. [Function Reference](#7-function-reference)
    - 7.1 [common.sh Functions](#71-commonsh-functions)
-   - 7.2 [Set Management Functions](#72-set-management-functions)
-   - 7.3 [General Rule Setup](#73-general-rule-setup)
-   - 7.4 [Interface Management](#74-interface-management)
-   - 7.5 [Policy & Load Balancing](#75-policy--load-balancing)
-   - 7.6 [Sticky Routing](#76-sticky-routing)
-   - 7.7 [User Rules](#77-user-rules)
-   - 7.8 [User-defined nft Set Management](#78-user-defined-nft-set-management)
-   - 7.9 [Status Reporting](#79-status-reporting)
-   - 7.10 [Lifecycle & Hotplug](#710-lifecycle--hotplug)
+   - 7.2 [common.uc Functions](#72-commonuc-functions)
+   - 7.3 [mwan3.sh Functions](#73-mwan3sh-functions)
+      - 7.3.1 [Set Management Functions](#731-set-management-functions)
+      - 7.3.2 [General Rule Setup](#732-general-rule-setup)
+      - 7.3.3 [Interface Management](#733-interface-management)
+      - 7.3.4 [Policy & Load Balancing](#734-policy--load-balancing)
+      - 7.3.5 [Sticky Routing](#735-sticky-routing)
+      - 7.3.6 [User Rules](#736-user-rules)
+      - 7.3.7 [User-defined nft Set Management](#737-user-defined-nft-set-management)
+      - 7.3.8 [Status Reporting](#738-status-reporting)
+      - 7.3.9 [Lifecycle & Hotplug](#739-lifecycle--hotplug)
+   - 7.4 [mwan3rtmon Functions](#74-mwan3rtmon-functions)
+   - 7.5 [mwan3track Functions](#75-mwan3track-functions)
 8. [Load Balancing with numgen](#8-load-balancing-with-numgen)
 9. [Sticky Routing Detail](#9-sticky-routing-detail)
 10. [Service Lifecycle and Conntrack Management](#10-service-lifecycle-and-conntrack-management)
     - 10.1 [Start](#101-start)
     - 10.2 [Reload](#102-reload)
-    - 10.3 [Interface Up (hotplug)](#103-interface-up-hotplug)
-    - 10.4 [Interface Down (hotplug)](#104-interface-down-hotplug)
+    - 10.3 [Interface Up and Tracker Recovery (hotplug)](#103-interface-up-and-tracker-recovery-hotplug)
+    - 10.4 [Interface Down and Soft Failure (hotplug)](#104-interface-down-and-soft-failure-hotplug)
     - 10.5 [Stop](#105-stop)
     - 10.6 [Conntrack Management](#106-conntrack-management)
 11. [Atomic Non-destructive Reload](#11-atomic-non-destructive-reload)
@@ -85,36 +90,37 @@ Covers the nftables port of the mwan3 multi-WAN policy routing framework.
     - 17.1 [mwan3-lb-test: Load Balancing Distribution Verifier](#171-mwan3-lb-test-load-balancing-distribution-verifier)
     - 17.2 [mwan3-diag: Network Diagnostic Report](#172-mwan3-diag-network-diagnostic-report)
 18. [Changelog](#18-changelog)
-    - 18.1 [Version 3.6.9](#181-version-369)
-    - 18.2 [Version 3.6.8](#182-version-368)
-    - 18.3 [Version 3.6.7](#183-version-367)
-    - 18.4 [Version 3.6.6](#184-version-366)
-    - 18.5 [Version 3.6.5](#185-version-365)
-    - 18.6 [Version 3.6.4](#186-version-364)
-    - 18.7 [Version 3.6.3](#187-version-363)
-    - 18.8 [Version 3.6.2](#188-version-362)
-    - 18.9 [Version 3.6.1](#189-version-361)
-    - 18.10 [Version 3.6](#1810-version-36)
-    - 18.11 [Version 3.5.3](#1811-version-353)
-    - 18.12 [Version 3.5.2](#1812-version-352)
-    - 18.13 [Version 3.5.1](#1813-version-351)
-    - 18.14 [Version 3.5](#1814-version-35)
-    - 18.15 [Version 3.4.1 (Unreleased)](#1815-version-341-unreleased)
-    - 18.16 [Version 3.4](#1816-version-34)
-    - 18.17 [Version 3.3.5](#1817-version-335)
-    - 18.18 [Version 3.3.4](#1818-version-334)
-    - 18.19 [Version 3.3.3](#1819-version-333)
-    - 18.20 [Version 3.3.2](#1820-version-332)
-    - 18.21 [Version 3.3.1](#1821-version-331)
-    - 18.22 [Version 3.3](#1822-version-33)
-    - 18.23 [Version 3.2.3](#1823-version-323)
-    - 18.24 [Version 3.2.2](#1824-version-322)
-    - 18.25 [Version 3.2.1](#1825-version-321)
-    - 18.26 [Version 3.2](#1826-version-32)
-    - 18.27 [Version 3.1.4](#1827-version-314)
-    - 18.28 [Version 3.1.3](#1828-version-313)
-    - 18.29 [Version 3.1.2](#1829-version-312)
-    - 18.30 [Version 3.1.1](#1830-version-311)
+    - 18.1 [Version 3.6.10](#181-version-3610)
+    - 18.2 [Version 3.6.9](#182-version-369)
+    - 18.3 [Version 3.6.8](#183-version-368)
+    - 18.4 [Version 3.6.7](#184-version-367)
+    - 18.5 [Version 3.6.6](#185-version-366)
+    - 18.6 [Version 3.6.5](#186-version-365)
+    - 18.7 [Version 3.6.4](#187-version-364)
+    - 18.8 [Version 3.6.3](#188-version-363)
+    - 18.9 [Version 3.6.2](#189-version-362)
+    - 18.10 [Version 3.6.1](#1810-version-361)
+    - 18.11 [Version 3.6](#1811-version-36)
+    - 18.12 [Version 3.5.3](#1812-version-353)
+    - 18.13 [Version 3.5.2](#1813-version-352)
+    - 18.14 [Version 3.5.1](#1814-version-351)
+    - 18.15 [Version 3.5](#1815-version-35)
+    - 18.16 [Version 3.4.1 (Unreleased)](#1816-version-341-unreleased)
+    - 18.17 [Version 3.4](#1817-version-34)
+    - 18.18 [Version 3.3.5](#1818-version-335)
+    - 18.19 [Version 3.3.4](#1819-version-334)
+    - 18.20 [Version 3.3.3](#1820-version-333)
+    - 18.21 [Version 3.3.2](#1821-version-332)
+    - 18.22 [Version 3.3.1](#1822-version-331)
+    - 18.23 [Version 3.3](#1823-version-33)
+    - 18.24 [Version 3.2.3](#1824-version-323)
+    - 18.25 [Version 3.2.2](#1825-version-322)
+    - 18.26 [Version 3.2.1](#1826-version-321)
+    - 18.27 [Version 3.2](#1827-version-32)
+    - 18.28 [Version 3.1.4](#1828-version-314)
+    - 18.29 [Version 3.1.3](#1829-version-313)
+    - 18.30 [Version 3.1.2](#1830-version-312)
+    - 18.31 [Version 3.1.1](#1831-version-311)
 19. [Specific use-cases](#19-specific-use-cases)
     - 19.1 [Tailscale](#191-tailscale)
 
@@ -464,7 +470,9 @@ The `MWAN3_ROUTE_LINE_EXP` sed expression strips transient attributes (`linkdown
 
 ### 5.2 Three ip Rule Tiers Per Interface
 
-`mwan3_create_iface_rules()` installs three `ip rule` entries for each mwan3 interface. For IPv4 interfaces these are installed via `ip rule`; for IPv6 via `ip -6 rule`. All three tiers are installed together when the interface comes up (`ifup` hotplug event) and removed together when it goes down (`ifdown`).
+`mwan3_create_iface_rules()` installs the Tier 1 and Tier 2 `ip rule` entries for each mwan3 interface. For IPv4 interfaces these are installed via `ip rule`; for IPv6 via `ip -6 rule`. Tiers 1 and 2 are installed when the interface comes up (`ifup` or `connected` hotplug event) and removed when it goes down (`ifdown`).
+
+Tier 3 (the per-WAN unreachable backstop) has a separate lifecycle managed by `mwan3_set_member_backstops()`. One Tier 3 rule is installed for every configured interface at service start and on every reload, and removed only when the service stops. The Tier 3 rule is therefore present for all configured WANs, including those that are currently offline or disabled, for as long as the service is running.
 
 **Tier 1 - iif lookup** (priority `id + iif_rule_base`, default `id + 1000`):
 
@@ -535,9 +543,11 @@ fwmark_rule_base + MWAN3_INTERFACE_MAX + 1 < unreachable_rule_base
 
 The `+ 1` in the second constraint accounts for the global blackhole and unreachable entries at the top of the fwmark tier (`MM_BLACKHOLE + fwmark_rule_base` and `MM_UNREACHABLE + fwmark_rule_base`). If either constraint is violated, `mwan3_init` logs a warning and reverts all three to 1000/2000/3000.
 
-`mwan3_delete_face_rules()` uses content-based matching to find and delete rules: it scans `ip rule list` for entries referencing `lookup <id>` to identify iif rules, and derives the fwmark value from the fwmark lookup rule before deleting the matching unreachable rule. This approach remains correct if the bases or `MMX_MASK` are changed between service restarts.
+`mwan3_delete_iface_rules()` removes the Tier 1 and Tier 2 rules by delegating to `mwan3-manage-rules.uc delete-iface`, which locates each rule by its priority offset and table ID and removes it via RTM_DELRULE. This approach remains correct if the bases or `MMX_MASK` are changed between service restarts. The Tier 3 unreachable backstop is not deleted here; it persists until service stop.
 
 ### 5.6 Example: Live ip rule Output
+
+Three WANs are configured on this router: `eth1` (id 1) and `eth2` (id 2) are online, while a third interface (id 3) is configured but currently offline.
 
 ```
 0:      from all lookup local
@@ -549,9 +559,12 @@ The `+ 1` in the second constraint accounts for the global blackhole and unreach
 2062:   from all fwmark 0x3e00/0x3f00 unreachable
 3001:   from all fwmark 0x100/0x3f00 unreachable
 3002:   from all fwmark 0x200/0x3f00 unreachable
+3003:   from all fwmark 0x300/0x3f00 unreachable
 32766:  from all lookup main
 32767:  from all lookup default
 ```
+
+Interface id 3 shows the effect of the permanent Tier 3 backstops. It is offline, so it has no Tier 1 (`iif`) rule and no Tier 2 (`fwmark 0x300/0x3f00 lookup 3`) rule; those are installed only while the interface is up, so there is no `1003` or `2003` entry. Its Tier 3 rule at priority `3003` is still present, because the backstops are installed for every configured WAN at service start and removed only at service stop. Traffic still marked `0x300` for the offline WAN therefore matches `3003` and is rejected as unreachable instead of falling through to the `main` table at priority 32766 and leaking out the default route. The backstop matches on the fwmark rather than on a device, which is why it can remain in place while the interface has no device bound.
 
 The corresponding per-interface routing table (`ip route show table 1`) contains the WAN gateway and a copy of connected routes:
 
@@ -614,13 +627,22 @@ Shared helper library sourced by all mwan3 shell scripts. Provides:
 > [!NOTE]
 > **Shell scoping note:** Functions like `mwan3_id2mask` and `mwan3_count_one_bits` receive *variable names* as arguments (e.g., `mwan3_id2mask mmdefault MMX_MASK`) and use arithmetic expansion `$(($1))` to resolve them. This works in busybox ash (OpenWrt's default shell) because it uses dynamic scoping - local variables from the caller are visible in called functions.
 
-### 6.3 `lib/mwan3/mwan3.sh`
+### 6.3 `usr/share/ucode/mwan3/common.uc`
+
+Shared ucode library imported by the mwan3 ucode components, the ucode analogue of `common.sh`. Each shared ucode routine lives here so it is defined and tested in one place. Provides:
+
+- **Logging** (`log_open()`, `log_verbose()`, `log_msg()`): all mwan3 ucode logging goes through these so the sink, tag format, and verbose gate live in one place. Output goes to syslog via the `log` module, the same destination `logger(1)` reaches, so messages appear in `logread` regardless of how procd handles the process stderr. `log_open(ident)` opens the syslog connection with `LOG_PID` so the tag reads `ident[pid]`, matching the shell's `${SCRIPTNAME}[$$]` convention, under facility `daemon`. `log_verbose(enable)` sets the verbose gate; the caller reads `mwan3.globals.verbose_logging` and pushes the parsed bool. `log_msg(level, msg)` emits one message, dropping `debug` unless verbose exactly as `common.sh:LOG()` gates the debug facility, mapping mwan3's `warn`/`error` vocabulary and the syslog level names onto the tokens the `log` module accepts and passing the message as a `%s` argument so it is never treated as a format string.
+- **`ucibool(val)`**: parses a UCI bool the way the shell's `config_get_bool` does (`1`/`on`/`true`/`yes`/`enabled` are true, everything else false), so every ucode consumer interprets a UCI bool identically to the shell. It reads no config itself, so it does not couple the module to uci.
+
+The module's public interface is declared as an export list (`export { log_open, log_verbose, log_msg, ucibool }`) rather than inline on each function, which this ucode build does not accept.
+
+### 6.4 `lib/mwan3/mwan3.sh`
 
 The core engine. Contains all functions for managing nftables chains/sets/maps, ip rules, ip routes, policy creation, user rule classification, and status reporting. This is the largest file and the heart of the implementation. Sourced by init.d, hotplug, CLI, and rtmon scripts.
 
 See [Section 7](#7-function-reference) for detailed function reference.
 
-### 6.4 `etc/init.d/mwan3`
+### 6.5 `etc/init.d/mwan3`
 
 procd service script. Handles:
 
@@ -644,6 +666,7 @@ mwan3_set_dynamic_sets()                     # populate dynamic sets
 mwan3_set_connected_sets()                   # populate connected sets
 mwan3_set_custom_sets()                      # populate custom sets
 mwan3_set_general_rules()                    # ip rule add (blackhole/unreachable)
+mwan3_set_member_backstops()                 # ip rule add (per-WAN unreachable backstops)
 config_foreach mwan3_ifup interface "init"   # trigger ifup hotplug per interface
 wait $hotplug_pids
 mwan3_set_general_nft()                      # populate hook chain rules
@@ -655,7 +678,7 @@ mwan3_dnsmasq_hup()                          # HUP dnsmasq to re-populate nftset
 start rtmon_ipv4 + rtmon_ipv6                # route monitor daemons
 ```
 
-### 6.5 `etc/hotplug.d/iface/25-mwan3`
+### 6.6 `etc/hotplug.d/iface/25-mwan3`
 
 Handles interface state change events from netifd. Triggered on `ifup`, `ifdown`, `connected`, and `disconnected` actions.
 
@@ -675,17 +698,17 @@ There is no `fw4 reload` detection. `table inet mwan3` is unaffected by fw4 relo
 
 | Action | Operations |
 |---|---|
-| `ifup` | Update peer track IP (if `track_gateway` enabled), create interface nft chain, create ip rules, set hotplug state, create routes, set general rules (if not init), rebuild policies (if online and not init). Signal tracker with USR2. |
-| `ifdown` | Set offline state, delete map entries, delete ip rules, delete routes, delete interface nft chain. Signal tracker with USR1. Rebuild policies. |
-| `connected` | Set online state, create interface nft chain, rebuild policies. |
-| `disconnected` | Set offline state, rebuild policies. |
+| `ifup` | Update peer track IP (if `track_gateway` enabled), create interface nft chain, create ip rules, create routes, set hotplug state. If not init: set general rules. If online and not init: rebuild policies (nft batch), flush worse-metric sticky sets, flush unreplied conntrack. Signal tracker with USR2. |
+| `ifdown` | Set offline state. Rebuild policies + flush sticky sets (one nft batch). Delete ip rules, delete routes, delete interface nft chain. Signal tracker with USR1. Flush conntrack. |
+| `connected` | Set online state. Create interface nft chain, create ip rules (no-op if already present), create routes (no-op if already present). Rebuild policies (nft batch). Flush worse-metric sticky sets. Flush unreplied conntrack. |
+| `disconnected` | Set offline state. Rebuild policies + flush sticky sets (one nft batch). Flush conntrack. |
 
 All actions call `mwan3_flush_conntrack` at end.
 
 > [!NOTE]
 > **ifup conditional policy rebuild:** During init (`MWAN3_STARTUP=init`), the ifup action skips general rules and policy rebuild because the init sequence handles those after all interfaces are up. Route creation runs unconditionally on every ifup, including during init. During normal operation, policies are only rebuilt if the interface state is "online" (not for interfaces with `initial_state=offline`).
 
-### 6.6 `usr/sbin/mwan3` (CLI)
+### 6.7 `usr/sbin/mwan3` (CLI)
 
 User-facing command-line tool. Provides `start`/`stop`/`restart`/`ifup`/`ifdown` commands plus status reporting: `interfaces`, `policies`, `connected`, `rules`, `status` (all combined), and `internal` (detailed dump).
 
@@ -693,7 +716,7 @@ The `use` command runs an arbitrary command bound to a specific interface using 
 
 The `internal` command shows `nft list table inet mwan3` output instead of the old iptables dump.
 
-### 6.7 `usr/sbin/mwan3rtmon`
+### 6.8 `usr/sbin/mwan3rtmon`
 
 Route monitor daemon, reimplemented in **ucode**. Runs one instance per address family (ipv4/ipv6) as a procd service. Uses `ucode-mod-rtnl` for direct netlink access and `ucode-mod-uloop` for the event loop, eliminating all `ip` command fork+exec overhead from the original shell implementation.
 
@@ -710,7 +733,7 @@ On startup, it performs an initial synchronization: dumps the current routing ta
 - **New route**: Adds CIDR networks to the connected set via `nft add element`, then replicates the route into active per-interface tables. Host routes (bare IPs without prefix length) are skipped as they are remote destinations. Schedules via the debouncer.
 - **Deleted route**: Schedules a debounced connected set rebuild, then removes the route from per-interface tables.
 
-### 6.8 `usr/share/rpcd/ucode/mwan3`
+### 6.9 `usr/share/rpcd/ucode/mwan3`
 
 ucode RPC service exposing ubus methods under the `mwan3` object. Used by LuCI for the web interface.
 
@@ -729,7 +752,7 @@ Uses `nft -j` (JSON output mode) for reliable parsing. All set/chain queries are
 - **`mwan3.nftset_resolve { set: "<name>" }`**: Sends SIGHUP to dnsmasq to clear its cache, then queries each domain configured under the set's `list domain` option via the local dnsmasq instance (127.0.0.1). The DNS queries trigger dnsmasq's `nftset=` population mechanism as a side effect. Returns `{ resolved: N }` where N is the count of domains that resolved successfully. Only applicable for sets with `list domain` entries. Used by the Resolve button on the IP Sets status tab.
 - **`mwan3.routing_health {}`**: Compares UCI configuration against live kernel state. Reads `iif_rule_base`, `fwmark_rule_base`, and `unreachable_rule_base` from UCI globals (with the same defaults and ordering constraint validation as `mwan3_init`) and derives `iface_max` dynamically from `mmx_mask`. Per interface, checks presence of the iif rule, fwmark lookup rule, and unreachable rule, and reports routing table default route presence. Reports stale ip rules across all three priority tiers. Returns a `rule_bases` object so the frontend can display configured priorities dynamically rather than assuming fixed offsets.
 
-### 6.9 `Makefile`
+### 6.10 `Makefile`
 
 Package build recipe. Key dependency changes:
 
@@ -745,17 +768,19 @@ Package build recipe. Key dependency changes:
 | | `+ucode-mod-ubus` |
 | | `+ucode-mod-fs` |
 | | `+ucode-mod-socket` |
+| | `+ucode-mod-log` |
 | | `+libnetfilter-conntrack` |
 
 `PKG_BUILD_DEPENDS` adds `libnetfilter_conntrack` and `libmnl` for the headers and libraries needed to compile `mwan3ct.c`. The runtime `+libnetfilter-conntrack` dependency provides the shared library that `mwan3ct` links against on the target.
 
 `mwan3ipcheck.c` is also compiled in the same build step. It links only against libc (`inet_pton`, `strtol`, standard string functions) and requires no additional build or runtime dependencies.
 
-The ucode dependencies are required by the reimplemented `mwan3rtmon` route monitor daemon. `ucode-mod-socket` is required by `mwan3-diag` for address normalisation.
+The ucode dependencies are required by the reimplemented `mwan3rtmon` route monitor daemon. `ucode-mod-socket` is required by `mwan3-diag` for address normalisation. `ucode-mod-log` provides the syslog binding used by the shared logging functions in `common.uc` (Section 6.3).
 
 Also installs:
 
 - `mwan3-skeleton.nft` to `$(1)/lib/mwan3/`
+- `common.uc` to `$(1)/usr/share/ucode/mwan3/` (shared ucode library, see Section 6.3)
 - `mwan3-migrate-ipset-v4.sh` to `$(1)/lib/mwan3/` (one-shot migration helper, deleted from the router after postinst runs it)
 - `mwan3-remove-firewall-include` UCI defaults to `$(1)/etc/uci-defaults/` (removes legacy `firewall.mwan3_reload` UCI section from v3.x)
 - `mwan3-lb-test` to `$(1)/usr/sbin/`
@@ -772,7 +797,7 @@ The `postinst` script:
 5. Stops mwan3 a second time (by this point procd's auto-start has completed, so this stop removes auto-start's ip rules)
 6. Starts mwan3 cleanly
 
-### 6.10 `usr/sbin/mwan3track`
+### 6.11 `usr/sbin/mwan3track`
 
 Interface health probe daemon. One procd service instance is launched per enabled mwan3 interface that has tracking IPs configured. Runs as a shell script; largely unchanged from the iptables version except for the addition of `track_gateway` and `check_quality` support.
 
@@ -814,7 +839,7 @@ When `check_quality=1`, probes capture latency (ms) and packet loss (%) per IP. 
 
 procd sends `SIGUSR1` (ifdown event) and `SIGUSR2` (ifup event) to trigger immediate state transitions without waiting for the next probe interval.
 
-### 6.11 `usr/sbin/mwan3-lb-test`
+### 6.12 `usr/sbin/mwan3-lb-test`
 
 Load balancing distribution verifier.
 
@@ -839,7 +864,7 @@ See [§17.1](#171-mwan3-lb-test-load-balancing-distribution-verifier) for contex
 
 ---
 
-### 6.12 `usr/sbin/mwan3-diag`
+### 6.13 `usr/sbin/mwan3-diag`
 
 Network diagnostic report generator.
 
@@ -857,7 +882,7 @@ See [§17.2](#172-mwan3-diag-network-diagnostic-report) for context.
 
 ---
 
-### 6.13 `usr/sbin/mwan3ct`
+### 6.14 `usr/sbin/mwan3ct`
 
 Targeted conntrack entry flush helper.
 
@@ -885,7 +910,7 @@ Exit code 0 on success, including when no entries were matched. Errors are print
 
 ---
 
-### 6.14 `lib/mwan3/mwan3-get-addr.uc`
+### 6.15 `lib/mwan3/mwan3-get-addr.uc`
 
 Address lookup helper.
 
@@ -898,7 +923,7 @@ Prints the address stripped of any prefix-length to stdout and exits 0, or exits
 
 ---
 
-### 6.15 `lib/mwan3/mwan3-manage-rules.uc`
+### 6.16 `lib/mwan3/mwan3-manage-rules.uc`
 
 Routing policy rule manager.
 
@@ -906,14 +931,14 @@ Manages ip rules (policy routing entries) via netlink (RTM_GETRULE, RTM_NEWRULE,
 
 - **`check <family> <prio1> [prio2...]`**: returns a decimal bitmask where bit N is set if the Nth listed priority is absent from the live rule table. Used by mwan3.sh to decide which rules need to be created.
 - **`check-route <family> <table_id> <device>`**: exits 0 if a default route for the given output device exists in the specified table, 1 otherwise. Used before populating per-interface tables to detect whether the route is already present.
-- **`delete-iface <id> <iif_base> <fwmark_base> <unreachable_base> <mmx_mask>`**: removes the iif lookup, fwmark lookup, and unreachable rules for a single interface (identified by its sequential index). Each rule is located by priority and verified by type before deletion; rules not present are silently skipped.
+- **`delete-iface <id> <iif_base> <fwmark_base> <mmx_mask>`**: removes the iif lookup and fwmark lookup rules for a single interface (identified by its sequential index). Each rule is located by priority and verified by type before deletion; rules not present are silently skipped. The unreachable backstop rule is not removed here; it is managed by `mwan3_set_member_backstops()` and persists until service stop.
 - **`add-general <family> <bh_prio> <bh_mark> <ur_prio> <ur_mark> <mask>`**: adds the shared blackhole and unreachable rules common to all interfaces. Rules already present at those priorities are not re-added.
 
 Replaces `ip rule add/del` shell invocations that required fork-exec per operation and text parsing for presence checks.
 
 ---
 
-### 6.16 `lib/mwan3/mwan3-list-routes.uc`
+### 6.17 `lib/mwan3/mwan3-list-routes.uc`
 
 Route table lister.
 
@@ -923,7 +948,7 @@ Used by mwan3.sh to enumerate routes that need to be copied into per-interface r
 
 ---
 
-### 6.17 `lib/mwan3/mwan3-create-iface-route.uc`
+### 6.18 `lib/mwan3/mwan3-create-iface-route.uc`
 
 Per-interface routing table populator.
 
@@ -931,7 +956,7 @@ Copies routes from the main routing table (and any additional tables listed in t
 
 Replaces `ip route add table <id>` shell invocations that required fork-exec and text parsing of `ip route show` output.
 
-### 6.18 `usr/bin/mwan3ipcheck`
+### 6.19 `usr/bin/mwan3ipcheck`
 
 IP address and CIDR validation binary. Accepts a single argument and prints one of four classification strings to stdout, exiting 0 on success or 1 on failure.
 
@@ -983,7 +1008,20 @@ The binary has no dependencies beyond libc (`inet_pton`, `strtol`, and standard 
 | `get_uptime [out_var]` | Returns system uptime in seconds (integer). |
 | `get_online_time out_var iface` | Returns how long the interface has been online. |
 
-### 7.2 Set Management Functions
+### 7.2 common.uc Functions
+
+Functions in the shared ucode library `usr/share/ucode/mwan3/common.uc` (see [Section 6.3](#63-usrshareucodemwan3commonuc)), imported by the mwan3 ucode components.
+
+| Function | Purpose |
+|---|---|
+| `log_open(ident)` | Opens the syslog connection for the calling component with `LOG_PID` and facility `daemon`, so the tag reads `ident[pid]`, matching the shell components' `${SCRIPTNAME}[$$]` convention. |
+| `log_verbose(enable)` | Sets the module-wide verbose gate. The caller reads `mwan3.globals.verbose_logging` (via `ucibool`) and pushes the parsed bool; `debug` messages are suppressed unless it is true, mirroring `common.sh:LOG()`. |
+| `log_msg(level, msg)` | Emits one syslog message. `debug` is dropped unless verbose; every other level always logs. Maps mwan3's `warn`/`error` vocabulary and the syslog level names onto the tokens the `log` module accepts (an unknown level falls back to `notice`), and passes `msg` as a `%s` argument so it is never treated as a format string. |
+| `ucibool(val)` | Parses a UCI bool the way the shell's `config_get_bool` does: `1`/`on`/`true`/`yes`/`enabled` are true, everything else false. Reads no config itself, so it does not couple the module to uci. |
+
+### 7.3 mwan3.sh Functions
+
+#### 7.3.1 Set Management Functions
 
 | Function | Purpose |
 |---|---|
@@ -998,14 +1036,15 @@ The binary has no dependencies beyond libc (`inet_pton`, `strtol`, and standard 
 > [!NOTE]
 > **Why are connected functions self-contained?** `mwan3_set_connected_ipv4/ipv6` each manage their own batch because they may be called from contexts that are not already inside a larger batch (init.d, hotplug). `mwan3rtmon` does not call these shell functions; it has its own independent `populate_connected_set()` that operates via direct netlink calls and writes to the same sets using its own `nft_batch`.
 
-### 7.3 General Rule Setup
+#### 7.3.2 General Rule Setup
 
 | Function | Purpose |
 |---|---|
 | `mwan3_set_general_rules` | Adds `ip rule` entries for blackhole and unreachable marks (both IPv4 and IPv6) at priorities `MWAN3_FWMARK_RULE_BASE + MM_BLACKHOLE` and `MWAN3_FWMARK_RULE_BASE + MM_UNREACHABLE`. These are ip policy rules, not nftables rules. |
+| `mwan3_set_member_backstops` | Installs one static unreachable `ip rule` per configured interface in the `MWAN3_UNREACHABLE_RULE_BASE + id` priority band. These rules are created at service start and reload and removed only at stop, so traffic carrying a member's mark is rejected rather than leaking to the main routing table when that member's fwmark rule is absent (interface down, disabled, or briefly mid-rebuild). Reserved last-resort marks are never enumerated here so `last_resort` behaviour is unaffected. |
 | `mwan3_set_general_nft` | Builds the per-mark OR setter chains via `mwan3_build_or_chains_nft()`, then populates all hook chain rules: IPv6 RA bypass (prerouting), vmap-dispatched connmark restore (if mark unset), jump to `mwan3_ifaces_in`, `fib daddr type local return` (prerouting, after ifaces_in), jumps to custom/connected/dynamic/rules chains, connmark save, and post-rules connected re-check. Idempotent: checks if rules already exist before adding. Uses a single batch for all operations. |
 
-#### Rules added by `mwan3_set_general_nft()`
+##### Rules added by `mwan3_set_general_nft()`
 
 For each of connected/custom/dynamic chains, adds mark-setting rules that match against the corresponding sets and apply `MMX_DEFAULT`.
 
@@ -1022,7 +1061,7 @@ For the prerouting and output hook chains, adds (in order):
 
 See [§2 Connmark Operations](#connmark-operations) for the rationale and the kernel-limitation context.
 
-### 7.4 Interface Management
+#### 7.3.3 Interface Management
 
 | Function | Purpose |
 |---|---|
@@ -1031,13 +1070,13 @@ See [§2 Connmark Operations](#connmark-operations) for the rationale and the ke
 | `mwan3_create_iface_nft iface device` | Creates (or flushes) `mwan3_iface_in_<iface>` chain. Adds rules matching on `iifname` and address family: source in connected/custom/dynamic → MMX_DEFAULT; otherwise → interface mark. Adds jump from `mwan3_ifaces_in` if not already present. Also installs a per-interface `mwan3_postrouting` SNAT rule for IPv6 interfaces when the `snat6` UCI option is set. Stale `mwan3_snat_<iface>`-tagged rules from a prior incarnation are removed first. See [§4](#router-originated-traffic-and-source-address-rewriting). |
 | `mwan3_rebuild_iface_nft iface` | Rebuilds a single interface's nft chain if the interface is enabled, the correct family is available, and the interface is currently up (verified via ubus). Used during `reload_service` to rebuild all interface chains within the atomic batch. Calls `mwan3_create_iface_nft()` after resolving the L3 device from netifd. |
 | `mwan3_delete_iface_nft iface` | Removes the jump rule from `mwan3_ifaces_in` (by handle lookup), removes any `mwan3_snat_<iface>`-tagged rules from `mwan3_postrouting` (comment-tag match), then flushes and deletes the interface chain. |
-| `mwan3_delete_iface_map_entries iface` | Iterates all `mwan3_sticky_v[46]_*` sets in the `inet` family, finds sets whose name ends with `_<id>` (this interface's id), and flushes them. Sets are flushed rather than deleted because rule chains may still reference the set name. |
-| `mwan3_create_iface_rules iface device` | Adds `ip rule` entries: pref `id+MWAN3_IIF_RULE_BASE` (iif lookup), pref `id+MWAN3_FWMARK_RULE_BASE` (fwmark lookup), pref `id+MWAN3_UNREACHABLE_RULE_BASE` (fwmark unreachable). |
-| `mwan3_delete_iface_rules iface` | Removes ip rules for this interface (both IPv4 and IPv6) by delegating to `mwan3-manage-rules.uc delete-iface`. The ucode script locates the iif lookup rule, fwmark lookup rule, and unreachable rule by priority offset and table ID, and deletes each via RTM_DELRULE. Handles rule-base changes and `mmx_mask` changes transparently. |
+| `mwan3_delete_iface_map_entries iface` | Iterates all `mwan3_sticky_v[46]_*` sets in the `inet` family, finds sets whose name ends with `_<id>` (this interface's id), and pushes a flush for each into the caller's open nft batch, so the flushes commit in the same transaction as the policy rebuild. The set enumeration reads committed kernel state and so stays outside the batch. Sets are flushed rather than deleted because rule chains may still reference the set name. Must be called within an open nft batch. |
+| `mwan3_create_iface_rules iface device` | Adds `ip rule` entries: pref `id+MWAN3_IIF_RULE_BASE` (iif lookup) and pref `id+MWAN3_FWMARK_RULE_BASE` (fwmark lookup). The per-WAN unreachable backstop at `id+MWAN3_UNREACHABLE_RULE_BASE` is managed separately by `mwan3_set_member_backstops()` and is not installed here. |
+| `mwan3_delete_iface_rules iface` | Removes the iif lookup and fwmark lookup ip rules for this interface (both IPv4 and IPv6) by delegating to `mwan3-manage-rules.uc delete-iface`. The ucode script locates each rule by priority offset and table ID and deletes it via RTM_DELRULE. Handles rule-base changes and `mmx_mask` changes transparently. The unreachable backstop at `id+MWAN3_UNREACHABLE_RULE_BASE` is not deleted here; it persists until service stop. |
 | `mwan3_create_iface_route iface` | Copies routes from the main routing table (and any `rt_table_lookup` extra tables) into the per-interface routing table by invoking `mwan3-create-iface-route.uc`. The ucode script reads source routes via rtnl, skips routes already present in the target table, and writes each qualifying route with RTM_NEWROUTE. Passes the `source_routing` UCI flag to control whether source addresses are copied. |
 | `mwan3_delete_iface_route iface` | Flushes the per-interface routing table. *Unchanged.* |
 
-#### Handle-Based Rule Deletion
+##### Handle-Based Rule Deletion
 
 nftables doesn't support deleting rules by match criteria (like iptables `-D chain match...`). Instead, `mwan3_delete_iface_nft()` uses:
 
@@ -1049,21 +1088,22 @@ $NFT delete rule inet mwan3 mwan3_ifaces_in handle "$handle"
 
 The `-a` flag shows rule handles in comments, which can then be used for targeted deletion.
 
-### 7.5 Policy & Load Balancing
+#### 7.3.4 Policy & Load Balancing
 
 | Function | Purpose |
 |---|---|
-| `mwan3_set_policy member_config` | Callback per policy member. Tracks lowest metric and accumulates online members as `iface:id:weight` tuples into `$policy_members`. Tracks offline devices into `$policy_offline_devices`. Uses caller's variables (dynamic scoping). |
-| `mwan3_create_policies_nft policy` | Creates/flushes the `mwan3_policy_<name>` chain. Iterates members via `mwan3_set_policy`, then builds the chain: single member gets a direct mark-set rule; multiple members get a `numgen` rule; offline devices get out-device fallback rules; last-resort rule (unreachable/blackhole/default) is appended. |
+| `mwan3_set_policy member_config` | Callback per policy member. Tracks lowest metric per address family and accumulates online members as `iface:id:weight` tuples into `$policy_members_v4` and `$policy_members_v6`. Uses caller's variables (dynamic scoping). |
+| `mwan3_create_policies_nft policy` | Creates/flushes the `mwan3_policy_<name>` chain. Iterates members via `mwan3_set_policy`, then builds the chain: single online member gets a direct mark-set rule; multiple online members get a `numgen` rule; last-resort rule (unreachable/blackhole/default) is appended. |
 | `mwan3_set_policies_nft` | Before creating policy chains, enumerates all existing `mwan3_policy_*` chains in `inet mwan3` and deletes any whose name is not in the current UCI policy config (orphaned chain sweep). Then iterates all policy configs and calls `mwan3_create_policies_nft` for each. |
 
-### 7.6 Sticky Routing
+#### 7.3.5 Sticky Routing
 
 | Function | Purpose |
 |---|---|
 | `mwan3_get_policy_members_for_family policy family` | Iterates the members of a policy config via `config_list_foreach`. For each member whose interface matches the requested family, resolves the interface id and computes its mark, and accumulates `<id>:<mark>` tuples into `$_policy_member_marks`. Used by the sticky path in `mwan3_set_user_nft_rule()` to enumerate per-member sets. |
+| `mwan3_flush_worse_metric_sticky iface` | On recovery of a higher-priority interface, flushes the per-rule sticky sets of lower-metric same-family members of each policy the recovered interface participates in, scoped to the rules that use that policy. Set names embed the rule name and member id, so a member that appears in a separate load-balancing policy with equal-ranked peers keeps those pins untouched. Called after the policy rebuild on the `connected` and `ifup` (online) hotplug arms. |
 
-### 7.7 User Rules
+#### 7.3.6 User Rules
 
 | Function | Purpose |
 |---|---|
@@ -1071,7 +1111,7 @@ The `-a` flag shows rule handles in comments, which can then be used for targete
 | `mwan3_set_user_rules` | Flushes `mwan3_rules` chain, then iterates all rule configs for both ipv4 and ipv6, calling `mwan3_set_user_nft_rule` for each. Uses a single batch. |
 | `mwan3_set_user_iface_rules iface device` | Called on ifup to check if the rules chain needs rebuilding (if this interface is a `src_iface` in any rule). |
 
-#### UCI-to-nft Match Translation
+##### UCI-to-nft Match Translation
 
 | UCI Option | nft Expression |
 |---|---|
@@ -1088,22 +1128,22 @@ The `-a` flag shows rule handles in comments, which can then be used for targete
 | `use_policy balanced` | `jump mwan3_policy_balanced` |
 | `use_policy default` | `meta mark set ... \| MMX_DEFAULT` |
 
-#### Missing nft Set Pre-creation
+##### Missing nft Set Pre-creation
 
 When a user rule references an `ipset` (destination nft set) or `ipset_src` (source nft set) that doesn't exist yet in `table inet mwan3`, `nft -f` would roll back the entire batch atomically. To prevent this, `mwan3_set_user_nft_rule()` pre-creates any missing referenced sets with the appropriate type. The same logic applies to both `ipset` and `ipset_src`.
 
-### 7.8 User-defined nft Set Management
+#### 7.3.7 User-defined nft Set Management
 
 | Function | Purpose |
 |---|---|
 | `mwan3_render_config_ipsets` | Iterates all `config ipset` UCI sections and calls `_mwan3_render_one_ipset` for each. Creates user-defined sets in `table inet mwan3`. Called from `start_service` and `reload_service`. |
 | `_mwan3_nft_time_to_sec str` | Converts an nft human-unit timeout string (e.g. `1h`, `5m`, `300s`) to an integer number of seconds. Recognised suffixes: `d` (days), `h` (hours), `m` (minutes), `s` (seconds, default if no suffix). Used by `_mwan3_ipset_needs_delete` to compare the live kernel timeout against the desired spec in a common unit. |
 | `_mwan3_ipset_needs_delete name type counter timeout maxelem` | Returns 0 (true) if the named set exists in `table inet mwan3` AND its flags (type, counter, timeout, size) differ from the desired spec; returns 1 if the set is absent or all flags match. Called by `_mwan3_render_one_ipset` during reload to decide whether to queue a `delete set` before recreating the set with new flags. Timeout values are compared in seconds after converting nft's human-unit display (e.g. `1h`, `5m`) via `_mwan3_nft_time_to_sec`. |
-| `_mwan3_render_one_ipset name` | Creates one user-defined nft set. Builds a `type ipv4_addr/ipv6_addr; flags interval; auto-merge;` declaration, optionally appending `counter;` (standalone statement, NOT a flag keyword) and `timeout Ns;`. On the start path, unconditionally deletes any existing set before creating. On the reload path, calls `_mwan3_ipset_needs_delete` and only queues a `delete set` when flags differ; otherwise `add set` is idempotent and dnsmasq-populated elements survive. Sets `MWAN3_NEED_DNSMASQ_HUP` if a domain-populated set is deleted. Adds inline `list entry` elements and `loadfile` contents. |
+| `_mwan3_render_one_ipset name` | Creates one user-defined nft set. Builds a `type ipv4_addr/ipv6_addr; flags interval;` declaration; appends `auto-merge;` only when no timeout is configured, since auto-merge coalesces contiguous addresses into merged ranges with a single expiry, silently discarding per-element TTLs in DNS-populated sets. Optionally appends `counter;` (standalone statement, NOT a flag keyword) and `timeout Ns;`. On the start path, unconditionally deletes any existing set before creating. On the reload path, calls `_mwan3_ipset_needs_delete` and only queues a `delete set` when flags differ; otherwise `add set` is idempotent and dnsmasq-populated elements survive. Sets `MWAN3_NEED_DNSMASQ_HUP` if a domain-populated set is deleted. Adds inline `list entry` elements and `loadfile` contents. |
 | `mwan3_write_dnsmasq_fragments` | For each `config ipset` with `list domain` entries, writes a dnsmasq confdir fragment enabling `nftset=/domain/FAMILY#inet#mwan3#setname`. Compares against previously written fragments; restarts dnsmasq only when content changes. Silently does nothing if no domain sets are configured. |
 | `mwan3_cleanup_orphaned_ipsets` | Queries `nft list table inet mwan3` for user-defined sets (those not prefixed `mwan3_`), compares against configured set names, and pushes `delete set` for any orphans. Called in `reload_service` after `mwan3_render_config_ipsets`. Prevents stale sets accumulating when a set is removed from UCI config. |
 
-### 7.9 Status Reporting
+#### 7.3.8 Status Reporting
 
 | Function | Purpose |
 |---|---|
@@ -1115,7 +1155,7 @@ When a user rule references an `ipset` (destination nft set) or `ipset_src` (sou
 | `mwan3_report_rules_v4/v6` | Parses `nft list chain inet mwan3 mwan3_rules`. |
 | `mwan3_mark_to_name mark` | Resolves a numeric mark value to an interface name (or "default"/"blackhole"/"unreachable"). |
 
-### 7.10 Lifecycle & Hotplug
+#### 7.3.9 Lifecycle & Hotplug
 
 | Function | Purpose |
 |---|---|
@@ -1124,13 +1164,77 @@ When a user rule references an `ipset` (destination nft set) or `ipset_src` (sou
 | `mwan3_interface_shutdown iface` | Calls hotplug shutdown then cleans track state files. |
 | `mwan3_set_iface_hotplug_state iface state` | Writes state (`online`/`offline`) to status file. |
 | `mwan3_get_iface_hotplug_state iface` | Reads state from status file (defaults to `offline`). |
-| `mwan3_flush_conntrack iface action` | Two-path conntrack flush. First, iterates the `flush_conntrack` UCI list for this interface: for each configured action that matches the current hotplug action, writes `f` to `$CONNTRACK_FILE` to flush the entire global conntrack table. Second, on `ifdown`, uses `conntrack -D --mark MARK/MMX_MASK` to selectively delete only the conntrack entries for this interface's fwmark. Both paths run; the global flush path runs first. |
+| `mwan3_flush_conntrack iface action` | Two-path conntrack flush. First, iterates the `flush_conntrack` UCI list for this interface: for each configured action that matches the current hotplug action, writes `f` to `$CONNTRACK_FILE` to flush the entire global conntrack table. Second, on `ifdown` and `disconnected`, uses `mwan3ct flush --mark MARK/MMX_MASK` to selectively delete only the conntrack entries for this interface's fwmark. Both paths run; the global flush path runs first. |
 | `mwan3_flush_marked_conntrack` | Flushes all conntrack entries that have any `MMX_MASK` bit set, iterating the full mwan3 id-space (IDs 1..`MWAN3_INTERFACE_MAX` plus default/blackhole/unreachable marks). Called from `reload_service` so that live flows re-enter the classification chains and are re-evaluated against new rules rather than staying pinned to a previously saved ct mark. |
 | `mwan3_update_peer_track_ip iface` | If `track_gateway` is enabled, queries `ifstatus` for the point-to-point peer address and writes it to `$MWAN3TRACK_STATUS_DIR/<iface>/GATEWAY`. |
 | `mwan3_track_clean iface` | Removes track status directory for the interface. |
 | `mwan3_dnsmasq_hup` | Sends SIGHUP to running dnsmasq instances via `ubus call service signal '{"name":"dnsmasq","signal":1}'`. Called once from `start_service` after sets are created so dnsmasq resolves domain entries into nft sets. No longer uses mwan3evtd (which was removed ). |
 | `mwan3_flush_stale_conntrack` | Flushes conntrack entries with no mwan3 mark (`0x0/MMX_MASK`) after mwan3 restart. New connections arriving during the brief startup window before iface_in chains exist get ct mark=0; this clears them so they re-establish correctly. Called from `start_service`. |
 | `mwan3_flush_unreplied_conntrack` | Flushes all mwan3-marked conntrack entries that have never received a reply (`IPS_SEEN_REPLY` not set). Called after `mwan3_set_policies_nft` on the `connected` action and on `ifup` when `status=online`. Breaks the cycle where a stale mark from a previous policy state pins traffic to the wrong WAN: because no reply arrives the application keeps retrying, refreshing the conntrack timeout indefinitely. Flushing only UNREPLIED entries leaves established connections untouched. |
+
+### 7.4 mwan3rtmon Functions
+
+`usr/sbin/mwan3rtmon` (see [Section 6.8](#68-usrsbinmwan3rtmon)) is the ucode route-monitor daemon; one instance runs per address family (`ipv4` and `ipv6`). It mirrors kernel routing changes into mwan3's connected and custom nft sets and into the per-interface routing tables, and maintains each tracked interface's `ROUTE_STATUS` file. Shared logging (`log_open`, `log_verbose`, `log_msg`) and `ucibool` are imported from `common.uc` (Section 7.2).
+
+| Function | Purpose |
+|---|---|
+| `main()` | Entry point. Parses the address family from `ARGV[0]` (`ipv4`/`ipv6`), opens syslog with `log_open`, loads config, connects to ubus, and binds the rtnl route listener before running the initial dumps so route changes during the dump phase are queued rather than lost to a subscribe-vs-dump race. Runs the initial custom-set, connected-set, per-interface-route, and route-state population, installs SIGTERM/SIGINT/SIGHUP handlers (SIGHUP reloads config and re-sweeps), arms a 20-second defensive route-state re-sweep (the nested `schedule_periodic_route_sweep()`), then enters the uloop event loop. One process runs per family. |
+| `log_msg(level, msg)` | Local logging wrapper that prefixes the `[family]` tag and delegates to `common.uc`'s `log_msg` (imported as `mlog`). |
+| `load_config()` | Loads the `mwan3` UCI config: sets the verbose gate via `log_verbose(ucibool(...))`, reads `mmx_mask` and `source_routing`, builds `extra_table_set` from `rt_table_lookup`, and builds `iface_list` (name, family, sequential table id, enabled, has_tracking) in UCI declaration order. Called at startup and on SIGHUP. |
+| `build_dev_table_map()` | From the ubus `network.interface` dump, maps each enabled same-family interface's `l3_device` to its table id in `dev_table_map`. |
+| `refresh_active_chains()` | Caches the set of existing `inet mwan3` chains from `nft -j list chains inet` into `active_chains`. |
+| `is_iface_nft_active(ifname)` | Returns whether `mwan3_iface_in_<ifname>` is present in the cached chain set. |
+| `get_active_tids()` | Returns a `{tid: name}` map of same-family interfaces whose per-interface nft chain is currently active. |
+| `get_track_status(ifname)` | Reads the tracker's `PID` and `STARTED` status files and returns `disabled`, `down`, `paused`, or `active`, mirroring the shell tracker-status logic. |
+| `nft_exec(cmd)` | Runs a single `nft` command, logging a warning with the command and its output on non-zero exit. |
+| `nft_batch(cmds)` | Writes a list of commands to a per-daemon batch file and applies them atomically with `nft -f`, logging on failure. |
+| `build_route_for_table(route, tid)` | Builds a route object targeting table `tid`, copying the relevant `ROUTE_FIELDS`, dropping `tos == 0`, and including `src` only when `source_routing` is enabled. |
+| `apply_route_to_table(route, tid, is_new)` | Adds (`RTM_NEWROUTE`, create+replace) or deletes (`RTM_DELROUTE`) the route in table `tid` via rtnl, logging add failures. |
+| `is_cidr_route(route)` | Returns true when the route's `dst` prefix length is shorter than the family maximum (32/128), i.e. a network route rather than a host route. |
+| `is_default_route(route)` | Returns true for a null `dst`, `0.0.0.0/0`, or `::/0`. |
+| `is_linklocal_route(route)` | Returns true for a `dst` under `fe80::/` or `169.254.`. |
+| `table_has_default(routes, tid, dev)` | Returns true if the route dump holds a default route in table `tid` via device `dev`. This is the datapath predicate behind `ROUTE_STATUS`: the interface's fwmark ip rule looks up exactly this table, so a table with no default black-holes the traffic marked to it even when the main table still has a default via the same device. |
+| `tracked_interfaces()` | Returns `[{name, tid, dev}]` for the enabled, tracked, same-family interfaces currently bound to an l3 device (device from the ubus dump). Interfaces with no device yet are skipped and re-evaluated on a later route change. |
+| `write_route_state(ifname, state)` | Atomically writes the interface's `ROUTE_STATUS` file (temp file + rename in the same tmpfs directory) only when the value changes, and logs the transition (`down` at warn, the return at notice). |
+| `refresh_route_states()` | Recomputes every responsible interface's route state from one full route dump and persists it via `write_route_state`. Called at startup, on SIGHUP, from the periodic sweep, and debounced from the route-event handler. |
+| `arm_route_state_refresh()` | Arms or reschedules the debounce timer that collapses a burst of route events into a single `refresh_route_states` sweep. |
+| `get_all_routes()` | Dumps routes for this family and filters to the main table plus any `rt_table_lookup` extra tables. |
+| `route_still_exists(route)` | Re-dumps and checks whether a route still exists in the main table; used to verify delete events before acting on them. |
+| `populate_connected_set()` | Flushes and repopulates `mwan3_connected_v4/v6` from CIDR, non-default, non-link-local routes (plus `224.0.0.0/3` for IPv4), gated by a sorted-element fingerprint so an unchanged set skips the nft write. |
+| `populate_iface_routes()` | Copies main and extra-table routes into the active per-interface tables: a device-matched route goes to that interface's table, other network routes broadcast to all active tables. |
+| `repopulate_custom_sets()` | Rebuilds `mwan3_custom_v4/v6` from the `rt_table_lookup` tables; used at startup and on SIGHUP reload. |
+| `handle_custom_set_event(route, is_new)` | Mirrors a single `rt_table_lookup` route add or delete into `mwan3_custom_v4/v6` so those destinations receive `MMX_DEFAULT` and bypass WAN policy selection; default and link-local routes are skipped. |
+| `handle_route_event(event)` | The rtnl listener callback for `RTM_NEWROUTE`/`RTM_DELROUTE`: mirrors `rt_table_lookup` routes into the custom set, debounces the connected-set rebuild, arms the route-state refresh, and updates the per-interface tables, verifying delete events and gating broadcast routes on tracker status. |
+
+### 7.5 mwan3track Functions
+
+`usr/sbin/mwan3track` (see [Section 6.11](#611-usrsbinmwan3track)) is the per-interface tracker; one shell process runs per tracked interface. It probes the interface's `track_ip` targets on an interval, maintains a hysteresis score, writes per-target and per-interface status files under `$MWAN3TRACK_STATUS_DIR/<iface>/`, and fires `connected`/`disconnected` (and the transitional `connecting`/`disconnecting`) hotplug events as the score crosses its thresholds. Signals drive its lifecycle: `USR1` is ifdown, `USR2` is ifup, `HUP` is config reload, `TERM` is stop.
+
+| Function | Purpose |
+|---|---|
+| `stop_subprocs` | Kills the tracker's background jobs (the running probe and sleep subshells). Used by the signal handlers to break out of the current round. |
+| `WRAP cmd...` | Runs the probe command `cmd` under `LD_PRELOAD` of the mwan3 sockopt wrapper, exporting `FAMILY`, `DEVICE`, `SRCIP`, and `FWMARK` so the probe leaves via the interface's own address and is marked for its own table. |
+| `clean_up` | `TERM` handler: logs the stop, kills subprocesses, and exits. |
+| `if_down` | `USR1` handler: sets `IFDOWN_EVENT` and stops subprocesses so the loop registers the ifdown. |
+| `if_up` | `USR2` handler: sets `IFUP_EVENT`, marks the tracker started, and stops subprocesses. |
+| `config_reload` | `HUP` handler: sets `RELOAD_EVENT` and stops subprocesses so the loop reloads config. |
+| `ping_test_host` | Echoes the family's loopback address (`127.0.0.1` or `::1`), used to test whether a ping variant works. |
+| `get_ping_command` | Selects the usable ping binary/variant (`ping -4/-6`, `ping6`, or `/bin/ping`) and echoes it; returns non-zero if none is available. |
+| `validate_track_method method` | Verifies the tool for the configured `track_method` (`ping`/`arping`/`httping`/`nping-*`/`nslookup`) is installed, logging a warning and returning non-zero if not. |
+| `validate_wrap` | Ensures the `libwrap_mwan3_sockopt` shared library exists; logs an error and exits if it is missing. |
+| `disconnected [suppress]` | Marks the interface offline: writes `STATUS`/`OFFLINE`/`ONLINE`, zeroes the score, and (unless `suppress` is `1`, as on first connect) fires the `disconnected` hotplug event when the previous status was online or disconnecting. |
+| `connected [firstconnect]` | Marks the interface online: writes `STATUS`/`ONLINE`/`OFFLINE`, resets the per-round counters, and fires the `connected` hotplug event (passing `FIRSTCONNECT`). |
+| `disconnecting` | Enters the transitional `disconnecting` state once and fires the `disconnecting` hotplug event, an early warning before the interface is declared offline. |
+| `connecting` | Enters the transitional `connecting` state once and fires the `connecting` hotplug event, an early signal before the interface is declared online. |
+| `disabled` | Marks the interface `disabled` and calls `stopped`. |
+| `firstconnect` | Resolves the true interface, L3 device, and source IP, determines the initial status (`initial_state`, default online), marks the tracker started, then calls `connected` or `disconnected` accordingly. Called at startup and after ifup. |
+| `stopped` | Sets `STARTED=0` and writes the `STARTED` status file; the tracker then idles until a signal. |
+| `started` | Sets `STARTED=1` and writes the `STARTED` status file. |
+| `update_status track_ip state [latency loss]` | Writes the per-target `TRACK_<ip>` status file (and, when supplied, `LATENCY_<ip>`/`LOSS_<ip>`) for one probe target. |
+| `load_tracking_config` | Reads all per-interface tracking UCI options (family, track_method, reliability, count, timeout, interval, up/down thresholds, size, max_ttl, failure/recovery intervals, check_quality and its latency/loss thresholds), clamping `check_quality` off for track methods that produce no latency/loss samples. Called at startup and on `HUP` reload. |
+| `main iface` | Entry point and probe loop. Takes the per-interface lock and writes `PID`, installs the signal traps, loads config and the probe-target list, then loops: each round it reads `ROUTE_STATUS` (a `down` written by `mwan3rtmon` counts as a failed round with no probing), probes each target with `WRAP`, adjusts the hysteresis score, and calls the state transitions; between rounds it services pending ifdown/ifup/reload events. |
+
+The nested helpers `mwan3_load_track_ips` and `mwan3_list_track_ips`, defined inside `main()`, assemble the probe-target list (static `track_ip` entries plus the discovered gateway when `track_gateway` is set) and prune stale per-target status files; they are not listed separately.
 
 ---
 
@@ -1162,8 +1266,7 @@ nft add rule inet mwan3 mwan3_policy_balanced \
 4. Calculate total weight = sum of all member weights
 5. If single member: direct `meta mark set` (no numgen overhead)
 6. If multiple members: build numgen map entries with ranges proportional to weight
-7. Append offline device fallback rules (only if no online members)
-8. Append last-resort rule (unreachable/blackhole/default)
+7. Append last-resort rule (unreachable/blackhole/default)
 
 > [!NOTE]
 > **Difference from iptables version:** The iptables version used probabilistic matching (`--probability`) which is statistically correct over many packets but can have short-term imbalance. The nftables `numgen inc` counter gives perfectly deterministic round-robin distribution at the configured weights.
@@ -1215,6 +1318,12 @@ chain mwan3_rule_https {
 4. **New source**: no set match, mark stays 0. Falls through to the policy chain which assigns a mark. The matching update rule then adds saddr to the corresponding member's set with the configured timeout.
 5. After timeout seconds of inactivity the set entry expires and the source is re-evaluated at next connection.
 
+### Set Lifecycle
+
+A sticky entry normally persists until its per-entry timeout, but two failover events also flush sticky sets directly, so a pinned source can be re-evaluated before its timeout expires. When a member fails (a soft `disconnected` failure with the link still up) or goes down (`ifdown`), that member's own sticky sets are flushed by `mwan3_delete_iface_map_entries` in the same nft transaction that drops it from the policy, so a source pinned to the failed member re-picks the survivor on its next new connection rather than staying nailed to a member that is gone. When a higher-priority member recovers, `mwan3_flush_worse_metric_sticky` flushes the per-rule sticky sets of the lower-metric same-family members of each policy the recovered member participates in, scoped to the rules that use that policy (the snap-back), so new flows return to the recovered member; an equal-ranked load-balancing policy clears nothing, because no member outranks another.
+
+In every case only the sticky sets are touched, and only new flows re-pick as a result. Established connections are not moved, because they are pinned by their saved conntrack mark rather than by the sticky sets (see Sections 10.3 and 10.4).
+
 ---
 
 ## 10. Service Lifecycle and Conntrack Management
@@ -1232,6 +1341,7 @@ chain mwan3_rule_https {
   +--> mwan3_update_iface_to_table()   build iface->table mapping
   +--> mwan3_set_dynamic/connected/custom sets
   +--> mwan3_set_general_rules()       ip rule add blackhole/unreachable
+  +--> mwan3_set_member_backstops()    per-WAN unreachable backstop ip rules (static; survive WAN up/down)
   +--> mwan3_ifup per interface        trigger hotplug (creates iface chains + ip rules)
   +--> wait for hotplug completion
   +--> mwan3_set_general_nft()         populate hook chain rules
@@ -1259,6 +1369,7 @@ chain mwan3_rule_https {
   +--> mwan3_nft_reload_commit()       commit all as single atomic kernel transaction
   +--> mwan3_update_iface_to_table()   (outside nft)
   +--> mwan3_set_general_rules()       (outside nft)
+  +--> mwan3_set_member_backstops()    (outside nft)
   +--> mwan3_write_dnsmasq_fragments() restart dnsmasq only if fragment content changed
   +--> [if MWAN3_NEED_DNSMASQ_HUP=1]   mwan3_dnsmasq_hup() repopulate domain sets lost on flag change
   +--> [tracker count check]           if mismatch: stop + start (procd cannot add/remove
@@ -1267,33 +1378,37 @@ chain mwan3_rule_https {
 
 User-defined sets (config ipset) and sticky sets (`mwan3_sticky_*`) survive the reload intact - they are never in the preamble delete path.
 
-### 10.3 Interface Up (hotplug)
+### 10.3 Interface Up and Tracker Recovery (hotplug)
 
 ```
 netifd signals ifup for $INTERFACE
   +--> 25-mwan3 hotplug script
        +--> mwan3_update_peer_track_ip()                write gateway IP (if track_gateway)
        +--> mwan3_create_iface_nft()                    create/flush chain, add rules
-       +--> mwan3_create_iface_rules()                  ip rule add (iif, fwmark, unreachable)
+       +--> mwan3_create_iface_rules()                  ip rule add (iif, fwmark)
        +--> mwan3_create_iface_route()                  copy routes to per-iface table
        +--> mwan3_set_iface_hotplug_state "online/offline"
        +--> [if not init startup:]
-       |    +--> mwan3_set_general_rules()              ensure ip rules exist
-       |    +--> [if online:] mwan3_set_policies_nft()  rebuild policy chains
+       |    +--> mwan3_set_general_rules()                       ensure ip rules exist
+       |    +--> [if online:] [nft batch:] mwan3_set_policies_nft()   rebuild policy chains
+       |                      mwan3_flush_worse_metric_sticky()  snap flows back from lower-rank backups
        |                      mwan3_flush_unreplied_conntrack()  flush UNREPLIED entries
        +--> procd_send_signal track_$INTERFACE USR2
 ```
 
 ```
-netifd signals connected for $INTERFACE
+connected action fires for $INTERFACE (link-layer negotiation complete, or tracker recovery)
   +--> 25-mwan3 hotplug script
        +--> mwan3_set_iface_hotplug_state "online"
        +--> mwan3_create_iface_nft()                    flush chain, update rules
-       +--> mwan3_set_policies_nft()                    rebuild policy chains
-       +--> mwan3_flush_unreplied_conntrack()            flush UNREPLIED entries
+       +--> mwan3_create_iface_rules()                  recreate ip rules (no-op if already present)
+       +--> mwan3_create_iface_route()                  recreate routes (no-op if already present)
+       +--> [nft batch:] mwan3_set_policies_nft()       rebuild policy chains
+       +--> mwan3_flush_worse_metric_sticky()           snap flows back from lower-rank backups
+       +--> mwan3_flush_unreplied_conntrack()           flush UNREPLIED entries
 ```
 
-The `connected` event fires when an interface completes its link-layer negotiation (e.g., PPPoE authentication) after the `ifup` routing state is already in place. It skips rule and route creation (those are done on `ifup`) and goes straight to policy rebuild and the unreplied flush.
+The `connected` action fires on two distinct events: link-layer negotiation completion (PPPoE authentication, for example) after `ifup` routing state is already in place, and tracker recovery, when mwan3track judges a previously-failed interface to be working again without a physical reconnect. On a tracker recovery the interface's routing rules and route may have been removed by a prior `ifdown`; the `connected` arm recreates them unconditionally so the interface is fully routable before the policy re-selects it. On an ordinary link-negotiation event the routing is already in place and the recreate calls are harmless no-ops. The snap-back (`mwan3_flush_worse_metric_sticky`) returns new flows from lower-ranked same-family backups to the recovered interface; established flows on those backups are left to complete undisturbed.
 
 #### Automatic Gateway Tracking (`track_gateway`)
 
@@ -1318,20 +1433,31 @@ config interface 'wan'
 
 The corresponding LuCI control is the "Track gateway" checkbox in the Interface tab (see [Section 15.1.2](#1512-interface)).
 
-### 10.4 Interface Down (hotplug)
+### 10.4 Interface Down and Soft Failure (hotplug)
 
 ```
 netifd signals ifdown for $INTERFACE
   +--> 25-mwan3 hotplug script
        +--> mwan3_set_iface_hotplug_state "offline"
-       +--> mwan3_delete_iface_map_entries()           flush sticky sets for this iface
-       +--> mwan3_delete_iface_rules()                 ip rule del
-       +--> mwan3_delete_iface_route()                 ip route flush table
-       +--> mwan3_delete_iface_nft()                   remove chain + jump rule
+       +--> [nft batch:] mwan3_set_policies_nft()         rebuild policies (drop this WAN first)
+       |                 mwan3_delete_iface_map_entries()  flush sticky sets (after policy rebuild)
+       +--> mwan3_delete_iface_rules()                    ip rule del
+       +--> mwan3_delete_iface_route()                    ip route flush table
+       +--> mwan3_delete_iface_nft()                      remove chain + jump rule
        +--> procd_send_signal track_$INTERFACE USR1
-       +--> mwan3_set_policies_nft()                   rebuild policies (failover)
-       +--> mwan3_flush_conntrack()                    flush conntrack entries for this iface's fwmark
+       +--> mwan3_flush_conntrack()                       flush conntrack entries for this iface's fwmark
 ```
+
+```
+disconnected action fires for $INTERFACE (soft failure: tracker-detected, link still physically up)
+  +--> 25-mwan3 hotplug script
+       +--> mwan3_set_iface_hotplug_state "offline"
+       +--> [nft batch:] mwan3_set_policies_nft()         rebuild policies (drop this WAN first)
+       |                 mwan3_delete_iface_map_entries() flush sticky sets (after policy rebuild)
+       +--> mwan3_flush_conntrack()                       flush conntrack entries for this iface's fwmark
+```
+
+On `ifdown`, the policy is rebuilt before the interface's routing rules are removed, ensuring the policy drops the interface from the choosable set before its routes are gone; a packet is never tagged for an interface whose routing has already been torn down. On `disconnected`, the interface remains physically up so routing is left intact; only the policy and stickiness records are updated. In both cases the policy rebuild and sticky flush commit as one nft transaction, in that fixed order: the rebuild runs first so the newly built policy cannot re-seed the sticky records that the flush is about to clear. The per-interface conntrack flush follows outside the transaction as a separate operation on kernel state that nftables does not own, and immediately moves established flows off the failed interface rather than leaving them to hang until TCP retransmit timeouts expire.
 
 ### 10.5 Stop
 
@@ -1387,13 +1513,13 @@ When flow offloading is active, the kernel fast-paths established flows directly
 
 This does not apply to hardware flow offloading, which uses different kernel mechanisms and is not affected by writing to `/proc/net/nf_conntrack`.
 
-**3. Interface down - selective flush (`mwan3_flush_conntrack`)**
+**3. Interface down / soft failure - selective flush (`mwan3_flush_conntrack`)**
 
-Immediately after `mwan3_set_policies_nft` rebuilds the policies for a failing interface, the hotplug script calls `mwan3_flush_conntrack`. This function has two independent paths that both run on `ifdown`:
+After the policy is rebuilt for a failing interface, the hotplug script calls `mwan3_flush_conntrack`. This function has two independent paths that both run on `ifdown` and `disconnected`:
 
 First, the UCI `flush_conntrack` path: if the per-interface `flush_conntrack` UCI option contains `ifdown`, mwan3 writes `f` to `/proc/net/nf_conntrack`, flushing the entire global conntrack table. This is the legacy behaviour, retained for users who need it. Because it disrupts all connections on all interfaces simultaneously, it is not set by default.
 
-Second, the selective flush path, which always runs on `ifdown` regardless of the UCI option:
+Second, the selective flush path, which always runs on both `ifdown` and `disconnected` regardless of the UCI option:
 
 ```
 mwan3ct flush --mark <iface_mark>/$MMX_MASK
@@ -1422,6 +1548,7 @@ This removes all mwan3-marked conntrack entries that have never received a reply
 | `start` | - | - | if flow_offloading | yes (always) |
 | `reload` | - | - | - | - |
 | `ifdown` | yes (always) | - | if `flush_conntrack` includes `ifdown` | - |
+| `disconnected` | yes (always) | - | if `flush_conntrack` includes `disconnected` | - |
 | `ifup` | - | if `status=online` | if `flush_conntrack` includes `ifup` | - |
 | `connected` | - | yes (always) | - | - |
 | `stop` | - | - | - | - |
@@ -1444,7 +1571,7 @@ The default conntrack management fits most deployments. Three cases where additi
 
 - **Load-balanced configurations:** when a failed WAN recovers, the automatic ifdown flush has already cleared entries for the failed interface, but all surviving flows remain pinned to the WANs that carried the load during the outage. They will not redistribute until they expire naturally.
 
-- **Failover with a preferred primary:** when the primary WAN recovers, existing connections stay on the failover WAN until natural expiry rather than snapping back. In cost-sensitive setups where the primary is cheaper or unmetered, lingering on the failover WAN has a direct cost.
+- **Failover with a preferred primary:** when the primary WAN recovers, existing connections stay on the failover WAN until natural expiry rather than snapping back. New connections return to the recovered primary on their own, since the snap-back clears the worse-metric sticky pins so the next new flow re-picks the higher-priority WAN, and where stickiness is not in use new flows re-pick by policy regardless; only established connections linger, which is the case this bullet addresses. In cost-sensitive setups where the primary is cheaper or unmetered, lingering on the failover WAN has a direct cost.
 
 - **Application of new policies / rules to *all* flows immediately:** a config save will cause all *new* connections be be immediately routed according to the new policy / ruleset, but will leave existing connections intact rather than interrupting them. Users can choose to override that behaviour and make the new policy take effect immediately even for existing connections, but at the cost of interrupting connections such as SSH, file downloads, etc.
 
@@ -1557,7 +1684,11 @@ set youtube_v4 {
 }
 ```
 
-Placing `counter` inside the `flags` list causes an nft parse error.
+Placing `counter` inside the `flags` list causes an nft parse error. The `auto-merge` line appears here only because this set has no `timeout`; a set with a `timeout` omits it (see auto-merge and timeouts below).
+
+### auto-merge and timeouts
+
+User-defined sets are declared with `flags interval`, and `auto-merge` is appended only when no `timeout` is configured. `auto-merge` coalesces any run of contiguous addresses into a single merged range, a useful memory optimization for static CIDR sets, but the merged range carries only one `timeout` for the whole run. On a timeout-bearing set populated host by host by an external resolver, for example a `list domain` set filled by dnsmasq `nftset=` (or smartdns), that coalescing discards the per-element TTLs: under the incremental insertion a resolver uses, the merged range keeps the timeout of whichever element most recently extended it, so a short-lived member extending a run of long-lived ones evicts the whole range early, and a long-lived member extending a run keeps a short-lived member alive well past its TTL. For resolver-populated sets the per-element TTL is the entire point, so `auto-merge` is dropped whenever a `timeout` is set. The `interval` flag is retained either way, so timeout sets can still hold CIDR entries; only the coalescing is dropped.
 
 ### dnsmasq Integration
 
@@ -2048,7 +2179,175 @@ Before printing any output the script builds a map of every public routable IPv4
 
 ## 18. Changelog
 
-### 18.1 Version 3.6.9
+### 18.1 Version 3.6.10
+
+**Summary:** This release corrects six longstanding bugs, all present in the original codebase, fixes some privilege escalation issues, corrects a tracking-health edge-case, modularises and refactors the LuCI app for maintainability and to make exclusive use of LuCI's published API, and makes ucode scripts log to syslog. Normal operation while every internet connection is healthy is unchanged throughout.
+
+Four of the changes address what happens at the moment a connection fails, recovers, or is brought up or down. When a connection was detected as failed while still physically connected, the records of which sessions and devices were using it were not cleared, so traffic stayed pointed at the dead connection for minutes instead of moving to a working one.
+
+When a preferred connection later recovered, traffic that had diverted to a backup did not return to it. Both are now corrected: on failure the records are cleared immediately, and on recovery new traffic returns to the better connection while sessions already in progress finish where they are.
+
+The order in which routing and connection selection are updated during a transition was also wrong in both directions: on recovery, a connection was made available for traffic before its route was rebuilt, so traffic was assigned to it before it could carry any. On shutdown, a connection's route was removed before traffic stopped being assigned to it. Both orders are now correct.
+
+A per-connection safety block that rejects traffic with no working route was being removed when a connection went down, at the exact moment it was needed. It is now kept in place for as long as the service runs, so traffic with no route is rejected rather than escaping over the default internet link.
+
+All forwarding-rule changes during a transition are now applied as a single all-or-nothing update, closing a brief window in which the rules were only partly in place and traffic could be steered by an incomplete set of them.
+
+A separate fix removes a fallback rule that silently ran in place of a policy's configured behaviour for when all its connections are down, sending traffic out the default link even when the policy was explicitly set to block it.
+
+The sixth fix corrects corruption of per-entry expiry times in address sets populated by a DNS resolver: a kernel range-merging optimisation was discarding the individual expiry of each address and replacing it with the expiry of whichever address had last extended the merged range, causing entries to expire too early or be kept alive too long.
+
+Three further fixes harden the service against a user who has been granted only limited, delegated control of the mwan3 configuration, closing routes by which that restricted role could take over the whole router or another user's web session. Two of them address ways such a user could gain administrator-level command execution: one web-interface permission let them edit a script that mwan3 runs as the administrator on every connection event, and two internal helpers built system commands out of configuration values, such as a domain name or an address-set entry, without first checking them. That editing permission is now separated into its own group that ordinary configuration access no longer carries, and every value is checked before it reaches a command. The third fix escapes configuration text before it appears on the status pages, so text saved by one user can no longer run as code in the browser of anyone who later views those pages.
+
+Several further, unrelated changes round out the 3.6.10 release. A missing default route on an interface's own routing table is now treated as a tracking failure, so an interface that its tracker would otherwise still report as online is taken offline instead of blackholing the traffic steered to it. The routing-health view in the web interface has been updated to match current behaviour, in which the per-interface reject rule is a permanent fixture rather than one that appears and disappears with the interface, so its presence on an offline interface is now shown as expected rather than as a fault. The web interface itself has also been reworked to build on LuCI's standard, supported components and split into shared modules for easier maintenance, with no change to how it behaves aside from a few small display corrections. Finally, the ucode components now log to the system log with a per-component tag, matching the shell components.
+
+---
+
+### mwan3: validate ipset elements and resolver hosts before use
+
+The `rpcd` backend runs as root. Two of its methods built command lines from UCI-derived values with no validation and ran them through `popen`, executing via a shell fork. `nftset_resolve` passed each domain straight to the `nslookup` command line and `nftset_reload` joined the section's entry values and the lines of a loadfile into an `nft add element` command line. A user holding only a delegated config role has UCI `mwan3` write plus these methods, so a crafted domain, entry, or loadfile line could potentially run arbitrary commands as root.
+
+The same entry list is consumed a second time by the ordinary ipset apply path, which builds an `add element` batch that is later committed with `nft -f`. There a crafted value could close the element braces early and inject rogue nftables statements, executed as root on the next apply.
+
+Reject anything that is not a plain hostname before it reaches `nslookup`. Validate every ipset element, from both the entry list and the loadfile, ensuring it is a valid IPv4 or IPv6 address, a CIDR, or a hyphen range, and drop anything else before it reaches a command line. Apply the element check both in the ucode and the shell path.
+
+---
+
+### mwan3: log ucode components to syslog
+
+Route the ucode logging through a new shared logging function housed in `common.uc` that writes to syslog with a per-component tag, just like the shell components do via the `logger` tool.
+
+Add a `ucode-mod-log` dependency.
+
+---
+
+### mwan3: take an interface offline when its table has no default route
+
+An interface's tracker reports it online on the strength of its probes, which reach their target over a connected or point-to-point route and do not need a default route. So an interface whose own routing table holds no default route still reports online: `mwan3` marks traffic to it, its fwmark `ip rule` sends that traffic to the interface's table, the table has no default, and the per-interface unreachable backstop drops it. The interface black-holes every flow steered to it while still showing online.
+
+Make a missing default route count as a tracking failure. The route monitor, which already maintains each interface's own table, checks whether that table holds a default route via the interface's device and writes up or down to a small file in the tracker's status directory. The tracker reads it once per round and, when it reads down, skips the probe so the round fails; the existing score and hysteresis then carry the interface offline, and back online when the route returns, with no new state and no new hotplug arm. The check is on the interface's own table, not the main table, because the fwmark rule looks up exactly that table, and it is recomputed from a full route dump rather than a single route event, so an interface that never held a default also reads down. An absent file is treated as up, so a tracker with no route monitor is unaffected, and the unreachable backstop is unchanged, so traffic still marked to a downed interface fails closed rather than leaking.
+
+---
+
+### mwan3: batch each failover transition into one nft transaction
+
+When a WAN's usability changes, whether it stops being usable (a tracker-detected soft failure or an administrative or carrier down) or becomes usable again (a tracker-detected recovery, or coming back up while already online), `mwan3` rebuilds its routing policy, and on a teardown also clears the per-source stickiness records that kept traffic on the failed WAN. Until now `mwan3` issued these as several separate firewall operations.
+
+Because they were separate, the firewall could be observed in an intermediate state during the transition: a packet could be classified against a policy that had been flushed but not yet fully rebuilt, and on a teardown the stickiness records were cleared in a step that could briefly disagree with the rebuilt policy. These windows are sub-second, but they are real and serve no purpose.
+
+Apply the policy rebuild as a single firewall transaction on every transition, both the teardown paths and the recovery paths, committed in one step. The kernel applies the whole transaction at once, so traffic is never steered by a half-built policy. The resulting ruleset is identical to what the separate operations produced; only the number of kernel transactions changes.
+
+On a teardown the stickiness clearing joins the same transaction, in the fixed order of the policy first and the stickiness second, because the stale stickiness points at a WAN that is going away and must be cleared in the same step that drops it from the policy. On a recovery the stickiness reset that returns new traffic to the recovered WAN stays a separate step after the rebuild: it only resets records pointing at lower-priority WANs that are still working, so a connection that consults one in the instant before the reset still reaches a working WAN, and its timing is not safety-critical.
+
+The connection-tracking cleanup stays a separate step at the end of the transition, because connection-tracking marks are kernel state outside the firewall ruleset and cannot share its transaction.
+
+This corrects longstanding behaviour rather than a regression; the separate-operation form predates `mwan3`'s use of atomic firewall transactions.
+
+---
+
+### mwan3: install static per-WAN unreachable backstops
+
+`mwan3` sends a connection out a chosen WAN by tagging it with a firewall mark and adding an `ip rule` that routes that mark to the WAN's table. Next to each of those it also installs a backstop rule that rejects the mark as unreachable when the WAN has no usable route. That backstop is what keeps traffic tagged for a WAN from quietly slipping out the main routing table, and the default route, when the WAN cannot carry it.
+
+The bug was that the backstop was added and removed together with the WAN's routing rules, so it only existed while the WAN was up. It was therefore missing at the worst possible moment: right after a WAN goes down, or during the split second its rules are torn down and rebuilt, a connection still tagged for that WAN had nothing to reject it and leaked out the default route. On a policy meant to be a hard boundary, such as a VPN, that is a genuine leak.
+
+The fix makes the backstops permanent. `mwan3` now installs one for every configured WAN when the service starts and on every reload, and removes them only when the service stops. The rules that actually route into a WAN still come and go with it, because they need the live interface, but the reject rule stays put. Traffic tagged for a WAN with no matching route, whether the WAN is down, disabled, or briefly mid-rebuild, is now rejected instead of leaking. This covers every configured WAN, including disabled and offline ones, since a WAN disabled while its connections are still live leaves tagged traffic that has to be caught.
+
+The backstops use only real WAN marks, never `mwan3`'s reserved marks, so a policy's `last_resort` setting is untouched: `last_resort "default"` still deliberately uses the main routing table, `"unreachable"` still rejects, and `"blackhole"` still drops. The new rules are created through the same helper that already builds `mwan3`'s global rules, and the existing stop-time cleanup already removes them. This corrects long-standing behaviour carried over from the old iptables-based `mwan3`; it is not a regression.
+
+---
+
+### mwan3: clear stale WAN pins on soft failover and snap back on recovery
+
+When a WAN goes up or down, `mwan3` has to bring two caches back into step with the routing policy it rebuilds. Both caches decide a packet's WAN before the policy is consulted, and both can override it: the sticky sets, which tie a source address to a WAN without checking that the WAN is still up, and the connection marks kept by `conntrack`, which tie an existing connection to the WAN it started on. Both refresh themselves as traffic flows, so once either points at a WAN the policy has dropped, the mistake lasts for minutes rather than for the moment of the change.
+
+On a soft failure, where the tracker judges a WAN dead but the interface itself stays up, `mwan3` dropped the WAN from the policy but cleared neither cache. A source pinned in the dead WAN's sticky set was still tagged for it, and a connection already marked for it was still restored to it, so traffic either black-holed on the dead WAN or, when that WAN's routing entry was already gone, escaped out the main routing table's default route. Every leaked packet re-armed the sticky timer, so the wrong state held itself open. A hard interface-down cleared the affected connection marks; the soft failure cleared nothing.
+
+Now both caches are cleared on the soft-failure event, after the policy is rebuilt, in the order a teardown needs: policy first, then the sticky sets, then the connection marks. A sticky entry can stamp its WAN onto a connection's mark, but a connection's mark never feeds back into the sticky sets, so clearing in this order leaves nothing already-cleared to be re-dirtied. The targeted connection-mark flush that a hard interface-down already performed is now applied to the soft failure too. A pinned source picks the survivor on its next new connection, and an existing connection takes one reset and reconnects on the survivor instead of hanging until the dead WAN returns. Protocols that can move a live connection by themselves, such as `QUIC`, carry on without a reset.
+
+On recovery, new traffic is moved back off the backups the returning WAN outranks. `mwan3` ranks a policy's WANs by metric, lower winning, and keeps IPv4 and IPv6 as two separate contests, so a recovering WAN competes only with others of its own address family. When a higher-ranked WAN comes back, the sources parked on a lower-ranked backup of the same family should return to it. For each policy the recovered WAN belongs to, `mwan3` clears the sticky sets of that policy's lower-ranked, same-family WANs, and only for the rules that use the policy, so a parked source re-picks on its next new connection while connections already running on a backup are left alone. The narrowing matters in two ways. Keeping to the WAN's own family means an IPv4 recovery never disturbs IPv6 stickiness, or the reverse. Keeping to the policy and its rules means a WAN that is a backup in a failover policy and an equal-ranked WAN in a separate load-balancing policy keeps its load-balancing stickiness, which clearing by WAN alone would wrongly wipe. In a load-balancing policy every WAN ranks equally, so nothing is cleared and steady-state stickiness is kept.
+
+These are longstanding behaviours carried over from the old iptables-based `mwan3`: the sticky scheme never checked whether a WAN was still up, and the soft-failure path never cleared either cache.
+
+---
+
+### mwan3: restore a WAN's routing on recovery and rebuild policy before teardown
+
+When a WAN changes state, `mwan3` has to update both the routing policy and that WAN's own `ip rules` and route. The handler that does this updated them in an order that could leave a packet tagged for a WAN whose routing was not in the matching state.
+
+When the tracker brought a WAN back up, the handler rebuilt the policy but, unlike a normal interface bring-up, never recreated that WAN's own routing rules and route. A WAN restored this way was added back to the policy and had traffic tagged for it, yet nothing routed that traffic until the next reload, so it was misrouted or dropped. The recovery path now recreates the WAN's rules and route before rebuilding the policy, the same as a normal bring-up does, so a recovered WAN can carry traffic the instant it is tagged for. Re-creating the rules is harmless when they already exist, so a recovery that races a WAN that is already up just re-asserts the same rules.
+
+When a WAN was taken down, by an administrator or by losing carrier, the handler removed that WAN's routing and cleared its sticky sets before rebuilding the policy. In the gap between removing the routing and rebuilding the policy, the still-stale policy could tag traffic for the downed WAN, whose routing rule was already gone, and a packet crossing that gap re-filled the sticky set that had just been cleared. The down path is reordered so the policy is rebuilt first, dropping the WAN before its routing is removed, and the sticky sets are cleared after the rebuild, so the rebuild can no longer re-fill a set it just cleared.
+
+Both behaviours are longstanding, carried over from the old iptables-based `mwan3`. Steady-state routing and the built ruleset are unchanged; the difference shows only across a change of state.
+
+---
+
+### mwan3: remove offline-WAN fallback that overrode last_resort
+
+When a policy had no WANs online, the policy builder added an extra rule just ahead of the `last_resort` rule, as part of a broader link-selection change. It matched traffic that would have left through an offline WAN's device and tagged it for the main routing table. Because it sat before the `last_resort` rule, and both act only while the firewall mark is still unset, it ran instead of `last_resort` for that traffic.
+
+This silently overrode a deliberate setting. An operator who sets `last_resort` to `unreachable` or `blackhole` is telling the policy to fail closed when none of its WANs is available. The fallback instead sent some of that traffic out the main table. It picked that traffic by which device it would leave through, not by where it was going, so during a soft failure, where the failed WAN's device is still present and its default route is still in the main table, it also caught ordinary default-routed traffic, not just traffic to directly reachable hosts, and sent it back out the dead WAN via the main table. For a one-WAN policy used as a kill switch, such as a router-originated VPN tunnel with `last_resort unreachable`, this defeated the fail-closed behaviour for exactly the traffic the operator meant to block.
+
+Removing the fallback does not change reachability of directly connected or local destinations. Those are sent to the main routing table by the connected-destination and custom-destination checks that run before the policy, so that traffic never reaches the policy and never relied on this rule. The connected set is built from the main table's non-default network routes, so it already covers directly connected subnets and other non-default routes. The fallback's only remaining effect was on default-routed traffic leaving through a fully-down policy's offline WAN, which is exactly the case that should obey `last_resort`.
+
+The change is narrow. With `last_resort default` the policy already tags all its traffic for the main routing table, so nothing changes. Only `last_resort unreachable` and `blackhole` are affected, and only for default-routed traffic leaving a fully-down policy's offline WAN, which now fails closed as set. A destination reachable only by a host route out the offline WAN is not in the connected set and now obeys `last_resort` too; deliberate exceptions are still available through the custom-destination set.
+
+The now-unused offline-device bookkeeping in the per-WAN policy walk is removed with it.
+
+Fixes: `46ed09408e55` ("mwan3: refine link selection")
+
+---
+
+### mwan3: disable auto-merge on timeout-bearing config ipsets
+
+Config ipset sections are declared as `interval` sets and `auto-merge` has been applied unconditionally. When such a set also carries per-element timeouts and is populated host by host by an external resolver, for example `dnsmasq` `nftset=` or `smartdns`, `auto-merge` coalesces any run of contiguous host addresses into a single range. The merged range carries one `timeout` and the per-element timeouts of the other members are discarded. Under the incremental insertion a resolver uses, the surviving timeout is that of whichever element most recently extended the range: a short-lived member that extends a run of long-lived members evicts the whole range early when its TTL fires, and a long-lived member that extends a run keeps a short-lived member alive well past its TTL. For resolver-populated sets the per-element TTL is the entire point, so this silently corrupts membership.
+
+`auto-merge` remains a useful memory optimization for static CIDR sets, so restrict it to sets without a `timeout`. The `interval` flag is retained so `timeout` sets can still hold CIDR entries; only the `auto-merge` coalescing is dropped.
+
+---
+
+### luci-app-mwan3: move mwan3.user editing to its own ACL group
+
+The configuration ACL group granted read and write on `/etc/mwan3.user`, along with the ubus file read, write and remove methods. That file is a shell script run as root on every `mwan3` hotplug event, so anyone delegated the configuration role could edit it and run arbitrary code as root. That role therefore implied full root.
+
+Move the `/etc/mwan3.user` grants and the ubus file read, write and remove methods into a new `luci-app-mwan3-notify` group, and make the Notify menu node depend on it. The configuration group keeps only the ubus file list method and the `httping`, `nping` and `arping` list entries it needs for the tracking-binary presence check. A configuration delegate now gets no access to the hook by default. Read on the new group lets them view it read-only, and write lets them edit it. The Notify page also hides its Save button when the session lacks write.
+
+---
+
+### luci-app-mwan3: escape config-derived values in the status views
+
+LuCI's `E()` and `dom.append` assign a bare string child to a node's `innerHTML`, where it is parsed as HTML, but append an array child or a node as escaped text. The `mwan3` status and analysis views passed UCI-derived free-form values straight in as bare strings. A user who can write `mwan3` UCI could store markup in any of these that then runs in the browser of anyone who later opens the status pages.
+
+Add a small helper that returns a text node, change the shared inline primitives to append their text as an array child so it is never written to `innerHTML`, and pass each of these values through the helper. The troubleshooting view's diagnostic output is likewise appended as an array child, which both escapes it and keeps it verbatim.
+
+---
+
+### luci-app-mwan3: refactor and modularise
+
+App-wide refactor to use the published, supported client-side API throughout and modularisation to support maintainability.
+
+Logic that had accumulated as copies across the individual views is factored into a small shared library that the views compose from: render helpers, value formatters, address and set arithmetic, input validators, the interactive widgets, and the default constants. Checks and defaults that were restated in several places now have a single definition. The result is much less code per view and a smaller footprint for future changes.
+
+Visible behaviour and the configuration model are unchanged, aside from a few incidental display corrections.
+
+---
+
+### luci-app-mwan3: update routing health display
+
+`mwan3` now installs the per-interface unreachable rule as a static backstop: it is created for every configured interface when the service starts and removed only when the service stops. It is therefore present regardless of whether the interface is online, offline or disabled, and it survives a hard `ifdown`. The routing health tab historically treated that rule as one that comes and goes with the interface, so it presented the now-normal presence of the backstop on a downed interface as exceptional.
+
+Also correct how the tab describes a soft tracker failure: only a hard `ifdown` removes the iif and fwmark rules and flushes the table.
+
+Update the display to reflect the actual rule lifecycle:
+
+- Presence of rules on an offline interface is expected.
+- Show a disconnecting event as yellow-bordered.
+- Update the field guide: a soft tracker failure retains all of the interface's rules; a hard `ifdown` removes the iif and fwmark rules and flushes the routing table, leaving intact the unreachable rule.
+
+---
+
+### 18.2 Version 3.6.9
 
 **Summary:** Stop router-originated IPv6 link-local traffic, most visibly odhcpd's DHCPv6 replies to LAN clients, from being policy-routed into a WAN routing table and failing, by accepting single-link scopes before classification. Clear an inherited skb mark on ingress so a tunnelled-WAN reply is no longer pinned to the wrong routing table. Emit dnsmasq `nftset=` directives correctly when a domain is shared across multiple ipset sections, and stage the fragment atomically under the runtime directory.
 
@@ -2096,7 +2395,7 @@ The existing ICMPv6 ND bypass stays: NS/NA can also target global unicast addres
 
 ---
 
-### 18.2 Version 3.6.8
+### 18.3 Version 3.6.8
 
 **Summary:** Fix an operator precedence regression in 3.6.7 in the address family guard.
 
@@ -2108,7 +2407,7 @@ The address-family guard in `mwan3_set_user_nft_rule()`combined its tests as `[ 
 
 ---
 
-### 18.3 Version 3.6.7
+### 18.4 Version 3.6.7
 
 **Summary:** 
 
@@ -2272,7 +2571,7 @@ Improve the configuration checker's rule shadowing detection to recognise when t
 
 ---
 
-### 18.4 Version 3.6.6
+### 18.5 Version 3.6.6
 
 **Summary:** A race condition in the ct mark save logic has been fixed. The previous two-step clear and set sequence first cleared the MMX bits to zero and then set the new value in a consecutive rule, but between those two rules, under the right conditions, a packet on another CPU core could read the intermediate zero state, causing connections to be re-evaluated by the rules chain instead of being pinned to their assigned WAN. The clear is now folded into each setter chain as a single atomic expression, eliminating the race window and ensuring clear-set atomicity.
 
@@ -2306,7 +2605,7 @@ The standalone clear rules in the prerouting and output chains are removed since
 
 ---
 
-### 18.5 Version 3.6.5
+### 18.6 Version 3.6.5
 
 **Summary:** Replaces all `ip` command output parsing with direct `ucode-mod-rtnl` netlink calls via four new helper scripts in `/lib/mwan3`: `mwan3-create-iface-route.uc`,  `mwan3-get-addr.uc`,  `mwan3-list-routes.uc`,  `mwan3-manage-rules.uc`. These scripts replace the shell invocations of the ip binary and consequent (fragile) parsing of the ip output using `sed`, `awk` and `grep`, helping to make mwan3 more robust and future proofing it against potential changes in the output format of ip commands, since the helper scripts return precisely the information needed by mwan3 and do not require any parsing of the output. The scripts also contribute to a substantially enhanced efficiency profile, since there is now only one call per operation instead of multiple `ip` subprocesses each invoking `ip`, `sed`, `grep` and `awk`.
 
@@ -2433,7 +2732,7 @@ Add exclusions for `0.0.0.0/8` and `224.0.0.0/3` so that these non-routable addr
 
 ---
 
-### 18.6 Version 3.6.4
+### 18.7 Version 3.6.4
 
 **Summary:** Fixes a regression in 3.6.3 that prevents mwan3's hotplug handler from running when the service is started but not explicitly enabled
 
@@ -2447,7 +2746,7 @@ The guard was intended to prevent hotplug side effects when mwan3 is disabled, b
 
 ---
 
-### 18.7 Version 3.6.3
+### 18.8 Version 3.6.3
 
 **Summary:** Correctness fixes for edge cases and incomplete feature implementations: fixes ipset and ICMP protocol translation issues when rules use family=any; rebuilds ip rules and routing tables on reload to handle interface reordering and family changes; completes track_gateway support that was missing from two tracking status checks; adds runtime configuration reload to mwan3track via a SIGHUP handler and fixes hotplug handler initialization issues and boot race conditions.
 
@@ -2527,7 +2826,7 @@ Remove the running check that followed `mwan3_init`. It was dead code: `mwan3_in
 
 ---
 
-### 18.8 Version 3.6.2
+### 18.9 Version 3.6.2
 
 **Summary:** A set of defensive edge-case fixes and correctness improvements. Binds the mwan3rtmon route listener before the initial netlink dumps to close a narrow startup race window, and replaces `main_route_cache` with an on-demand kernel query to eliminate a class of cache-drift failures that could only manifest if route events arrived during the dump phase. Aligns shell and mwan3rtmon custom-set filtering so both paths apply identical exclusions. Adds a dormant `is_default_route` guard to `populate_connected_set` as a forward-compatibility precaution. Clamps `check_quality` to 0 when the configured track method cannot produce quality samples, preventing an arithmetic error in the unusual case where `check_quality` is paired with a non-ping method. Fixes `mwan3_track_clean` which targeted incorrect paths and was a no-op, and tightens ip rule deletion at `stop_service` to use content-based matching rather than a priority-range regex, which matters only when rule bases are configured outside the default 1000-3999 band.
 
@@ -2616,7 +2915,7 @@ To make the gates trustworthy at stop time, `mwan3_init` now persists `iif_rule_
 
 ---
 
-### 18.9 Version 3.6.1
+### 18.10 Version 3.6.1
 
 **Summary:** Extends the legacy mwan3 custom sets that were previously only loaded statically during `start_service()` and `reload_service()` from the tables defined in the UCI global config list option `rt_table_lookup` to be fully dynamic, using mwan3rtmon to listen for and to add and remove routes from the custom sets in response to `RTM_NEWROUTE` and `RTM_DELROUTE` events on the tables defined with `list rt_table_lookup <tableid>`. Adds a `SIGHUP` handler to mwan3rtmon to cause it to flush and repopulate these custom sets, ensuring that their contents remain in sync with any newly added or removed `list rt_table_lookup <tableid>` options in the mwan3 config.
 
@@ -2642,7 +2941,7 @@ Add `handle_custom_set_event()`, called from `handle_route_event()` whenever a r
 
 ---
 
-### 18.10 Version 3.6
+### 18.11 Version 3.6
 
 **Summary:** Version 3.6 adds three user-visible features to mwan3 rules. Rules now support an `fwmark`/`fwmask` option to match packets by meta mark using a masked comparison, working alongside or instead of address and ipset matching; mwan3 logs a warning if the fwmask overlaps its internal `MMX_MASK` since such a mask would match packets already carrying an mwan3 classification mark. The ip rule priority tiers for per-interface rules are now configurable via three new globals UCI options (`iif_rule_base`, `fwmark_rule_base`, `unreachable_rule_base`), shifting from the fixed 1000/2000/3000 defaults; two ordering constraints are enforced at startup and rule deletion is rewritten to use content-based matching so it remains correct across base or `mmx_mask` changes. Rules gain `option enabled 0/1`, consistent with interfaces, ipsets, and members.
 
@@ -2803,7 +3102,7 @@ The Policy assigned column label is shortened to Policy.
 
 ---
 
-### 18.11 Version 3.5.3
+### 18.12 Version 3.5.3
 
 **Summary:** Version 3.5.3 adds two major LuCI features and a set of bug fixes and routing reliability improvements.
 
@@ -2893,7 +3192,7 @@ The address family selector controls A vs AAAA record resolution; IPv4 is prefer
 
 ---
 
-### 18.12 Version 3.5.2
+### 18.13 Version 3.5.2
 
 **Summary:** Version 3.5.2 is a bug-fix and maintenance release. It corrects a misrouting bug where kernel-generated NDP Neighbor Solicitation probes entered `mwan3_output` without a conntrack entry, fell through to `mwan3_rules`, and received a WAN policy mark that caused the kernel to probe the gateway via the wrong interface, cycling the NDP entry to FAILED state and breaking WRAP ping tracking for that interface. It updates the package dependency from `ip` to `ip-full` to ensure the full iproute2 implementation is always present, since the busybox `ip` is a minimal subset that does not support all options mwan3 requires. It adds `mwan3-diag`, a ucode diagnostic script installed to `/usr/sbin/mwan3-diag` that collects a comprehensive snapshot of mwan3 state -- interface status, policy routing rules, nftables ruleset, routing tables, conntrack summary and system log -- with all public IP addresses anonymised with stable placeholders so output can be shared safely.
 
@@ -2919,7 +3218,7 @@ Add an icmpv6 NDP accept rule at the top of mwan3_output, mirroring the equivale
 
 ---
 
-### 18.13 Version 3.5.1
+### 18.14 Version 3.5.1
 
 **Summary:** Version 3.5.1 is a bug-fix and maintenance release. It corrects a silent failure in `mwan3rtmon` where route replication to per-interface routing tables was completely non-functional, adds nft set flag-change detection on reload so that changing a set's timeout, counter, or size options takes effect immediately without requiring a full service restart, suppresses spurious stderr noise from ip rule and ip route operations during upgrades and teardown, and removes version number references from comments.
 
@@ -2969,7 +3268,7 @@ Four locations in `mwan3.sh` produced noise on stderr during package upgrades an
 
 ---
 
-### 18.14 Version 3.5
+### 18.15 Version 3.5
 
 **Summary:** Version 3.5 is a major architectural release that moves mwan3 out of `table inet fw4` and into its own `table inet mwan3`, eliminating the fw4 rebuild scaffold and the mwan3evtd debounce daemon entirely. 
 
@@ -3161,7 +3460,7 @@ mwan3 now renders port ranges using `x-y` (nft native format); the colon separat
 
 ---
 
-### 18.15 Version 3.4.1 (Unreleased)
+### 18.16 Version 3.4.1 (Unreleased)
 
 **Summary:** Builds the per-interface `mwan3_iface_in_*` chains before `mwan3_set_general_nft()` activates `mwan3_prerouting` to avoid a race condition that leads to a wrong interface mark being assigned. Fixes bugs in the `nft list chains` syntax in `stop_service()` and a grep expression that was causing a too-broad match and resulting in traffic for interface `wan` bypassing mwan3 marking.
 
@@ -3203,7 +3502,7 @@ Also removed the flush of `mwan3_postrouting` from `mwan3_set_general_nft`. That
 
 ---
 
-### 18.16 Version 3.4
+### 18.17 Version 3.4
 
 **Summary:** Version 3.4 introduces mwan3evtd, a generalised ucode debounce daemon that coalesces rapid-fire events - such as simultaneous interface flaps triggering multiple fw4 reloads - into a single handler execution after the activity settles. This prevents the repeated dnsmasq SIGHUPs that previously caused cache thrash and, in tight-timing scenarios, dnsmasq crashes during concurrent startup.
 
@@ -3242,7 +3541,7 @@ Shell injection in the handler fire path is prevented by passing the command thr
 
 ---
 
-### 18.17 Version 3.3.5
+### 18.18 Version 3.3.5
 
 **Summary:** Version 3.3.5 is a single-fix release that suppresses the per-deleted-entry output that `conntrack -D` writes to stdout, which was previously appearing on the console whenever mwan3 start or an fw4 reload triggered the zero-mark conntrack flush.
 
@@ -3256,7 +3555,7 @@ Fix: redirect stdout to `/dev/null` alongside stderr.
 
 ---
 
-### 18.18 Version 3.3.4
+### 18.19 Version 3.3.4
 
 **Summary:** Version 3.3.4 closes a class of misrouting bugs caused by the brief window between fw4 flushing `table inet fw4` and mwan3 completing its nft rebuild. Connections established during that window acquire `ct mark=0`; the new `mwan3_flush_stale_conntrack` helper removes all zero-mark conntrack entries after every rebuild and restart, preventing WireGuard persistent-keepalive and similar long-lived UDP from locking in a bad entry indefinitely. A double-rebuild race in `mwan3-fw-rebuild.sh` is also fixed by acquiring the procd lock before checking for empty chains.
 
@@ -3287,7 +3586,7 @@ Fix by acquiring `procd_lock` first and re-checking under the lock, so only one 
 
 ---
 
-### 18.19 Version 3.3.3
+### 18.20 Version 3.3.3
 
 **Summary:** Version 3.3.3 is a broad bug-fix release addressing several correctness issues: DNAT reply routing was broken by a misplaced `fib daddr type local return` rule that fired before DNAT translation, causing replies to exit via a randomly load-balanced interface; IPv6 ip rules were silently leaked on ifdown because `delete_iface_rules` queried the IPv4 rule table; `mwan3_dnsmasq_hup` never sent SIGHUP because `json_get_var` stores booleans as integers not strings; and the numgen counter was contaminated by inbound and reply traffic. Additional fixes cover a grep substring false-positive in iface chain wiring, unquoted regex variables, a dead function stub, a duplicate function, and missing `mwan3_postrouting` in the stop_service chain lists. A new `bypass_network` UCI option populates the dynamic bypass sets from config, and `mwan3-lb-test` gains fw4 reload detection.
 
@@ -3377,7 +3676,7 @@ Improve the `rt_table_lookup` field: rename label from "Routing table lookup" to
 
 ---
 
-### 18.20 Version 3.3.2
+### 18.21 Version 3.3.2
 
 **Summary:** Version 3.3.2 fixes a spurious tracked-IP entry in ubus status output caused by a naming collision between mwan3track's temporary output file and the `TRACK_*` glob used by rpcd. The `mwan3-lb-test` tool gains mandatory client isolation, a Windows test command, and a stale-artifact cleanup subcommand. LuCI receives cross-field family consistency validation in the rule editor, a fix for false "Present (unexpected)" health badges during interface bring-up, source nftset display in the overview rules column, and source nftset support in the traffic path simulator.
 
@@ -3452,7 +3751,7 @@ Grid display: Source and Destination columns now show the nftset name when no IP
 
 ---
 
-### 18.21 Version 3.3.1
+### 18.22 Version 3.3.1
 
 **Summary:** Version 3.3.1 adds source nftset matching (`ipset_src`) as a complement to the existing destination nftset, fixes three distinct numgen counter contamination bugs that caused load-balancing distributions to skew under inbound or reply traffic, sweeps orphaned policy chains that accumulate when policies are removed from UCI without an fw4 reload, and corrects IPv6 ip rule detection in the routing health check. The release also adds `nftset_info` as an rpcd ubus method and introduces the `mwan3-lb-test` CLI tool for verifying load-balancing weight distributions against configured policy members.
 
@@ -3524,7 +3823,7 @@ Fix by querying both `-4` and `-6` rule tables and merging the results, matching
 
 ---
 
-### 18.22 Version 3.3
+### 18.23 Version 3.3
 
 **Summary:** Version 3.3 adds three major LuCI diagnostic tools - a traffic path Simulator, a static Configuration analyser, and a live Routing health view - backed by two new rpcd ubus methods (`nftset_members` and `routing_health`). The configuration analyser detects undefined references, orphaned sections, and rule shadowing including correct IPv6 CIDR containment checks. The routing health view colour-codes per-interface ip rule and routing table state against live kernel state. The `apk info` vs `apk list -I` version display bug is also fixed.
 
@@ -3568,7 +3867,7 @@ Also adds `nftset_members` and `routing_health` methods to the rpcd module with 
 
 ---
 
-### 18.23 Version 3.2.3
+### 18.24 Version 3.2.3
 
 **Summary:** Version 3.2.3 improves tracking status visibility by adding per-IP latency and packet-loss detail to `mwan3 status` output and fixing the `check_quality` display to derive its state from mwan3track's runtime files rather than UCI, so changes to UCI without a restart no longer cause the status page to disagree with what is actually running. Stale gateway `TRACK_*`/`LATENCY_*`/`LOSS_*` files from previous PPPoE sessions are cleaned up on each probe list rebuild. The `luci-app-mwan3` PKG_VERSION scheme is fixed to prevent `apk upgrade` from reverting to the official package, and the GitHub Actions APK rename step is corrected to avoid i18n sub-packages overwriting the main package.
 
@@ -3629,7 +3928,7 @@ When `check_quality=1`, tracker latency/loss sentinel values (`999999ms`, `100%`
 
 ---
 
-### 18.24 Version 3.2.2
+### 18.25 Version 3.2.2
 
 **Summary:** Version 3.2.2 fixes two misrouting bugs: duplicate jump rules accumulating from repeated fw4 reload cycles caused iface_in chain deletion to fail with "Resource busy", and the unguarded catchall rule in each `mwan3_iface_in_*` chain was stamping IPv6 packets with the IPv4 interface mark on dual-stack physical devices, breaking QUIC/HTTP3 streams that resumed after conntrack expiry. The gateway IP is moved to the front of the tracking probe list so it is always tested. LuCI receives a visual redesign replacing solid alert cards with bordered flex cards, and adds latency and packet-loss columns to the tracking IP table.
 
@@ -3691,7 +3990,7 @@ When `check_quality` is disabled (the default), the columns display "Not enabled
 
 ---
 
-### 18.25 Version 3.2.1
+### 18.26 Version 3.2.1
 
 **Summary:** Version 3.2.1 fixes policy status reporting to include all members with their live traffic share percentages (not just the currently-routing member), replaces `killall -HUP dnsmasq` with a procd-aware targeted SIGHUP to avoid crashing instances still in the startup phase, adds the installed mwan3 package version to `mwan3 internal` output, and redesigns the LuCI status pages with structured collapsible sections and an IPv6 troubleshooting pane. LuCI also exposes the `snat6` IPv6 SNAT option on interface configuration.
 
@@ -3743,7 +4042,7 @@ Adds an "IPv6 SNAT" form field to the interface configuration modal, visible onl
 
 ---
 
-### 18.26 Version 3.2
+### 18.27 Version 3.2
 
 **Summary:** Version 3.2 adds two significant features. First, opt-in per-interface IPv6 SNAT via the `snat6` UCI option, which corrects BCP38/uRPF drops for router-originated traffic rerouted by `mwan3_output` onto a different WAN than the kernel initially selected at `sendto()`. Second, non-destructive vmap-dispatch mark save/restore: 126 per-mark OR-immediate setter chains replace the previous unmasked connmark operations, making mwan3 fully order-independent with respect to pbr and other fwmark-using packages without requiring coordinated chain priority ordering.
 
@@ -3769,7 +4068,7 @@ The same vmap-dispatch primitive is reused by `mwan3_create_policies_nft` for lo
 
 ---
 
-### 18.27 Version 3.1.4
+### 18.28 Version 3.1.4
 
 **Summary:** Version 3.1.4 fixes interoperability with pbr by moving mwan3's prerouting and output chains from priority `mangle + 1` to `mangle - 1`, so mwan3 restores and saves its ct mark bits before pbr injects its own marks at `mangle` priority. With the previous ordering pbr's marks were zeroed before the routing decision and its ip rules never matched.
 
@@ -3787,7 +4086,7 @@ Add `postinst` migration to flush and delete the old chains on upgrade, since nf
 
 ---
 
-### 18.28 Version 3.1.3
+### 18.29 Version 3.1.3
 
 **Summary:** Version 3.1.3 fixes three status and policy rendering bugs: single-member policies were emitting spurious "unreachable" entries because the empty-string guard on `mwan3_mark_to_name` never matched; mixed IPv4/IPv6 policies lost one family's members because both shared a single reset list; and equal-weight load-balancing entries were invisible in `mwan3 status` because nft normalises single-element numgen ranges to plain values that the reporting regex did not match.
 
@@ -3817,7 +4116,7 @@ Handle both `N-M : 0xMARK` (weight>1, range preserved by nft) and `N : 0xMARK` (
 
 ---
 
-### 18.29 Version 3.1.2
+### 18.30 Version 3.1.2
 
 **Summary:** Version 3.1.2 improves mwan3rtmon with two fixes: an in-memory route cache replaces the per-event `RTM_GETROUTE` dump for O(1) ECMP path checks, and a ucode-mod-rtnl double-destructor bug that caused a reliable segfault on clean shutdown is eliminated by letting the GC collect the route listener rather than calling `close()` explicitly.
 
@@ -3840,7 +4139,7 @@ Fix: omit the explicit `close()` call and let the GC collect the listener natura
 
 ---
 
-### 18.30 Version 3.1.1
+### 18.31 Version 3.1.1
 
 **Summary:** Version 3.1.1 is a broad mwan3track hardening release: the disconnecting threshold is raised to suppress false alarms from single transient ping losses, an exclusive flock prevents ghost duplicate tracker processes per interface, `sockopt_wrap` replaces `exit()` with graceful error returns so a stale source IP or disappearing interface does not abruptly terminate the tracked process, per-host failure logs are suppressed when the reliability threshold is still met, and interface events are processed at the top of the main loop before pinging to avoid a spurious disconnecting state on wakeup from disabled. LuCI adds a track_gateway checkbox to the interface modal and clarifies the flush_conntrack help text.
 
