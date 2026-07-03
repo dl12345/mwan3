@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    name: Build for ${{ matrix.version }} / ${{ matrix.target }}
+    name: Build APK for ${{ matrix.version }} / ${{ matrix.target }}
     runs-on: ubuntu-latest
     env:
       REPO_APK_KEY: ${{ secrets.REPO_APK_KEY }}
@@ -85,24 +85,16 @@ jobs:
           set -euo pipefail
           PKG_VERSION=$(grep -E '^PKG_VERSION *:?=' Makefile | head -n1 | cut -d= -f2 | tr -d '[:space:]')
           PKG_RELEASE=$(grep -E '^PKG_RELEASE *:?=' Makefile | head -n1 | cut -d= -f2 | tr -d '[:space:]')
-          for ext in ipk apk; do
-            for f in $(find bin/packages -type f -path "*/mwan3nft/*.${ext}"); do
-              dir=$(dirname "$f")
-              if [ -n "${{ matrix.suffix }}" ]; then
-                mv -v "$f" "$dir/${PKG_NAME}-${PKG_VERSION}-${PKG_RELEASE}_${{ matrix.version }}_${{ matrix.suffix }}.${ext}"
-              else
-                mv -v "$f" "$dir/${PKG_NAME}-${PKG_VERSION}-${PKG_RELEASE}_${{ matrix.version }}_${{ matrix.target }}.${ext}"
-              fi
-            done
+          for f in $(find bin/packages -type f -path "*/mwan3nft/*.apk"); do
+            dir=$(dirname "$f")
+            mv -v "$f" "$dir/${PKG_NAME}-${PKG_VERSION}-${PKG_RELEASE}_${{ matrix.version }}_${{ matrix.target }}.apk"
           done
 
       - name: Upload artifact for ${{ matrix.target }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.PKG_NAME }}-${{ matrix.target }}-${{ matrix.version }}
-          path: |
-            bin/packages/*/mwan3nft/${{ env.PKG_NAME }}*.ipk
-            bin/packages/*/mwan3nft/${{ env.PKG_NAME }}*.apk
+          path: bin/packages/*/mwan3nft/${{ env.PKG_NAME }}*.apk
           if-no-files-found: ignore
 
   release:
@@ -134,9 +126,7 @@ jobs:
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: Build v${{ steps.version.outputs.version }}
-          files: |
-            ./release-assets/**/*.ipk
-            ./release-assets/**/*.apk
+          files: ./release-assets/**/*.apk
           draft: false
           prerelease: false
         env:
