@@ -1395,7 +1395,9 @@ mwan3_set_user_nft_rule()
 	# ipv4 and ipv6 passes. Skip the ipv6 pass to avoid pushing a duplicate
 	# rule. The ipv4 pass output already matches IPv6 traffic at runtime
 	# because the match operates on family-agnostic fields (meta mark, l4proto,
-	# port, iifname). Exception: proto=icmp requires both passes because ICMP
+	# port, iifname), and because rules render in config order the single
+	# line sits at the rule's config position and covers both families
+	# there. Exception: proto=icmp requires both passes because ICMP
 	# (protocol 1) and ICMPv6 (protocol 58) are distinct L4 protocols.
 
 	if [ "$family" = "any" ] && [ "$ipv" = "ipv6" ] && \
@@ -1766,14 +1768,12 @@ mwan3_set_user_iface_rules()
 
 mwan3_set_user_rules()
 {
-	local ipv
-
 	mwan3_nft_batch_start
 
 	mwan3_nft_push "flush chain inet mwan3 mwan3_rules"
 
 	# Pre-create and flush per-rule chains for all enabled UCI rules, before
-	# the per-family loop. Sourcing names from UCI (not the kernel) prevents
+	# the render pass. Sourcing names from UCI (not the kernel) prevents
 	# chains for deleted rules from being recreated after reload. "add chain"
 	# is idempotent: it recreates a chain deleted by mwan3_nft_reload_start or
 	# is a no-op if the chain already exists (hotplug path).
@@ -1787,10 +1787,22 @@ mwan3_set_user_rules()
 	}
 	config_foreach _init_rule_chain rule
 
-	for ipv in ipv4 ipv6; do
-		[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && continue
-		config_foreach mwan3_set_user_nft_rule rule "$ipv"
-	done
+	# Render the rules in one pass over the config, in config order,
+	# emitting each rule's IPv4 and IPv6 variants at that rule's position.
+	# The chain is evaluated first-match, so a rule's position in the chain
+	# must equal its position in the config; rendering per family instead
+	# would place every IPv6-specific rule after every IPv4-pass rule,
+	# letting a family-agnostic rule shadow IPv6 rules the config places
+	# before it.
+
+	_render_rule() {
+		local _rr_ipv
+		for _rr_ipv in ipv4 ipv6; do
+			[ "$_rr_ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && continue
+			mwan3_set_user_nft_rule "$1" "$_rr_ipv"
+		done
+	}
+	config_foreach _render_rule rule
 
 	mwan3_nft_batch_commit
 }
