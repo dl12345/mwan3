@@ -1,15 +1,14 @@
 permissions:
   contents: write
-name: Build OpenWrt Package
+name: Build OpenWrt Package (Pre-release)
 
 on:
   push:
     tags:
-      - 'v*'
-      - '!v*-beta*'
-      - '!v*_beta*'
-      - '!v*-rc*'
-      - '!v*_rc*'
+      - 'v*-beta*'
+      - 'v*_beta*'
+      - 'v*-rc*'
+      - 'v*_rc*'
   workflow_dispatch:
 
 jobs:
@@ -110,8 +109,8 @@ jobs:
           if-no-files-found: ignore
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    name: Release ${{ github.repository }}
+    if: startsWith(github.ref, 'refs/tags/v') && (contains(github.ref, '-beta') || contains(github.ref, '_beta') || contains(github.ref, '-rc') || contains(github.ref, '_rc'))
+    name: Pre-release ${{ github.repository }}
     needs: build
     runs-on: ubuntu-latest
 
@@ -133,15 +132,21 @@ jobs:
         with:
           path: ./release-assets
 
-      - name: Create GitHub Release
+      - name: Create GitHub pre-release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: Build v${{ steps.version.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }} (pkg v${{ steps.version.outputs.version }})
+          body: |
+            Pre-release build (beta or release candidate) for testing. This is NOT a
+            stable release and is not marked as the latest release; do not deploy it
+            in production.
+
+            Package version: ${{ steps.version.outputs.version }}
           files: |
             ./release-assets/**/*.ipk
             ./release-assets/**/*.apk
           draft: false
-          prerelease: false
+          prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
