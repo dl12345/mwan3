@@ -135,11 +135,13 @@ stop_service() {
 
 		# Delete ip rules created by this mwan3 instance. A rule must pass
 		# both gates before it is deleted:
-		#   priority gate -- the priority lies in one of mwan3's three
-		#     configured rule-base ranges (iif, fwmark, unreachable). The
+		#   priority gate -- the priority lies in one of mwan3's four
+		#     rule-base ranges (iif, fwmark, unreachable, source). The
 		#     fwmark range extends to fwmark_base + MM_UNREACHABLE to cover
 		#     the global blackhole and unreachable rules at fwmark_base +
-		#     MM_BLACKHOLE / MM_UNREACHABLE.
+		#     MM_BLACKHOLE / MM_UNREACHABLE. The source band is not
+		#     configurable; it is derived from the unreachable base and
+		#     sits immediately above the unreachable band.
 		#   content gate -- the line either references a mwan3-owned routing
 		#     table (lookup <N> with N in 1..MWAN3_INTERFACE_MAX) or carries
 		#     an fwmark masked by mwan3's MMX_MASK. The priority gate alone
@@ -150,13 +152,15 @@ stop_service() {
 		# /var/run/mwan3/mmx_mask and /var/state/mwan3 (set at start_service
 		# time), so they reflect what the running instance created, not
 		# whatever is currently in /etc/config/mwan3.
-		local line pref tbl iif_min iif_max fw_min fw_max ur_min ur_max mask
+		local line pref tbl iif_min iif_max fw_min fw_max ur_min ur_max src_min src_max mask
 		iif_min=$((MWAN3_IIF_RULE_BASE + 1))
 		iif_max=$((MWAN3_IIF_RULE_BASE + MWAN3_INTERFACE_MAX))
 		fw_min=$((MWAN3_FWMARK_RULE_BASE + 1))
 		fw_max=$((MWAN3_FWMARK_RULE_BASE + MM_UNREACHABLE))
 		ur_min=$((MWAN3_UNREACHABLE_RULE_BASE + 1))
 		ur_max=$((MWAN3_UNREACHABLE_RULE_BASE + MWAN3_INTERFACE_MAX))
+		src_min=$((MWAN3_UNREACHABLE_RULE_BASE + MWAN3_INTERFACE_MAX + 2))
+		src_max=$((MWAN3_UNREACHABLE_RULE_BASE + 2 * MWAN3_INTERFACE_MAX + 1))
 		# ip rule list prints fwmark masks lowercase; normalise for matching
 		mask=$(echo "$MMX_MASK" | tr 'A-Z' 'a-z')
 		$IP rule list | while read -r line; do
@@ -167,7 +171,8 @@ stop_service() {
 			# Priority gate
 			if ! { { [ "$pref" -ge "$iif_min" ] && [ "$pref" -le "$iif_max" ]; } || \
 			       { [ "$pref" -ge "$fw_min" ] && [ "$pref" -le "$fw_max" ]; } || \
-			       { [ "$pref" -ge "$ur_min" ] && [ "$pref" -le "$ur_max" ]; }; }; then
+			       { [ "$pref" -ge "$ur_min" ] && [ "$pref" -le "$ur_max" ]; } || \
+			       { [ "$pref" -ge "$src_min" ] && [ "$pref" -le "$src_max" ]; }; }; then
 				continue
 			fi
 			# Content gate (a): carries an fwmark masked by mwan3's MMX_MASK

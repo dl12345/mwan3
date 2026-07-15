@@ -290,6 +290,7 @@ function routing_health() {
 		valid_priorities[IIF_BASE     + id] = true;
 		valid_priorities[FWMARK_BASE  + id] = true;
 		valid_priorities[UNREACH_BASE + id] = true;
+		valid_priorities[UNREACH_BASE + iface_max + 1 + id] = true;
 	}
 	valid_priorities[FWMARK_BASE + mmdefault - 2] = true;
 	valid_priorities[FWMARK_BASE + mmdefault - 1] = true;
@@ -343,10 +344,18 @@ function routing_health() {
 	for (let rule in all_rules) {
 		const p = rule?.priority;
 		if (p == null) continue;
+
+		// The iif and fwmark windows are mmdefault wide (the fwmark band
+		// carries the global blackhole and unreachable rules above
+		// iface_max). The unreachable band holds only ids 1..iface_max;
+		// the slot above it is unused and the source band follows at
+		// iface_max + 1 + id.
+
 		const in_iif_range     = (p > IIF_BASE     && p <= IIF_BASE     + mmdefault);
 		const in_fwmark_range  = (p > FWMARK_BASE  && p <= FWMARK_BASE  + mmdefault);
-		const in_unreach_range = (p > UNREACH_BASE && p <= UNREACH_BASE + mmdefault);
-		if ((in_iif_range || in_fwmark_range || in_unreach_range) && !valid_priorities[p])
+		const in_unreach_range = (p > UNREACH_BASE && p <= UNREACH_BASE + iface_max);
+		const in_src_range     = (p > UNREACH_BASE + iface_max + 1 && p <= UNREACH_BASE + 2 * iface_max + 1);
+		if ((in_iif_range || in_fwmark_range || in_unreach_range || in_src_range) && !valid_priorities[p])
 			push(stale, { priority: p });
 	}
 

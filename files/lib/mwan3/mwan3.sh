@@ -1057,6 +1057,8 @@ mwan3_create_iface_rules()
 
 	$IP rule add pref $((id+MWAN3_IIF_RULE_BASE)) iif "$2" lookup "$id" 2>/dev/null
 	$IP rule add pref $((id+MWAN3_FWMARK_RULE_BASE)) fwmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK" lookup "$id" 2>/dev/null
+	[ "$family" = "ipv4" ] && ${MWAN3_MANAGE_RULES} add-src "$2" "$id" \
+		"$((id + MWAN3_UNREACHABLE_RULE_BASE + MWAN3_INTERFACE_MAX + 1))"
 }
 
 mwan3_delete_iface_rules()
@@ -1067,7 +1069,8 @@ mwan3_delete_iface_rules()
 	[ -n "$id" ] || return 0
 
 	${MWAN3_MANAGE_RULES} delete-iface "$id" \
-		"$MWAN3_IIF_RULE_BASE" "$MWAN3_FWMARK_RULE_BASE" "$MMX_MASK"
+		"$MWAN3_IIF_RULE_BASE" "$MWAN3_FWMARK_RULE_BASE" "$MMX_MASK" \
+		"$((id + MWAN3_UNREACHABLE_RULE_BASE + MWAN3_INTERFACE_MAX + 1))"
 }
 
 mwan3_set_policy()

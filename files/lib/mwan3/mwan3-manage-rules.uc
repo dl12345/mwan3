@@ -8,6 +8,7 @@ const RTM_GETRULE = rtnl.const.RTM_GETRULE;
 const RTM_DELRULE = rtnl.const.RTM_DELRULE;
 const RTM_NEWRULE = rtnl.const.RTM_NEWRULE;
 const RTM_GETROUTE = rtnl.const.RTM_GETROUTE;
+const RTM_GETADDR = rtnl.const.RTM_GETADDR;
 const NLM_F_DUMP = rtnl.const.NLM_F_DUMP;
 const NLM_F_CREATE = rtnl.const.NLM_F_CREATE;
 const AF_INET = rtnl.const.AF_INET;
@@ -63,6 +64,7 @@ if (mode == "check") {
 	let iif_base = +ARGV[2];
 	let fwmark_base = +ARGV[3];
 	let mmx_mask = +ARGV[4];
+	let src_prio = +ARGV[5];
 
 	let iif_prio = iif_base + id;
 	let fwmark_prio = fwmark_base + id;
@@ -73,6 +75,21 @@ if (mode == "check") {
 		for (let rule in rules) {
 			if (rule.table != id) continue;
 			if (rule.action != FR_ACT_TO_TBL) continue;
+
+			if (rule.src != null && rule.priority == src_prio) {
+				rtnl.request(RTM_DELRULE, 0, {
+					family: family,
+					priority: rule.priority,
+					src: rule.src,
+					table: rule.table,
+					action: rule.action
+				});
+				let err = rtnl.error();
+				if (err)
+					log_msg("err", sprintf("delete src rule failed: %s", err));
+				continue;
+			}
+
 			if (rule.src != null || rule.dst != null) continue;
 
 			if (rule.fwmark == null && rule.priority == iif_prio) {
@@ -161,5 +178,30 @@ if (mode == "check") {
 		let err = rtnl.error();
 		if (err)
 			log_msg("err", sprintf("add backstop rule failed: %s", err));
+	}
+
+} else if (mode == "add-src") {
+	// IPv4 only
+
+	let device = ARGV[1];
+	let table_id = +ARGV[2];
+	let prio = +ARGV[3];
+
+	let addrs = rtnl.request(RTM_GETADDR, NLM_F_DUMP, { family: AF_INET }) ?? [];
+	for (let a in addrs) {
+		if (a.dev != device) continue;
+		if (a.scope != 0) continue;
+		let addr = split(a.local ?? a.address ?? "", "/")[0];
+		if (!addr) continue;
+		rtnl.request(RTM_NEWRULE, NLM_F_CREATE, {
+			family: AF_INET,
+			priority: prio,
+			src: addr,
+			table: table_id,
+			action: FR_ACT_TO_TBL
+		});
+		let err = rtnl.error();
+		if (err)
+			log_msg("err", sprintf("add src rule failed: %s", err));
 	}
 }
