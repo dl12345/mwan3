@@ -196,40 +196,9 @@ stop_service() {
 		done
 	done
 
-	# Flush all mwan3 chains (rules removed, chains stay as skeletons)
-	for chain_name in $($NFT list chains inet 2>/dev/null | grep "chain mwan3_" | awk '{print $2}'); do
-		$NFT flush chain inet mwan3 "$chain_name" >/dev/null 2>&1
-	done
-
-	# Delete dynamic per-interface and per-policy chains (not the skeleton ones from 10-mwan3.nft)
-	for chain_name in $($NFT list chains inet 2>/dev/null | grep "chain mwan3_" | awk '{print $2}'); do
-		case "$chain_name" in
-			mwan3_prerouting|mwan3_output|mwan3_postrouting|mwan3_ifaces_in|mwan3_rules|mwan3_connected|mwan3_custom|mwan3_dynamic)
-				# These are skeleton chains from the static .nft file; keep them
-				;;
-			*)
-				$NFT delete chain inet mwan3 "$chain_name" >/dev/null 2>&1
-				;;
-		esac
-	done
-
-	# Final safety flush of skeleton chains (handles any transient failures above)
-	for chain_name in mwan3_prerouting mwan3_output mwan3_postrouting mwan3_ifaces_in mwan3_rules mwan3_connected mwan3_custom mwan3_dynamic; do
-		$NFT flush chain inet mwan3 "$chain_name" >/dev/null 2>&1
-	done
-
-	# Flush all mwan3 sets
-	for setname in $($NFT list sets inet mwan3 2>/dev/null | grep "set mwan3_" | awk '{print $2}'); do
-		$NFT flush set inet mwan3 "$setname" >/dev/null 2>&1
-	done
-
-	# Delete dynamic maps (sticky maps)
-	for mapname in $($NFT list maps inet mwan3 2>/dev/null | grep "map mwan3_" | awk '{print $2}'); do
-		$NFT flush map inet mwan3 "$mapname" >/dev/null 2>&1
-		$NFT delete map inet mwan3 "$mapname" >/dev/null 2>&1
-	done
-
-	# Remove the table entirely so a stopped mwan3 leaves no nft residue
+	# Remove the table entirely. The single atomic delete drops every
+	# chain, set and map mwan3 created in one kernel transaction, so a
+	# stopped mwan3 leaves no nft residue.
 	$NFT delete table inet mwan3 >/dev/null 2>&1
 
 	rm -rf $MWAN3_STATUS_DIR $MWAN3TRACK_STATUS_DIR
