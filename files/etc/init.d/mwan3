@@ -208,6 +208,23 @@ stop_service() {
 reload_service() {
 	mwan3_init
 
+	# The nft table is created only by the skeleton load in start_service,
+	# which is skipped when the service starts with every interface
+	# disabled. In that state the table is absent while the status
+	# directory (created by mwan3_init) exists, so the service reports
+	# running and a config change drives a reload, not a start. Rebuilding
+	# the ruleset here would batch every add against a missing table, the
+	# atomic commit would fail, and this function would return at the commit
+	# check before the tracker-mismatch restart below. Recover with a full
+	# stop and start, which reloads the skeleton and recreates the table.
+
+	if ! $NFT list table inet mwan3 >/dev/null 2>&1; then
+		LOG notice "reload escalated to restart as table inet mwan3 not initialised"
+		stop
+		start
+		return
+	fi
+
 	# Atomically rebuild the entire mwan3 nft ruleset in a single kernel
 	# transaction. mwan3_nft_reload_start opens the outermost batch level
 	# (MWAN3_BATCH_DEPTH 0->1) so all subsequent batch_start/commit calls
