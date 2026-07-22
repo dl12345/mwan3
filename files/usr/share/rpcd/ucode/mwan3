@@ -226,6 +226,7 @@ function get_table_routes(table_id) {
 }
 
 function nslookup_resolve(host, type) {
+
 	// Reject any host outside the hostname character class before it is
 	// interpolated into the /bin/sh -c command line below. This is the single
 	// chokepoint for both resolve_host and the nftset_resolve domain path,
@@ -250,7 +251,6 @@ function nslookup_resolve(host, type) {
 
 function routing_health() {
 	const uci = cursor();
-
 	const mmx_mask = int(uci.get('mwan3', 'globals', 'mmx_mask')) || 0x3F00;
 	let bitcnt = 0;
 	for (let m = mmx_mask; m; m >>= 1) bitcnt += m & 1;
@@ -268,6 +268,7 @@ function routing_health() {
 	}
 
 	// Build ordered interface list with 1-based index (same ordering mwan3 uses)
+
 	const iface_order = [];
 	const iface_index = {};
 	uci.foreach('mwan3', 'interface', intf => {
@@ -276,6 +277,7 @@ function routing_health() {
 	});
 
 	// Fetch all ip rules and index by priority for O(1) lookup
+
 	const all_rules = get_ip_rules();
 	const rule_by_priority = {};
 	for (let rule in all_rules) {
@@ -284,6 +286,7 @@ function routing_health() {
 	}
 
 	// Pre-build the set of priorities that correspond to current UCI interfaces
+
 	const valid_priorities = {};
 	for (let ifname in iface_order) {
 		const id = iface_index[ifname];
@@ -296,6 +299,7 @@ function routing_health() {
 	valid_priorities[FWMARK_BASE + mmdefault - 1] = true;
 
 	// Per-interface health report
+
 	const result = {};
 	for (let ifname in iface_order) {
 		const id            = iface_index[ifname];
@@ -340,6 +344,7 @@ function routing_health() {
 	}
 
 	// Stale rules: priorities in mwan3 ranges but not matching any current UCI interface
+
 	const stale = [];
 	for (let rule in all_rules) {
 		const p = rule?.priority;
@@ -417,12 +422,14 @@ function get_policies(version) {
 	const family_filter = (version == '6') ? 'ipv6' : 'ipv4';
 
 	// Build interface family map: iface_name -> 'ipv4'/'ipv6'
+
 	const iface_family = {};
 	uci.foreach('mwan3', 'interface', intf => {
 		iface_family[intf['.name']] = intf['family'] || 'ipv4';
 	});
 
 	// Build member info map: member_name -> { interface, metric, weight }
+
 	const member_info = {};
 	uci.foreach('mwan3', 'member', m => {
 		member_info[m['.name']] = {
@@ -441,6 +448,7 @@ function get_policies(version) {
 		if (type(use_members) != 'array') use_members = [use_members];
 
 		// Collect members matching the requested address family
+
 		const by_metric = {};
 		for (let mname in use_members) {
 			const m = member_info[mname];
@@ -457,6 +465,7 @@ function get_policies(version) {
 		if (!length(keys(by_metric))) return;
 
 		// Find the lowest metric with at least one online member
+
 		const sorted_metrics = sort(keys(by_metric), (a, b) => int(a) - int(b));
 		let active_metric = null;
 		for (let metric in sorted_metrics) {
@@ -470,6 +479,7 @@ function get_policies(version) {
 		}
 
 		// Sum weights of online members at the active metric for percent calculation
+
 		let total_weight = 0;
 		if (active_metric != null) {
 			for (let m in by_metric[active_metric]) {
@@ -524,10 +534,12 @@ function interfaces_status(request) {
 				'packetloss': get_int(ifname, sprintf('LOSS_%s', ip)),
 			});
 		}
+
 		// Derive check_quality from LATENCY file content rather than UCI.
 		// UCI may be stale if check_quality was changed without restarting mwan3track.
 		// mwan3track only writes LATENCY_* files when check_quality=1, so file
 		// presence with content is the authoritative indicator of actual state.
+
 		let check_quality = false;
 		for (let tip in track_ips) {
 			const lat = get_str_raw(ifname, sprintf('LATENCY_%s', tip.ip));
