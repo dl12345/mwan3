@@ -267,22 +267,30 @@ function routing_health() {
 		UNREACH_BASE = 3000;
 	}
 
+	const SRC_BASE = UNREACH_BASE + iface_max + 1;
+
 	// Build ordered interface list with 1-based index (same ordering mwan3 uses)
 
 	const iface_order = [];
 	const iface_index = {};
+	const iface_family = {};
 	uci.foreach('mwan3', 'interface', intf => {
 		push(iface_order, intf['.name']);
 		iface_index[intf['.name']] = length(iface_order);
+		iface_family[intf['.name']] = intf['family'] || 'ipv4';
 	});
 
 	// Fetch all ip rules and index by priority for O(1) lookup
 
 	const all_rules = get_ip_rules();
 	const rule_by_priority = {};
+	const v4_rule_by_priority = {};
 	for (let rule in all_rules) {
-		if (rule?.priority != null)
+		if (rule?.priority != null) {
 			rule_by_priority[rule.priority] = rule;
+			if (rule.family == 2)
+				v4_rule_by_priority[rule.priority] = rule;
+		}
 	}
 
 	// Pre-build the set of priorities that correspond to current UCI interfaces
@@ -341,6 +349,18 @@ function routing_health() {
 				})),
 			},
 		};
+
+		// The source band is IPv4-only, so test presence against the IPv4
+		// rule index alone. A device holds one source rule per global IPv4
+		// address, all sharing this priority, so a populated slot means the
+		// band exists for this interface, not that every address is covered.
+
+		if (iface_family[ifname] == 'ipv4') {
+			result[ifname].src_rule = {
+				present:  v4_rule_by_priority[SRC_BASE + id] != null,
+				priority: SRC_BASE + id,
+			};
+		}
 	}
 
 	// Stale rules: priorities in mwan3 ranges but not matching any current UCI interface
@@ -370,7 +390,7 @@ function routing_health() {
 		interfaces:  result,
 		stale_rules: stale,
 		mwan3_active: mwan3_active,
-		rule_bases: { iif: IIF_BASE, fwmark: FWMARK_BASE, unreach: UNREACH_BASE },
+		rule_bases: { iif: IIF_BASE, fwmark: FWMARK_BASE, unreach: UNREACH_BASE, src: SRC_BASE },
 	};
 }
 
