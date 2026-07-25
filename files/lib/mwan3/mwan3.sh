@@ -1363,6 +1363,7 @@ mwan3_set_user_nft_rule()
 	local sticky dest_ip dest_port use_policy timeout policy
 	local global_logging rule_logging loglevel rule_policy rule ipv
 	local enabled fwmark fwmask _check_set _set_info _fam_anchored
+	local src_mac nft_src_mac src_mac_count
 
 	config_get_bool enabled "$1" enabled 1
 	[ "$enabled" -eq 1 ] || return
@@ -1387,6 +1388,7 @@ mwan3_set_user_nft_rule()
 	config_get loglevel globals loglevel notice
 	config_get fwmark "$1" fwmark
 	config_get fwmask "$1" fwmask
+	config_get src_mac "$1" src_mac
 
 	# fwmark and fwmask must be specified together. Skip the rule if only one
 	# is set. Warn (not error) if the user-supplied mask overlaps mwan3's
@@ -1404,6 +1406,46 @@ mwan3_set_user_nft_rule()
 	fi
 	if [ -n "$fwmask" ] && [ $(( fwmask & MMX_MASK )) -ne 0 ]; then
 		LOG warn "Rule $1: fwmask $fwmask overlaps mwan3 internal mask $MMX_MASK; unexpected behaviour possible"
+	fi
+
+	# src_mac holds a single MAC address or a comma-separated list of them.
+	# Every entry is validated here and the whole rule is skipped if any entry
+	# is malformed, because user rules commit as one atomic nft batch and a
+	# single bad value would abort the entire rules rebuild. The match
+	# expression is rebuilt from the validated entries below, so nothing
+	# unvalidated reaches the batch. The block runs on both family passes, so a
+	# skipped family=any rule warns twice, as the fwmark checks above do.
+
+	if [ -n "$src_mac" ]; then
+		local _mac _oldifs="$IFS"
+
+		nft_src_mac=""
+		src_mac_count=0
+
+		# Split on commas as well as the default whitespace separators, so
+		# entries may be padded. Empty fragments left by doubled, leading or
+		# trailing commas are ignored.
+
+		IFS="$IFS,"
+		for _mac in $src_mac; do
+			[ -n "$_mac" ] || continue
+			case "$_mac" in
+				[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) ;;
+				*)
+					IFS="$_oldifs"
+					LOG warn "invalid src_mac $_mac specified for rule $rule"
+					return
+					;;
+			esac
+			nft_src_mac="${nft_src_mac:+$nft_src_mac, }$_mac"
+			src_mac_count=$((src_mac_count+1))
+		done
+		IFS="$_oldifs"
+
+		if [ "$src_mac_count" -eq 0 ]; then
+			LOG warn "no valid src_mac entries specified for rule $rule"
+			return
+		fi
 	fi
 
 	[ "$ipv" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && return
@@ -1599,6 +1641,23 @@ mwan3_set_user_nft_rule()
 
 	if [ -n "$src_dev" ]; then
 		nft_match="$nft_match iifname \"$src_dev\""
+	fi
+
+	# Source MAC
+	# Matches the source address of the frame, so it identifies a device
+	# independently of its IP addressing. nft prefixes the link-header load
+	# with an implicit "meta iiftype ether" guard: the match is therefore
+	# address-family agnostic but cleanly inert for router-originated traffic,
+	# which has no input device, and on non-ethernet interfaces. It sees the
+	# last layer-2 hop, so every client behind a downstream router presents
+	# that router's MAC.
+
+	if [ -n "$nft_src_mac" ]; then
+		if [ "$src_mac_count" -gt 1 ]; then
+			nft_match="$nft_match ether saddr { $nft_src_mac }"
+		else
+			nft_match="$nft_match ether saddr $nft_src_mac"
+		fi
 	fi
 
 	# Destination IP
