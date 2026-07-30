@@ -1345,7 +1345,7 @@ mwan3_set_user_nft_rule()
 	local ipset_name ipset_src family proto policy src_ip src_port src_iface src_dev
 	local sticky dest_ip dest_port use_policy timeout policy
 	local global_logging rule_logging loglevel rule_policy rule ipv
-	local enabled fwmark fwmask _check_set _set_info
+	local enabled fwmark fwmask _check_set _set_info _fam_anchored
 
 	config_get_bool enabled "$1" enabled 1
 	[ "$enabled" -eq 1 ] || return
@@ -1393,20 +1393,30 @@ mwan3_set_user_nft_rule()
 	[ "$family" = "ipv4" ] && [ "$ipv" = "ipv6" ] && return
 	[ "$family" = "ipv6" ] && [ "$ipv" = "ipv4" ] && return
 
-	# family=any rules whose nft expression has no IP-version-specific element
-	# (no src_ip/dest_ip/ipset/ipset_src) generate identical output on both the
-	# ipv4 and ipv6 passes. Skip the ipv6 pass to avoid pushing a duplicate
-	# rule. The ipv4 pass output already matches IPv6 traffic at runtime
-	# because the match operates on family-agnostic fields (meta mark, l4proto,
-	# port, iifname), and because rules render in config order the single
-	# line sits at the rule's config position and covers both families
-	# there. Exception: proto=icmp requires both passes because ICMP
-	# (protocol 1) and ICMPv6 (protocol 58) are distinct L4 protocols.
+	# A family-anchoring element (src_ip/dest_ip/ipset/ipset_src) ties the
+	# rendered expression to one address family per pass. This list must
+	# cover every matcher whose nft form differs by address family; the
+	# de-duplication guard and the sticky block both key on the flag.
+
+	_fam_anchored=0
+	if [ -n "$src_ip" ] || [ -n "$dest_ip" ] || \
+	   [ -n "$ipset_name" ] || [ -n "$ipset_src" ]; then
+		_fam_anchored=1
+	fi
+
+	# family=any rules with no family-anchoring element render once, on
+	# the ipv4 pass: the emitted line matches on family-agnostic fields
+	# (meta mark, l4proto, port, iifname, ether saddr) and carries no
+	# nfproto guard, so it covers both families at its config position,
+	# and the sticky block builds the per-rule chain complete for both
+	# families on that pass. Skip the ipv6 pass to avoid a duplicate
+	# line. Exception: proto=icmp requires both passes because ICMP
+	# (protocol 1) and ICMPv6 (protocol 58) are distinct L4 protocols;
+	# the ipv6 pass then emits its own line but must not rebuild the
+	# sticky chain.
 
 	if [ "$family" = "any" ] && [ "$ipv" = "ipv6" ] && \
-	   [ -z "$src_ip" ] && [ -z "$dest_ip" ] && \
-	   [ -z "$ipset_name" ] && [ -z "$ipset_src" ] && \
-	   [ "$proto" != "icmp" ]; then
+	   [ $_fam_anchored -eq 0 ] && [ "$proto" != "icmp" ]; then
 		return
 	fi
 
@@ -1642,7 +1652,7 @@ mwan3_set_user_nft_rule()
 	# like default_rule (family ipv4, no saddr/daddr) generates a bare
 	# "meta mark ... jump policy" that matches IPv6 traffic too.
 
-	if [ -z "$src_ip" ] && [ -z "$dest_ip" ] && [ -z "$ipset_name" ] && [ -z "$ipset_src" ]; then
+	if [ $_fam_anchored -eq 0 ]; then
 		if [ "$family" = "ipv4" ]; then
 			nft_match="${nft_match:+$nft_match }meta nfproto ipv4"
 		elif [ "$family" = "ipv6" ]; then
@@ -1682,49 +1692,86 @@ mwan3_set_user_nft_rule()
 		# bit. The save side mirrors this with per-member "update @set" rules
 		# guarded on (meta mark & MMX) == <member_mark>.
 
+		# The per-rule chain is shared by every mwan3_rules line that
+		# jumps to it, so it is built exactly once, complete for every
+		# family whose traffic can reach it. A family=any rule with no
+		# family-anchoring element serves both families from the single
+		# line emitted on the ipv4 pass, so that pass builds both
+		# families' arms; for proto=icmp the ipv6 pass also reaches this
+		# block and only points its own line at the finished chain. The
+		# layout is load-bearing: every lookup precedes the single
+		# fall-through, so a pinned source ORs its member mark into the
+		# packet before the fall-through can hand it to the policy, and
+		# the update rules follow.
+
 		local _policy_member_marks _entry _m_id _m_mark _setname
-		local _fam_short _saddr_kw _addr_type
-		if [ "$ipv" = "ipv4" ]; then
-			_fam_short="v4"; _saddr_kw="ip saddr"; _addr_type="ipv4_addr"
-		else
-			_fam_short="v6"; _saddr_kw="ip6 saddr"; _addr_type="ipv6_addr"
+		local _fam_short _saddr_kw _addr_type _sticky_families _sfam
+
+		_sticky_families="$ipv"
+		if [ "$family" = "any" ] && [ $_fam_anchored -eq 0 ]; then
+			if [ "$ipv" = "ipv6" ]; then
+				_sticky_families=""
+			elif [ $NO_IPV6 -eq 0 ]; then
+				_sticky_families="ipv4 ipv6"
+			fi
 		fi
 
-		mwan3_get_policy_members_for_family "$use_policy" "$ipv"
+		_sticky_fam_vars() {
+			if [ "$1" = "ipv4" ]; then
+				_fam_short="v4"; _saddr_kw="ip saddr"; _addr_type="ipv4_addr"
+			else
+				_fam_short="v6"; _saddr_kw="ip6 saddr"; _addr_type="ipv6_addr"
+			fi
+		}
 
-		# Create sticky rule chain if it doesn't exist yet. The chain was
-		# already flushed in the preamble of mwan3_set_user_rules, so both
-		# ipv4 and ipv6 passes can add their rules without interference.
+		if [ -n "$_sticky_families" ]; then
 
-		mwan3_nft_push "add chain inet mwan3 mwan3_rule_$1"
+			# Create sticky rule chain if it doesn't exist yet. The chain
+			# was already flushed in the preamble of mwan3_set_user_rules.
 
-		# Per-member sticky sets and lookup rules.
+			mwan3_nft_push "add chain inet mwan3 mwan3_rule_$1"
 
-		for _entry in $_policy_member_marks; do
-			_m_id="${_entry%%:*}"
-			_m_mark="${_entry##*:}"
-			_setname="mwan3_sticky_${_fam_short}_${rule}_${_m_id}"
+			# Per-member sticky sets and lookup rules, every served
+			# family's lookups ahead of the fall-through.
 
-			$NFT list set inet mwan3 "$_setname" &>/dev/null || \
-				mwan3_nft_push "add set inet mwan3 $_setname { type ${_addr_type}; flags timeout; timeout ${timeout}s; }"
+			for _sfam in $_sticky_families; do
+				_sticky_fam_vars "$_sfam"
+				mwan3_get_policy_members_for_family "$use_policy" "$_sfam"
 
-			mwan3_nft_push "add rule inet mwan3 mwan3_rule_$1 ${_saddr_kw} @${_setname} jump mwan3_or_meta_$(mwan3_or_chain_suffix "$_m_mark")"
-		done
+				for _entry in $_policy_member_marks; do
+					_m_id="${_entry%%:*}"
+					_m_mark="${_entry##*:}"
+					_setname="mwan3_sticky_${_fam_short}_${rule}_${_m_id}"
 
-		# Fall through to policy for new flows (no sticky entry hit -> mark still 0).
+					$NFT list set inet mwan3 "$_setname" &>/dev/null || \
+						mwan3_nft_push "add set inet mwan3 $_setname { type ${_addr_type}; flags timeout; timeout ${timeout}s; }"
 
-		mwan3_nft_push "add rule inet mwan3 mwan3_rule_$1 meta mark & $MMX_MASK == 0 jump mwan3_policy_$use_policy"
+					mwan3_nft_push "add rule inet mwan3 mwan3_rule_$1 ${_saddr_kw} @${_setname} jump mwan3_or_meta_$(mwan3_or_chain_suffix "$_m_mark")"
+				done
+			done
 
-		# After the policy assigns a mark, populate the matching per-member
-		# sticky set so subsequent packets from this saddr stay on the same WAN.
+			# Fall through to policy for new flows (no sticky entry hit ->
+			# mark still 0).
 
-		for _entry in $_policy_member_marks; do
-			_m_id="${_entry%%:*}"
-			_m_mark="${_entry##*:}"
-			_setname="mwan3_sticky_${_fam_short}_${rule}_${_m_id}"
+			mwan3_nft_push "add rule inet mwan3 mwan3_rule_$1 meta mark & $MMX_MASK == 0 jump mwan3_policy_$use_policy"
 
-			mwan3_nft_push "add rule inet mwan3 mwan3_rule_$1 meta mark & $MMX_MASK == $_m_mark update @${_setname} { ${_saddr_kw} timeout ${timeout}s }"
-		done
+			# After the policy assigns a mark, populate the matching
+			# per-member sticky set so subsequent packets from this saddr
+			# stay on the same WAN.
+
+			for _sfam in $_sticky_families; do
+				_sticky_fam_vars "$_sfam"
+				mwan3_get_policy_members_for_family "$use_policy" "$_sfam"
+
+				for _entry in $_policy_member_marks; do
+					_m_id="${_entry%%:*}"
+					_m_mark="${_entry##*:}"
+					_setname="mwan3_sticky_${_fam_short}_${rule}_${_m_id}"
+
+					mwan3_nft_push "add rule inet mwan3 mwan3_rule_$1 meta mark & $MMX_MASK == $_m_mark update @${_setname} { ${_saddr_kw} timeout ${timeout}s }"
+				done
+			done
+		fi
 
 		policy_action="jump mwan3_rule_$1"
 	fi
