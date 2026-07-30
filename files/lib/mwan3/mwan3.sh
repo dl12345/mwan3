@@ -1129,11 +1129,15 @@ mwan3_set_policy()
 
 	if [ $is_offline -eq 0 ]; then
 
-		# Accumulate members per family: "iface_name:id:weight" tuples
+		# Accumulate members per family: "iface_name:id:weight" tuples.
+		# The branches mirror the metric contest above, so a member only
+		# accumulates through its interface family's contest: an IPv6
+		# member is excluded on a kernel without IPv6, and an
+		# unrecognised family value is never accumulated.
 
 		if [ "$family" = "ipv4" ]; then
 			policy_members_v4="$policy_members_v4 $iface:$id:$weight"
-		else
+		elif [ "$family" = "ipv6" ] && [ $NO_IPV6 -eq 0 ]; then
 			policy_members_v6="$policy_members_v6 $iface:$id:$weight"
 		fi
 	fi
