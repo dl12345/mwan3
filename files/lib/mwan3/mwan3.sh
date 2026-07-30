@@ -1447,7 +1447,13 @@ mwan3_set_user_nft_rule()
 	# the src_ip/dest_ip address validation above: a set of type ipv4_addr
 	# cannot appear in an "ip6 daddr @set" expression, and vice versa.
 
-	local _ipset_name_uci_type="" _ipset_src_uci_type=""
+	local _ipset_name_uci_type="" _ipset_src_uci_type="" _pass_addrtype
+	if [ "$ipv" = "ipv4" ]; then
+		_pass_addrtype="ipv4_addr"
+	else
+		_pass_addrtype="ipv6_addr"
+	fi
+
 	for _check_set in "$ipset_name" "$ipset_src"; do
 		[ -z "$_check_set" ] && continue
 		local _set_info
@@ -1486,6 +1492,25 @@ mwan3_set_user_nft_rule()
 				[ "$ipv" = "ipv6" ] && [ "$_uci_addrtype" = "ipv4_addr" ] && return
 				continue
 			fi
+
+			# An earlier rule in this render may already have pre-created
+			# the set into the open batch, which the kernel query above
+			# cannot see. Consult the render's own record instead: the
+			# first pre-creation establishes the set's type for the whole
+			# render, and every later reference is treated exactly as if
+			# the kernel held a set of that type.
+
+			case " $MWAN3_RENDER_SETS " in
+				*" ${_check_set}=${_pass_addrtype} "*)
+					continue
+					;;
+				*" ${_check_set}="*)
+					[ "$family" = "any" ] && return
+					LOG warn "Rule $rule: set '$_check_set' pre-created as the other address family by an earlier rule, incompatible with family $family"
+					return
+					;;
+			esac
+
 			# Not UCI-managed: apply existing guard for external sets.
 			# For family=any, skip the ipv6 pass; the ipv4 pass will pre-create
 			# the set as ipv4_addr until an external creator establishes its type.
@@ -1586,15 +1611,20 @@ mwan3_set_user_nft_rule()
 		# set is missing, which would kill ALL user rules.
 		# UCI-managed sets are already added to the batch by mwan3_render_config_ipsets;
 		# skip the kernel check and pre-creation for those.
+		# A set this render has already pre-created is in the record and is
+		# never added twice: two adds of one name in a batch are rejected
+		# when the types differ, and redundant when they match.
 
 		if [ -z "$_ipset_name_uci_type" ] && \
 		   ! $NFT list set inet mwan3 "$ipset_name" &>/dev/null; then
-			LOG notice "Creating missing nft set '$ipset_name' for rule $rule"
-			if [ "$ipv" = "ipv4" ]; then
-				mwan3_nft_push "add set inet mwan3 $ipset_name { type ipv4_addr; flags interval; auto-merge; }"
-			else
-				mwan3_nft_push "add set inet mwan3 $ipset_name { type ipv6_addr; flags interval; auto-merge; }"
-			fi
+			case " $MWAN3_RENDER_SETS " in
+				*" ${ipset_name}=${_pass_addrtype} "*) ;;
+				*)
+					LOG notice "Creating missing nft set '$ipset_name' for rule $rule"
+					mwan3_nft_push "add set inet mwan3 $ipset_name { type ${_pass_addrtype}; flags interval; auto-merge; }"
+					MWAN3_RENDER_SETS="$MWAN3_RENDER_SETS ${ipset_name}=${_pass_addrtype}"
+					;;
+			esac
 		fi
 		if [ "$ipv" = "ipv4" ]; then
 			nft_match="$nft_match ip daddr @$ipset_name"
@@ -1608,12 +1638,14 @@ mwan3_set_user_nft_rule()
 	if [ -n "$ipset_src" ]; then
 		if [ -z "$_ipset_src_uci_type" ] && \
 		   ! $NFT list set inet mwan3 "$ipset_src" &>/dev/null; then
-			LOG notice "Creating missing nft set '$ipset_src' for rule $rule"
-			if [ "$ipv" = "ipv4" ]; then
-				mwan3_nft_push "add set inet mwan3 $ipset_src { type ipv4_addr; flags interval; auto-merge; }"
-			else
-				mwan3_nft_push "add set inet mwan3 $ipset_src { type ipv6_addr; flags interval; auto-merge; }"
-			fi
+			case " $MWAN3_RENDER_SETS " in
+				*" ${ipset_src}=${_pass_addrtype} "*) ;;
+				*)
+					LOG notice "Creating missing nft set '$ipset_src' for rule $rule"
+					mwan3_nft_push "add set inet mwan3 $ipset_src { type ${_pass_addrtype}; flags interval; auto-merge; }"
+					MWAN3_RENDER_SETS="$MWAN3_RENDER_SETS ${ipset_src}=${_pass_addrtype}"
+					;;
+			esac
 		fi
 		if [ "$ipv" = "ipv4" ]; then
 			nft_match="$nft_match ip saddr @$ipset_src"
@@ -1822,6 +1854,15 @@ mwan3_set_user_iface_rules()
 
 mwan3_set_user_rules()
 {
+	# Record of the external sets this render has pre-created into the
+	# batch, as space-delimited "name=addrtype" tokens, read and appended
+	# to by mwan3_set_user_nft_rule through dynamic scoping. Kernel
+	# queries inside an open batch see pre-batch state, so the renderer
+	# carries its own shadow of what the batch already holds. Reset per
+	# render, so repeated renders emit identical batches.
+
+	local MWAN3_RENDER_SETS=""
+
 	mwan3_nft_batch_start
 
 	mwan3_nft_push "flush chain inet mwan3 mwan3_rules"
