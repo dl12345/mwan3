@@ -225,9 +225,17 @@ function nft_exec(cmd) {
 	return true;
 }
 
+// Run a list of nft commands as a single nft -f transaction. The batch
+// file is per-family: one mwan3rtmon instance runs per address family
+// and each instance is single-threaded, so the family suffix alone
+// keeps the two instances' batch files apart without locking. The file
+// is removed on every exit path after creation. nft runs through a
+// read-mode popen with stderr folded into stdout so the failure log
+// carries nft's own error text.
+
 function nft_batch(cmds) {
 
-	let tmpfile = "/var/run/mwan3/mwan3rtmon_nft_batch";
+	let tmpfile = "/var/run/mwan3/mwan3rtmon_nft_batch." + family_name;
 	let f = open(tmpfile, "w", 0600);
 	if (!f) {
 		log_msg("warn", "cannot open nft batch file");
@@ -238,10 +246,13 @@ function nft_batch(cmds) {
 	f.close();
 
 	let p = popen("nft -f " + tmpfile + " 2>&1");
-	if (!p)
+	if (!p) {
+		unlink(tmpfile);
 		return false;
+	}
 	let out = p.read("all");
 	let rc = p.close();
+	unlink(tmpfile);
 	if (rc != 0) {
 		log_msg("warn", "nft batch failed: " + (out ?? ""));
 		return false;
