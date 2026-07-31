@@ -87,14 +87,43 @@ let mwan3_cfg = null;
 
 let pub6_seen = {};
 let pub4_seen = {};
+let lit_alias = {};
+
+// Register one public address. The placeholder map is keyed and numbered on
+// normalised forms only; when the literal spelling differs from the
+// normalised form it is recorded as an alias so free-form text carrying
+// that spelling is still replaced.
 
 function register(addr_str) {
 	if (!addr_str) return;
+	let lit  = split(addr_str, '/')[0];
 	let norm = norm_addr(addr_str);
 	if (!norm) return;
-	let sa = sock.sockaddr(split(addr_str, '/')[0]);
+	let sa = sock.sockaddr(lit);
 	if (sa.family == 10 && is_public_v6(norm)) pub6_seen[norm] = 1;
 	else if (sa.family == 2 && is_public_v4(norm)) pub4_seen[norm] = 1;
+	else return;
+	if (lit != norm) lit_alias[lit] = norm;
+}
+
+// Sweep a block of free-form text for address literals. Splitting on any
+// run of characters that cannot occur inside an address or prefix keeps
+// every address-bearing token intact; a token that is not a valid public
+// address fails validation inside register() and drops out. A colon-less
+// token must be a full dotted quad: the address parser also accepts
+// shorthand forms like "1.0", which free-form text produces as ordinary
+// decimal fragments, and registering one would alias that fragment to a
+// placeholder everywhere in the report.
+
+function scan_text(text) {
+	if (!text) return;
+	for (let tok in split(text, /[^0-9a-fA-F:.\/]+/)) {
+		if (!length(tok)) continue;
+		if (index(tok, ':') == -1 &&
+		    !match(tok, /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(\/[0-9]+)?$/))
+			continue;
+		register(tok);
+	}
 }
 
 for (let n in nb_all) { register(n.dst); }
@@ -110,57 +139,8 @@ if (mwan3_st?.interfaces)
 
 // Register any addresses appearing in the mwan3 UCI config (e.g. track_ip
 // values not yet reflected in routes/status).
-if (mwan3_cfg)
-	for (let line in split(mwan3_cfg, '\n'))
-		for (let tok in split(replace(line, "'", ' '), ' '))
-			register(trim(tok));
 
-// ---------------------------------------------------------------------------
-// Phase 3: build deterministic placeholder map
-// Sort addresses so the same address always gets the same placeholder across
-// multiple runs (e.g. v3.4 run vs v3.5.1 run).
-// ---------------------------------------------------------------------------
-
-let pub6_list = sort(keys(pub6_seen));
-let pub4_list = sort(keys(pub4_seen));
-let addr_map  = {};
-for (let i = 0; i < length(pub6_list); i++)
-	addr_map[pub6_list[i]] = sprintf('PUB6_%d', i + 1);
-for (let i = 0; i < length(pub4_list); i++)
-	addr_map[pub4_list[i]] = sprintf('PUB4_%d', i + 1);
-
-// ---------------------------------------------------------------------------
-// Anonymisation helpers
-// ---------------------------------------------------------------------------
-
-// Anonymise a single address string (preserves any /prefix-length suffix).
-function anon(addr_str) {
-	if (!addr_str) return addr_str;
-	let parts = split(addr_str, '/');
-	let norm  = norm_addr(parts[0]);
-	let ph    = norm ? (addr_map[norm] ?? null) : null;
-	if (ph) return ph + (length(parts) > 1 ? '/' + parts[1] : '');
-	return addr_str;
-}
-
-// Anonymise a block of free-form text (nft output, log lines, etc.).
-// Sorted longest-first so longer addresses are replaced before any shorter
-// prefix they might share (prevents partial substitutions).
-let _sorted_addrs = sort(keys(addr_map), (a, b) => length(b) - length(a));
-function anon_text(text) {
-	if (!text) return '(no output)';
-	for (let addr in _sorted_addrs) {
-		let ph  = addr_map[addr];
-		let pos = 0;
-		while (true) {
-			let found = index(text, addr, pos);
-			if (found == -1) break;
-			text = substr(text, 0, found) + ph + substr(text, found + length(addr));
-			pos  = found + length(ph);
-		}
-	}
-	return text;
-}
+scan_text(mwan3_cfg);
 
 // Strip elements from user-defined nft sets, replacing with { ... }.
 // mwan3 infrastructure sets (names starting with mwan3_) are left intact:
@@ -197,13 +177,102 @@ function strip_set_elements(text) {
 	return join('\n', out);
 }
 
-// Run a shell command and return its anonymised output.
-function pcmd(cmd) {
+// Run a shell command and return its raw output.
+function rcmd(cmd) {
 	let f = fs.popen(cmd);
 	if (!f) return '(failed to run: ' + cmd + ')\n';
 	let out = f.read('all');
 	f.close();
-	return anon_text(out || '(no output)\n');
+	return out || '(no output)\n';
+}
+
+// ---------------------------------------------------------------------------
+// Detect which table mwan3 is using (v3.4 = inet fw4, v3.5+ = inet mwan3)
+// ---------------------------------------------------------------------------
+
+let mwan3_tbl = 'inet mwan3';
+{
+	let f = fs.popen('nft list chain inet mwan3 mwan3_prerouting 2>/dev/null | head -1');
+	let l = f?.read('line');
+	f?.close();
+	if (!l || !length(trim(l))) mwan3_tbl = 'inet fw4';
+}
+
+// ---------------------------------------------------------------------------
+// Capture the free-form text sections the report prints and sweep them for
+// address literals. Some public addresses exist only in this text, e.g. NAT
+// map elements derived from no route or interface address, or logged
+// addresses no longer present in live state, and are registered here so
+// they receive placeholders. Each section is captured exactly once and the
+// captured text itself is printed later, so no literal can appear in the
+// printed copy without having been swept. The mwan3 table is stripped of
+// user-set elements before the sweep so redacted addresses are not
+// assigned placeholders.
+// ---------------------------------------------------------------------------
+
+let nft_mwan3_txt      = strip_set_elements(rcmd(sprintf('nft list table %s 2>/dev/null', mwan3_tbl)));
+let fw4_mangle_pre_txt = rcmd('nft list chain inet fw4 mangle_prerouting 2>/dev/null');
+let fw4_mangle_out_txt = rcmd('nft list chain inet fw4 mangle_output 2>/dev/null');
+let fw4_output_txt     = rcmd('nft list chain inet fw4 output 2>/dev/null');
+let log_txt            = rcmd('logread 2>/dev/null | grep -E "mwan3track\\[|mwan3-hotplug\\[|mwan3-init\\[|mwan3\\[|mwan3rtmon\\[|mwan3-manage-rules\\[|mwan3-create-iface-route\\[" | tail -200');
+
+scan_text(nft_mwan3_txt);
+scan_text(fw4_mangle_pre_txt);
+scan_text(fw4_mangle_out_txt);
+scan_text(fw4_output_txt);
+scan_text(log_txt);
+
+// ---------------------------------------------------------------------------
+// Phase 3: build deterministic placeholder map
+// Sort addresses so the same address always gets the same placeholder across
+// multiple runs (e.g. v3.4 run vs v3.5.1 run).
+// ---------------------------------------------------------------------------
+
+let pub6_list = sort(keys(pub6_seen));
+let pub4_list = sort(keys(pub4_seen));
+let addr_map  = {};
+for (let i = 0; i < length(pub6_list); i++)
+	addr_map[pub6_list[i]] = sprintf('PUB6_%d', i + 1);
+for (let i = 0; i < length(pub4_list); i++)
+	addr_map[pub4_list[i]] = sprintf('PUB4_%d', i + 1);
+
+// A literal spelling that normalises to a registered address receives the
+// registered form's placeholder, so both spellings are replaced in text.
+
+for (let lit, norm in lit_alias)
+	if (addr_map[norm]) addr_map[lit] = addr_map[norm];
+
+// ---------------------------------------------------------------------------
+// Anonymisation helpers
+// ---------------------------------------------------------------------------
+
+// Anonymise a single address string (preserves any /prefix-length suffix).
+function anon(addr_str) {
+	if (!addr_str) return addr_str;
+	let parts = split(addr_str, '/');
+	let norm  = norm_addr(parts[0]);
+	let ph    = norm ? (addr_map[norm] ?? null) : null;
+	if (ph) return ph + (length(parts) > 1 ? '/' + parts[1] : '');
+	return addr_str;
+}
+
+// Anonymise a block of free-form text (nft output, log lines, etc.).
+// Sorted longest-first so longer addresses are replaced before any shorter
+// prefix they might share (prevents partial substitutions).
+let _sorted_addrs = sort(keys(addr_map), (a, b) => length(b) - length(a));
+function anon_text(text) {
+	if (!text) return '(no output)';
+	for (let addr in _sorted_addrs) {
+		let ph  = addr_map[addr];
+		let pos = 0;
+		while (true) {
+			let found = index(text, addr, pos);
+			if (found == -1) break;
+			text = substr(text, 0, found) + ph + substr(text, found + length(addr));
+			pos  = found + length(ph);
+		}
+	}
+	return text;
 }
 
 // ---------------------------------------------------------------------------
@@ -222,18 +291,6 @@ let TBL_NAMES = { '253': 'default', '254': 'main' };
 function tbl_label(n) {
 	let name = TBL_NAMES[n + ''];
 	return name ? sprintf('%s (%d)', name, n) : sprintf('%d', n);
-}
-
-// ---------------------------------------------------------------------------
-// Detect which table mwan3 is using (v3.4 = inet fw4, v3.5+ = inet mwan3)
-// ---------------------------------------------------------------------------
-
-let mwan3_tbl = 'inet mwan3';
-{
-	let f = fs.popen('nft list chain inet mwan3 mwan3_prerouting 2>/dev/null | head -1');
-	let l = f?.read('line');
-	f?.close();
-	if (!l || !length(trim(l))) mwan3_tbl = 'inet fw4';
 }
 
 // ---------------------------------------------------------------------------
@@ -407,20 +464,20 @@ else
 
 // --- full mwan3 nft table ---
 printf('=== mwan3 nft table (%s) ===\n', mwan3_tbl);
-printf('%s\n', strip_set_elements(pcmd(sprintf('nft list table %s 2>/dev/null', mwan3_tbl))));
+printf('%s\n', anon_text(nft_mwan3_txt));
 
 // --- fw4 mangle chains (relevant to mwan3 mark interactions) ---
 printf('=== fw4 mangle_prerouting chain ===\n');
-printf('%s\n', pcmd('nft list chain inet fw4 mangle_prerouting 2>/dev/null'));
+printf('%s\n', anon_text(fw4_mangle_pre_txt));
 
 printf('=== fw4 mangle_output chain ===\n');
-printf('%s\n', pcmd('nft list chain inet fw4 mangle_output 2>/dev/null'));
+printf('%s\n', anon_text(fw4_mangle_out_txt));
 
 printf('=== fw4 output chain ===\n');
-printf('%s\n', pcmd('nft list chain inet fw4 output 2>/dev/null'));
+printf('%s\n', anon_text(fw4_output_txt));
 
 // --- recent mwan3 log ---
 printf('=== Recent mwan3 Log (last 200 lines) ===\n');
-printf('%s\n', pcmd('logread 2>/dev/null | grep -E "mwan3track\\[|mwan3-hotplug\\[|mwan3-init\\[|mwan3\\[|mwan3rtmon\\[|mwan3-manage-rules\\[|mwan3-create-iface-route\\[" | tail -200'));
+printf('%s\n', anon_text(log_txt));
 
 printf('=== End of Report ===\n');
