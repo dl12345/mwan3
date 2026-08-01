@@ -57,7 +57,7 @@ let tid = 0;
 cur.foreach("mwan3", "interface", function(s) {
 	tid++;
 	let fam = s.family ?? "ipv4";
-	let enabled = +(s.enabled ?? "1");
+	let enabled = +(s.enabled ?? "0");
 	if (enabled && fam == family_name)
 		name_tid[s[".name"]] = tid;
 });
