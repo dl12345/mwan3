@@ -73,9 +73,35 @@ function ucibool(val) {
 	}
 }
 
+// ---- Route classification --------------------------------------------------
+
+// The width classifier for the bypass sweeps: a route is default-equivalent
+// when its destination is absent (a literal default) or its prefix is wide
+// enough that it can only exist as a component of an in-substance default
+// route - /2 or wider for IPv4, /3 or wider for IPv6, which covers the
+// split-half pairs VPN clients install and the 2000::/3 global-unicast
+// aggregate. Each route is judged alone, so a half-installed pair is still
+// excluded. The family comes from iptoarr, the inet_pton wrapper, so no
+// address text is hand-parsed; a destination it cannot parse is not
+// default-equivalent. The strict literal-default predicate the mirroring and
+// route-state paths use is deliberately not widened and lives on beside this.
+
+function is_default_equivalent(route) {
+	let dst = route.dst;
+	if (dst == null)
+		return true;
+	let slash = index(dst, "/");
+	if (slash < 0)
+		return false;
+	let a = iptoarr(substr(dst, 0, slash));
+	if (a == null)
+		return false;
+	return +substr(dst, slash + 1) <= (length(a) == 16 ? 3 : 2);
+}
+
 // ---- Exports ---------------------------------------------------------------
 
 // The module's public interface. Declared as an export list rather than inline
 // on each function, which this ucode build does not accept.
 
-export { log_open, log_verbose, log_msg, ucibool };
+export { log_open, log_verbose, log_msg, ucibool, is_default_equivalent };

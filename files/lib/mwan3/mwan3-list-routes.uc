@@ -2,6 +2,7 @@
 'use strict';
 
 import * as rtnl from "rtnl";
+import { is_default_equivalent } from 'mwan3.common';
 
 const RTM_GETROUTE = rtnl.const.RTM_GETROUTE;
 const NLM_F_DUMP = rtnl.const.NLM_F_DUMP;
@@ -16,12 +17,6 @@ function is_cidr_route(route, family_num) {
 	if (slash < 0) return false;
 	let prefix_len = +substr(dst, slash + 1);
 	return (family_num == AF_INET) ? (prefix_len < 32) : (prefix_len < 128);
-}
-
-function is_default_route(route) {
-	return (route.dst == null ||
-	        route.dst == "0.0.0.0/0" ||
-	        route.dst == "::/0");
 }
 
 function is_linklocal_route(route) {
@@ -40,7 +35,7 @@ let seen = {};
 for (let route in routes) {
 	if (route.table != table_num) continue;
 	if (!is_cidr_route(route, family_num)) continue;
-	if (is_default_route(route)) continue;
+	if (is_default_equivalent(route)) continue;
 	if (is_linklocal_route(route)) continue;
 	if (family_num == AF_INET) {
 		let first_octet = +split(route.dst, ".")[0];

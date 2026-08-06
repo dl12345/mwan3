@@ -6,7 +6,7 @@ import * as uloop from "uloop";
 import * as uci from "uci";
 import * as ubus from "ubus";
 import { open, readfile, popen, stat, mkdir, rename, unlink } from "fs";
-import { log_open, log_verbose, log_msg as mlog, ucibool } from 'mwan3.common';
+import { log_open, log_verbose, log_msg as mlog, ucibool, is_default_equivalent } from 'mwan3.common';
 
 const RTM_NEWROUTE = rtnl.const.RTM_NEWROUTE;
 const RTM_DELROUTE = rtnl.const.RTM_DELROUTE;
@@ -508,7 +508,7 @@ function populate_connected_set() {
 	let seen = {};
 	let elements = [];
 	for (let route in routes) {
-		if (is_cidr_route(route) && !is_default_route(route) && !is_linklocal_route(route) && !seen[route.dst]) {
+		if (is_cidr_route(route) && !is_default_equivalent(route) && !is_linklocal_route(route) && !seen[route.dst]) {
 			push(elements, route.dst);
 			seen[route.dst] = true;
 		}
@@ -593,7 +593,7 @@ function repopulate_custom_sets() {
 		if (!extra_table_set[r.table])
 			continue;
 		let dst = r.dst;
-		if (dst == null || is_default_route(r) || is_linklocal_route(r))
+		if (dst == null || is_default_equivalent(r) || is_linklocal_route(r))
 			continue;
 		if (!seen[dst]) {
 			push(cmds, "add element inet mwan3 " + setname + " { " + dst + " }");
@@ -615,7 +615,7 @@ function repopulate_custom_sets() {
 function handle_custom_set_event(route, is_new) {
 
 	let dst = route.dst;
-	if (dst == null || is_default_route(route) || is_linklocal_route(route))
+	if (dst == null || is_default_equivalent(route) || is_linklocal_route(route))
 		return;
 
 	let setname = (family_num == AF_INET) ? "mwan3_custom_v4" : "mwan3_custom_v6";
