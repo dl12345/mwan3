@@ -507,7 +507,17 @@ function populate_connected_set() {
 
 	let seen = {};
 	let elements = [];
+
+	// Main-table routes only. get_all_routes() also returns the extra lookup
+	// tables for the per-interface mirroring, but their routes belong to
+	// mwan3_custom_v4/v6, which grants the identical bypass and is maintained
+	// on those tables' own route events. Sweeping them in here as well would
+	// strand them: extra-table events never arm this rebuild, so a route
+	// deleted from its table would stay in the connected set indefinitely.
+
 	for (let route in routes) {
+		if (route.table != RT_TABLE_MAIN)
+			continue;
 		if (is_cidr_route(route) && !is_default_equivalent(route) && !is_linklocal_route(route) && !seen[route.dst]) {
 			push(elements, route.dst);
 			seen[route.dst] = true;
