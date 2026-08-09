@@ -1,5 +1,5 @@
 # For full documentation of mwan3 configuration:
-# https://openwrt.org/docs/guide-user/network/wan/multiwan/mwan3#mwan3_configuration
+# https://openwrt.org/docs/guide-user/network/wan/multiwan/mwan3-nft#configuration
 
 config globals 'globals'
 	option mmx_mask '0x3F00'

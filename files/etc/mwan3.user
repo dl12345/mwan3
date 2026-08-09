@@ -16,5 +16,5 @@
 # $DEVICE	Physical device name of the interface the action relates to (e.g. "eth0" or "wwan0").
 #               Note: On an ifdown event, $DEVICE is not available, use $INTERFACE instead.
 #
-# Further documentation can be found here:
-# https://openwrt.org/docs/guide-user/network/wan/multiwan/mwan3#alertsnotifications
+# Further documentation can be found at:
+# https://openwrt.org/docs/guide-user/network/wan/multiwan/mwan3-nft#hotplug_events_mwan3user
