@@ -1057,6 +1057,24 @@ mwan3_create_iface_rules()
 
 	$IP rule add pref $((id+MWAN3_IIF_RULE_BASE)) iif "$2" lookup "$id" 2>/dev/null
 	$IP rule add pref $((id+MWAN3_FWMARK_RULE_BASE)) fwmark "$(mwan3_id2mask id MMX_MASK)/$MMX_MASK" lookup "$id" 2>/dev/null
+
+	# Locally originated traffic that already pinned its egress with
+	# SO_BINDTODEVICE has stated where it must leave; the mark it carries is
+	# not authoritative for it. Without this rule such a packet is routed by
+	# whatever mark it ends up with - and a third party that overwrites the
+	# whole mark word in an earlier mangle hook makes that some other
+	# interface's mark - so the lookup lands in a table holding no route for
+	# the bound device and the packet falls through to this interface's
+	# unreachable backstop and is dropped. mwan3track's own probes are the
+	# common casualty: they bind to the device precisely so that each WAN is
+	# measured separately, and losing them makes the tracker report a WAN as
+	# down while the link is fine.
+	#
+	# The rule is inert for anything not bound to a device, because the oif
+	# selector cannot match when the flow carries no output interface.
+
+	$IP rule add pref $((id+MWAN3_OIF_RULE_BASE)) oif "$2" lookup "$id" 2>/dev/null
+
 	[ "$family" = "ipv4" ] && ${MWAN3_MANAGE_RULES} add-src "$2" "$id" \
 		"$((id + MWAN3_UNREACHABLE_RULE_BASE + MWAN3_INTERFACE_MAX + 1))"
 }
@@ -1070,7 +1088,8 @@ mwan3_delete_iface_rules()
 
 	${MWAN3_MANAGE_RULES} delete-iface "$id" \
 		"$MWAN3_IIF_RULE_BASE" "$MWAN3_FWMARK_RULE_BASE" "$MMX_MASK" \
-		"$((id + MWAN3_UNREACHABLE_RULE_BASE + MWAN3_INTERFACE_MAX + 1))"
+		"$((id + MWAN3_UNREACHABLE_RULE_BASE + MWAN3_INTERFACE_MAX + 1))" \
+		"$MWAN3_OIF_RULE_BASE"
 }
 
 mwan3_set_policy()
@@ -2048,7 +2067,8 @@ mwan3_report_iface_status()
 		_check=$(${MWAN3_MANAGE_RULES} check "$_fam_num" \
 			"$((id+MWAN3_IIF_RULE_BASE))" \
 			"$((id+MWAN3_FWMARK_RULE_BASE))" \
-			"$((id+MWAN3_UNREACHABLE_RULE_BASE))")
+			"$((id+MWAN3_UNREACHABLE_RULE_BASE))" \
+			"$((id+MWAN3_OIF_RULE_BASE))")
 		[ $((_check & 1)) -eq 0 ] || result=$((result+1))
 		[ $((_check & 2)) -eq 0 ] || result=$((result+2))
 		[ $((_check & 4)) -eq 0 ] || result=$((result+4))
@@ -2056,6 +2076,7 @@ mwan3_report_iface_status()
 			result=$((result+8))
 		${MWAN3_MANAGE_RULES} check-route "$_fam_num" "$id" "$device" ||
 			result=$((result+16))
+		[ $((_check & 8)) -eq 0 ] || result=$((result+32))
 		[ "$result" = "0" ] && result=""
 	fi
 

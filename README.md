@@ -480,11 +480,11 @@ An interface whose own table holds no literal default route out of its own devic
 
 Some VPN clients install routes that cover the whole internet without being a default route, and the shape is often the provider's choice rather than yours. OpenVPN's `redirect-gateway def1` installs `0.0.0.0/1` and `128.0.0.0/1` in place of a default, split-tunnel WireGuard configurations do the same, and some IPv6 providers push the global-unicast prefix `2000::/3`. None of these is a literal default route, so none of them satisfies the requirement. Where the client configuration is under your control, prefer plain `redirect-gateway` to `redirect-gateway def1`, which installs a genuine default. Where it is not, such as a server-pushed `def1` pair or a server-pushed `2000::/3`, add a literal default route to the interface yourself as a static route in the interface's configuration; the pushed routes are left untouched and the interface then satisfies the route-state check.
 
-### 5.2 Four ip Rule Tiers Per Interface
+### 5.2 Five ip Rule Tiers Per Interface
 
-`mwan3_create_iface_rules()` installs the Tier 1, Tier 2 and Tier 4 `ip rule` entries for each mwan3 interface. For IPv4 interfaces these are installed via `ip rule`; for IPv6 via `ip -6 rule`, with Tier 4 installed for IPv4 interfaces only. All three are installed when the interface comes up (`ifup` or `connected` hotplug event) and removed when it goes down (`ifdown`).
+`mwan3_create_iface_rules()` installs the Tier 1, Tier 2, Tier 3 and Tier 5 `ip rule` entries for each mwan3 interface. For IPv4 interfaces these are installed via `ip rule`; for IPv6 via `ip -6 rule`, with Tier 5 installed for IPv4 interfaces only. All four are installed when the interface comes up (`ifup` or `connected` hotplug event) and removed when it goes down (`ifdown`).
 
-Tier 3 (the per-WAN unreachable backstop) has a separate lifecycle managed by `mwan3_set_member_backstops()`. One Tier 3 rule is installed for every configured interface at service start and on every reload, and removed only when the service stops. The Tier 3 rule is therefore present for all configured WANs, including those that are currently offline or disabled, for as long as the service is running.
+Tier 4 (the per-WAN unreachable backstop) has a separate lifecycle managed by `mwan3_set_member_backstops()`. One Tier 4 rule is installed for every configured interface at service start and on every reload, and removed only when the service stops. The Tier 4 rule is therefore present for all configured WANs, including those that are currently offline or disabled, for as long as the service is running.
 
 **Tier 1 - iif lookup** (priority `id + iif_rule_base`, default `id + 1000`):
 
@@ -502,7 +502,21 @@ ip rule add pref <id+2000> fwmark <mark>/<MMX_MASK> lookup <id>
 
 The primary steering rule. Matches packets whose mark, after masking with `MMX_MASK`, equals this interface's mark value (computed by `mwan3_id2mask(id, MMX_MASK)`). Routes them through the interface's per-interface routing table, which contains the WAN's default gateway. This is the rule that causes policy-classified traffic to exit via the correct WAN.
 
-**Tier 3 - fwmark unreachable** (priority `id + unreachable_rule_base`, default `id + 3000`):
+**Tier 3 - oif lookup** (priority `id + oif_rule_base`, default `id + 2500`):
+
+```
+ip rule add pref <id+2500> oif <device> lookup <id>
+```
+
+Matches locally originated packets that have already pinned their egress device with `SO_BINDTODEVICE`, and routes them through that device's own table. Such a sender has stated where its packets must leave, so the mark they happen to carry is not authoritative for them.
+
+Without this rule they are routed by whatever mark they end up with. That is harmless while the mark is mwan3's own, but a third party that writes the whole mark word in an earlier `mangle` hook - a transparent proxy marking traffic for its own `ip rule`, for instance - replaces mwan3's bits along with everything else, and mwan3, running later in the same hook, sees a mark with its own field cleared and reclassifies the packet against the current policy. The packet then carries the mark of whichever WAN the policy currently prefers, the Tier 2 lookup lands in that WAN's table, no route there matches the bound device, and the packet falls through to this interface's Tier 4 backstop and is dropped.
+
+mwan3track's own probes are the common casualty. They bind to the device precisely so that each WAN is measured independently, so when they are dropped the tracker reports a WAN as down while its link is perfectly healthy - and only for the WANs the policy is not currently steering to, which makes the symptom look like a genuine per-WAN failure rather than a classification problem.
+
+The tier sits below Tier 2 so that mark-based policy routing keeps its precedence, and above Tier 4 so that it is reached before the backstop that would otherwise drop the packet. It is inert for anything not bound to a device, because the `oif` selector cannot match a flow that carries no output interface, and inert for forwarded traffic, whose egress is the outcome of the lookup rather than an input to it.
+
+**Tier 4 - fwmark unreachable** (priority `id + unreachable_rule_base`, default `id + 3000`):
 
 ```
 ip rule add pref <id+3000> fwmark <mark>/<MMX_MASK> unreachable
@@ -510,7 +524,7 @@ ip rule add pref <id+3000> fwmark <mark>/<MMX_MASK> unreachable
 
 Matches the same fwmark as Tier 2 but returns ICMP unreachable instead of routing. Sits below Tier 2 in priority (higher priority number = lower precedence). Serves as a safety net: if the Tier 2 lookup finds an empty or incomplete routing table (e.g. the default route is transiently absent during route installation), the packet receives an explicit unreachable response instead of silently falling through to the main routing table and potentially leaking out a different WAN.
 
-**Tier 4 - source address lookup** (priority `id + unreachable_rule_base + MWAN3_INTERFACE_MAX + 1`, default `id + 3061`, IPv4 only):
+**Tier 5 - source address lookup** (priority `id + unreachable_rule_base + MWAN3_INTERFACE_MAX + 1`, default `id + 3061`, IPv4 only):
 
 ```
 ip rule add pref <id+3061> from <address> lookup <id>
@@ -520,7 +534,7 @@ Matches router-originated traffic by its source address rather than by mark or b
 
 The tier exists because a sender that performs its own route lookup outside netfilter's view never acquires an mwan3 mark, so Tier 2 cannot steer it. Its packets follow the main table out of the default WAN even though the source address they carry belongs to a different WAN, and are dropped upstream by BCP38 filtering or masqueraded to the wrong address. WireGuard is the common case: a handshake arriving on a non-default WAN is answered from that WAN's address but leaves by the default WAN, so the handshake never completes. Any locally originated flow that no user rule classifies shares the gap. With the source rule in place the route lookup resolves back to the arrival WAN's own table and the reply keeps a source address that is valid on the path it takes.
 
-The tier sits below Tier 3 in priority, so marked traffic still matches Tier 2 or the Tier 3 backstop first and policy verdicts and the fail-closed backstops behave exactly as they did without it. The rules are inert for forwarded traffic, whose source is a downstream address, and for a single-WAN setup.
+The tier sits below Tier 4 in priority, so marked traffic still matches Tier 2 or the Tier 4 backstop first and policy verdicts and the fail-closed backstops behave exactly as they did without it. The rules are inert for forwarded traffic, whose source is a downstream address, and for a single-WAN setup.
 
 ### 5.3 Global Policy Rules
 
@@ -550,27 +564,29 @@ Packets marked with `MMX_DEFAULT` (= `MMX_MASK`, all mask bits set) do not match
 
 ### 5.5 Configurable Rule Base Priorities
 
-The three rule-base offsets are configurable in UCI `config globals`:
+The four rule-base offsets are configurable in UCI `config globals`:
 
 | UCI option | Default | Priority range used (60 interfaces, default MMX_MASK) |
 |---|---|---|
 | `iif_rule_base` | 1000 | 1001 - 1060 (one per interface) |
 | `fwmark_rule_base` | 2000 | 2001 - 2062 (per-interface + 2 global) |
+| `oif_rule_base` | 2500 | 2501 - 2560 (one per interface) |
 | `unreachable_rule_base` | 3000 | 3001 - 3060 (one per interface) |
-| none, derived | 3061 | 3062 - 3121 (Tier 4, one or more per IPv4 interface) |
+| none, derived | 3061 | 3062 - 3121 (Tier 5, one or more per IPv4 interface) |
 
-The Tier 4 source band has no UCI option of its own. It is derived as `unreachable_rule_base + MWAN3_INTERFACE_MAX + 1 + id`, so it moves with `unreachable_rule_base` and always sits immediately above the unreachable band, separated from it by one unused priority (3061 with the defaults).
+The Tier 5 source band has no UCI option of its own. It is derived as `unreachable_rule_base + MWAN3_INTERFACE_MAX + 1 + id`, so it moves with `unreachable_rule_base` and always sits immediately above the unreachable band, separated from it by one unused priority (3061 with the defaults).
 
-Two ordering constraints must hold at startup:
+Three ordering constraints must hold at startup:
 
 ```
 iif_rule_base + MWAN3_INTERFACE_MAX < fwmark_rule_base
-fwmark_rule_base + MWAN3_INTERFACE_MAX + 1 < unreachable_rule_base
+fwmark_rule_base + MWAN3_INTERFACE_MAX + 1 < oif_rule_base
+oif_rule_base + MWAN3_INTERFACE_MAX < unreachable_rule_base
 ```
 
-The `+ 1` in the second constraint accounts for the global blackhole and unreachable entries at the top of the fwmark tier (`MM_BLACKHOLE + fwmark_rule_base` and `MM_UNREACHABLE + fwmark_rule_base`). If either constraint is violated, `mwan3_init` logs a warning and reverts all three to 1000/2000/3000.
+The `+ 1` in the second constraint accounts for the global blackhole and unreachable entries at the top of the fwmark tier (`MM_BLACKHOLE + fwmark_rule_base` and `MM_UNREACHABLE + fwmark_rule_base`). The third keeps the oif band clear of the unreachable backstops it must be reached before. If any constraint is violated, `mwan3_init` logs a warning and reverts all four to 1000/2000/2500/3000.
 
-`mwan3_delete_iface_rules()` removes the Tier 1, Tier 2 and Tier 4 rules by delegating to `mwan3-manage-rules.uc delete-iface`, which locates each rule by its priority offset and table ID and removes it via RTM_DELRULE; a Tier 4 rule is identified by carrying a source address at the source-band priority, so every address rule the interface holds goes in the one pass. This approach remains correct if the bases or `MMX_MASK` are changed between service restarts. The Tier 3 unreachable backstop is not deleted here; it persists until service stop.
+`mwan3_delete_iface_rules()` removes the Tier 1, Tier 2, Tier 3 and Tier 5 rules by delegating to `mwan3-manage-rules.uc delete-iface`, which locates each rule by its priority offset and table ID and removes it via RTM_DELRULE; a Tier 5 rule is identified by carrying a source address at the source-band priority, so every address rule the interface holds goes in the one pass, and the Tier 1 and Tier 3 rules are told apart by which band their priority falls in, since neither carries an fwmark. This approach remains correct if the bases or `MMX_MASK` are changed between service restarts. The Tier 4 unreachable backstop is not deleted here; it persists until service stop.
 
 ### 5.6 Example: Live ip rule Output
 
@@ -584,6 +600,8 @@ Three WANs are configured on this router: `eth1` (id 1) and `eth2` (id 2) are on
 2002:   from all fwmark 0x200/0x3f00 lookup 2
 2061:   from all fwmark 0x3d00/0x3f00 blackhole
 2062:   from all fwmark 0x3e00/0x3f00 unreachable
+2501:   from all oif eth1 lookup 1
+2502:   from all oif eth2 lookup 2
 3001:   from all fwmark 0x100/0x3f00 unreachable
 3002:   from all fwmark 0x200/0x3f00 unreachable
 3003:   from all fwmark 0x300/0x3f00 unreachable
@@ -593,9 +611,11 @@ Three WANs are configured on this router: `eth1` (id 1) and `eth2` (id 2) are on
 32767:  from all lookup default
 ```
 
-The two entries at `3062` and `3063` are the Tier 4 source rules, one per global-scope IPv4 address on each online WAN's device. Router-originated traffic that carries no mwan3 mark, such as a WireGuard reply, reaches them with the WAN address it was sourced from and is routed back out that WAN's own table instead of following the main table out of the default WAN.
+The two entries at `3062` and `3063` are the Tier 5 source rules, one per global-scope IPv4 address on each online WAN's device. Router-originated traffic that carries no mwan3 mark, such as a WireGuard reply, reaches them with the WAN address it was sourced from and is routed back out that WAN's own table instead of following the main table out of the default WAN.
 
-Interface id 3 shows the effect of the permanent Tier 3 backstops. It is offline, so it has no Tier 1 (`iif`) rule, no Tier 2 (`fwmark 0x300/0x3f00 lookup 3`) rule and no Tier 4 source rule; those are installed only while the interface is up, so there is no `1003`, `2003` or `3064` entry. Its Tier 3 rule at priority `3003` is still present, because the backstops are installed for every configured WAN at service start and removed only at service stop. Traffic still marked `0x300` for the offline WAN therefore matches `3003` and is rejected as unreachable instead of falling through to the `main` table at priority 32766 and leaking out the default route. The backstop matches on the fwmark rather than on a device, which is why it can remain in place while the interface has no device bound.
+The two entries at `2501` and `2502` are the Tier 3 oif rules. Locally originated traffic that bound itself to `eth1` or `eth2` reaches them after the fwmark tier has failed to find a route in whatever table its mark selected, and is routed by the bound device's own table instead of falling through to the backstop at `3001`/`3002`.
+
+Interface id 3 shows the effect of the permanent Tier 4 backstops. It is offline, so it has no Tier 1 (`iif`) rule, no Tier 2 (`fwmark 0x300/0x3f00 lookup 3`) rule, no Tier 3 (`oif`) rule and no Tier 5 source rule; those are installed only while the interface is up, so there is no `1003`, `2003`, `2503` or `3064` entry. Its Tier 4 rule at priority `3003` is still present, because the backstops are installed for every configured WAN at service start and removed only at service stop. Traffic still marked `0x300` for the offline WAN therefore matches `3003` and is rejected as unreachable instead of falling through to the `main` table at priority 32766 and leaking out the default route. The backstop matches on the fwmark rather than on a device, which is why it can remain in place while the interface has no device bound.
 
 The corresponding per-interface routing table (`ip route show table 1`) contains the WAN gateway and a copy of connected routes:
 
@@ -965,8 +985,9 @@ Manages ip rules (policy routing entries) via netlink (RTM_GETRULE, RTM_NEWRULE,
 - **`check-route <family> <table_id> <device>`**: exits 0 if a default route for the given output device exists in the specified table, 1 otherwise. Used before populating per-interface tables to detect whether the route is already present.
 - **`delete-iface <id> <iif_base> <fwmark_base> <mmx_mask> <src_prio>`**: removes the iif lookup, fwmark lookup and source lookup rules for a single interface (identified by its sequential index). Each rule is located by priority and verified by type before deletion, a source rule by carrying a source address at `src_prio`, so every address rule the interface holds goes in the one pass; rules not present are silently skipped. The unreachable backstop rule is not removed here; it is managed by `mwan3_set_member_backstops()` and persists until service stop.
 - **`add-general <family> <bh_prio> <bh_mark> <ur_prio> <ur_mark> <mask>`**: adds the shared blackhole and unreachable rules common to all interfaces. Rules already present at those priorities are not re-added.
-- **`add-backstop <family> <prio> <mark> <mask>`**: adds one per-interface fwmark unreachable rule at the given priority, the Tier 3 backstop. A rule already present at that priority is not re-added.
-- **`add-src <device> <table_id> <prio>`**: adds one source lookup rule per global-scope IPv4 address carried on the device, all at the given priority, the Tier 4 return rules. IPv4 only.
+- **`add-backstop <family> <prio> <mark> <mask>`**: adds one per-interface fwmark unreachable rule at the given priority, the Tier 4 backstop. A rule already present at that priority is not re-added.
+- **`add-src <device> <table_id> <prio>`**: adds one source lookup rule per global-scope IPv4 address carried on the device, all at the given priority, the Tier 5 return rules. IPv4 only.
+- **`delete-iface <id> <iif_base> <fwmark_base> <mmx_mask> <src_prio> <oif_base>`**: removes the Tier 1, Tier 2, Tier 3 and Tier 5 rules belonging to one interface, in both families, matching each by the band its priority falls in.
 
 Replaces `ip rule add/del` shell invocations that required fork-exec per operation and text parsing for presence checks.
 
@@ -4502,18 +4523,20 @@ fwmark_rule_base + MWAN3_INTERFACE_MAX < 2001
 
 With the default mask `0x3f00` (6 bits, 60 maximum interfaces), this gives `fwmark_rule_base < 1941`. The recommended value is `fwmark_rule_base = 1100`, which places the highest-numbered fwmark lookup rule at 1160, well clear of the detection window. Tailscale therefore does not detect mwan3 and installs at its default 5210 base instead.
 
-Because `iif_rule_base` defaults to 1000 and can stay there, only two UCI options need to be changed from their defaults:
+Because `iif_rule_base` defaults to 1000 and can stay there, three UCI options need to be changed from their defaults:
 
 | Option                  | Default | Recommended for tailscale |
 | ----------------------- | ------- | ------------------------- |
 | `iif_rule_base`         | 1000    | 1000 (unchanged)          |
 | `fwmark_rule_base`      | 2000    | 1100                      |
-| `unreachable_rule_base` | 3000    | 1200                      |
+| `oif_rule_base`         | 2500    | 1170                      |
+| `unreachable_rule_base` | 3000    | 1240                      |
 
-The ordering constraints validated by mwan3 at startup both hold:
+The ordering constraints validated by mwan3 at startup all hold:
 
 - `1000 + 60 = 1060 < 1100` (iif tier clears fwmark tier)
-- `1100 + 60 + 1 = 1161 < 1200` (fwmark tier including global blackhole/unreachable at 1161/1162 clears unreachable tier)
+- `1100 + 60 + 1 = 1161 < 1170` (fwmark tier including global blackhole/unreachable at 1161/1162 clears oif tier)
+- `1170 + 60 = 1230 < 1240` (oif tier clears unreachable tier)
 
 #### Why rule 5270 (table 52) still works correctly
 

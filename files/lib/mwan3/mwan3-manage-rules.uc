@@ -65,9 +65,11 @@ if (mode == "check") {
 	let fwmark_base = +ARGV[3];
 	let mmx_mask = +ARGV[4];
 	let src_prio = +ARGV[5];
+	let oif_base = +ARGV[6];
 
 	let iif_prio = iif_base + id;
 	let fwmark_prio = fwmark_base + id;
+	let oif_prio = oif_base + id;
 
 	for (let family in [AF_INET, AF_INET6]) {
 		let rules = rtnl.request(RTM_GETRULE, NLM_F_DUMP, { family: family }) ?? [];
@@ -102,6 +104,21 @@ if (mode == "check") {
 				let err = rtnl.error();
 				if (err)
 					log_msg("err", sprintf("delete iif rule failed: %s", err));
+			} else if (rule.fwmark == null && rule.priority == oif_prio) {
+
+				// The iif and oif rules are indistinguishable in the dump
+				// beyond their priority, so the band each one belongs to is
+				// what tells them apart.
+
+				rtnl.request(RTM_DELRULE, 0, {
+					family: family,
+					priority: rule.priority,
+					table: rule.table,
+					action: rule.action
+				});
+				let err = rtnl.error();
+				if (err)
+					log_msg("err", sprintf("delete oif rule failed: %s", err));
 			} else if (rule.fwmark != null && rule.priority == fwmark_prio && rule.fwmask == mmx_mask) {
 				rtnl.request(RTM_DELRULE, 0, {
 					family: family,

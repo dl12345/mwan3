@@ -5,6 +5,7 @@ config globals 'globals'
 	option mmx_mask '0x3F00'
 	# option iif_rule_base '1000'
 	# option fwmark_rule_base '2000'
+	# option oif_rule_base '2500'
 	# option unreachable_rule_base '3000'
 
 config interface 'wan'
