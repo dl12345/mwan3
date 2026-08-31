@@ -310,7 +310,13 @@ _mwan3_render_one_ipset()
 	}
 	config_list_foreach "$section" entry _add_entry
 	if [ -n "$loadfile" ] && [ -f "$loadfile" ]; then
-		while IFS= read -r line; do
+
+		# A file whose last line carries no trailing newline makes read return
+		# non-zero after it has already populated $line, so the loop body would
+		# never see that entry.  The [ -n "$line" ] guard keeps the final,
+		# unterminated line instead of dropping it without a diagnostic.
+
+		while IFS= read -r line || [ -n "$line" ]; do
 			line="${line%%#*}"
 			line=$(echo "$line" | xargs 2>/dev/null)
 			[ -n "$line" ] || continue
