@@ -153,10 +153,13 @@ stop_service() {
 		# time), so they reflect what the running instance created, not
 		# whatever is currently in /etc/config/mwan3.
 		local line pref tbl iif_min iif_max fw_min fw_max ur_min ur_max src_min src_max mask
+		local oif_min oif_max
 		iif_min=$((MWAN3_IIF_RULE_BASE + 1))
 		iif_max=$((MWAN3_IIF_RULE_BASE + MWAN3_INTERFACE_MAX))
 		fw_min=$((MWAN3_FWMARK_RULE_BASE + 1))
 		fw_max=$((MWAN3_FWMARK_RULE_BASE + MM_UNREACHABLE))
+		oif_min=$((MWAN3_OIF_RULE_BASE + 1))
+		oif_max=$((MWAN3_OIF_RULE_BASE + MWAN3_INTERFACE_MAX))
 		ur_min=$((MWAN3_UNREACHABLE_RULE_BASE + 1))
 		ur_max=$((MWAN3_UNREACHABLE_RULE_BASE + MWAN3_INTERFACE_MAX))
 		src_min=$((MWAN3_UNREACHABLE_RULE_BASE + MWAN3_INTERFACE_MAX + 2))
@@ -171,6 +174,7 @@ stop_service() {
 			# Priority gate
 			if ! { { [ "$pref" -ge "$iif_min" ] && [ "$pref" -le "$iif_max" ]; } || \
 			       { [ "$pref" -ge "$fw_min" ] && [ "$pref" -le "$fw_max" ]; } || \
+			       { [ "$pref" -ge "$oif_min" ] && [ "$pref" -le "$oif_max" ]; } || \
 			       { [ "$pref" -ge "$ur_min" ] && [ "$pref" -le "$ur_max" ]; } || \
 			       { [ "$pref" -ge "$src_min" ] && [ "$pref" -le "$src_max" ]; }; }; then
 				continue
