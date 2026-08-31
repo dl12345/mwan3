@@ -848,6 +848,9 @@ mwan3track maintains a score counter for each interface:
 
 Once the reliability threshold is met in a round, remaining unprobed IPs are marked `skipped` - they are not probed further that round.
 
+> [!IMPORTANT]
+> `skipped` means the target was never contacted, not that it failed. Because the round stops at the reliability threshold, list order decides which targets an interface is actually judged on. The `track_gateway` address is therefore appended rather than prepended: the next hop is one hop away and keeps answering through an outage anywhere beyond it, so with the common `reliability=1` a prepended gateway would be the only target ever probed and every configured `track_ip` would report `skipped` without a packet sent to it.
+
 #### Status files
 
 Written to `$MWAN3TRACK_STATUS_DIR/<iface>/` (default `/var/run/mwan3track/<iface>/`):
@@ -861,7 +864,7 @@ Written to `$MWAN3TRACK_STATUS_DIR/<iface>/` (default `/var/run/mwan3track/<ifac
 | `TRACK_<ip>` | Per-IP probe result: `up`, `down`, or `skipped`. Always a status string, regardless of `check_quality`. |
 | `LATENCY_<ip>` | [check_quality=1 only] Latency in ms for this IP from the most recent probe round. |
 | `LOSS_<ip>` | [check_quality=1 only] Packet loss as a percentage for this IP from the most recent probe round. |
-| `GATEWAY` | Gateway IP written by `mwan3_update_peer_track_ip()` when `track_gateway=1`, taken from the point-to-point peer address or, failing that, the interface's default-route next hop. Read by `mwan3_load_track_ips()` and prepended to the probe list. |
+| `GATEWAY` | Gateway IP written by `mwan3_update_peer_track_ip()` when `track_gateway=1`, taken from the point-to-point peer address or, failing that, the interface's default-route next hop. Read by `mwan3_load_track_ips()` and appended to the probe list, after the configured `track_ip` values. |
 
 #### check_quality
 
