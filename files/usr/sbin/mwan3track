@@ -313,9 +313,18 @@ main() {
 		if [ "$track_gateway" -eq 1 ]; then
 			gw_ip=$(cat "$MWAN3TRACK_STATUS_DIR/${INTERFACE}/GATEWAY" 2>/dev/null)
 			if [ -n "$gw_ip" ]; then
+
+				# The probe loop stops as soon as reliability targets have
+				# answered, so whatever comes first in the list decides what
+				# the interface is actually judged on.  The next hop is the
+				# weakest evidence available -- it is one hop away and stays
+				# reachable through an outage anywhere beyond it -- so it
+				# belongs at the end, as the fallback it is, rather than
+				# ahead of the operator's own targets.
+
 				case " $track_ips " in
 					*" $gw_ip "*) ;;
-					*) track_ips="$gw_ip $track_ips" ;;
+					*) track_ips="$track_ips $gw_ip" ;;
 				esac
 			fi
 		fi
