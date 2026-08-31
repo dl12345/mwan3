@@ -1983,17 +1983,35 @@ mwan3_ifup()
 
 mwan3_update_peer_track_ip() {
 	local interface="$1"
-	local track_gateway peer family
+	local track_gateway peer family true_iface
 
 	config_get_bool track_gateway "$interface" track_gateway 0
 	[ "$track_gateway" -eq 1 ] || return 0
 
 	config_get family "$interface" family ipv4
+	mwan3_get_true_iface true_iface "$interface"
 
 	# Get ptpaddress from ifstatus JSON (no-op if not p2p)
 
-	peer=$(ifstatus "$interface" 2>/dev/null | \
+	peer=$(ifstatus "$true_iface" 2>/dev/null | \
 		jsonfilter -qe "@[\"${family}-address\"][0].ptpaddress")
+
+	# A DHCPv6 interface reports no ptpaddress even when it runs over a
+	# point-to-point link, so an IPv6 interface on a PPPoE WAN would leave
+	# track_gateway doing nothing at all, silently. The next hop of the
+	# interface's own default route is the same peer, so fall back to it.
+	# For IPv6 that is normally a link-local address; mwan3track binds the
+	# probe socket to the interface, so it can still be reached, and being
+	# on-link it is also immune to a third party redirecting the default
+	# route elsewhere.
+
+	if [ -z "$peer" ]; then
+		if [ "$family" = "ipv6" ]; then
+			network_get_gateway6 peer "$true_iface"
+		else
+			network_get_gateway peer "$true_iface"
+		fi
+	fi
 
 	if [ -n "$peer" ]; then
 		mkdir -p "$MWAN3TRACK_STATUS_DIR/$interface"
