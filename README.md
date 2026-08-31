@@ -848,6 +848,9 @@ mwan3track maintains a score counter for each interface:
 
 Once the reliability threshold is met in a round, remaining unprobed IPs are marked `skipped` - they are not probed further that round.
 
+> [!IMPORTANT]
+> `skipped` means the target was never contacted, not that it failed. Because the round stops at the reliability threshold, list order decides which targets an interface is actually judged on. The `track_gateway` address is therefore appended rather than prepended: the next hop is one hop away and keeps answering through an outage anywhere beyond it, so with the common `reliability=1` a prepended gateway would be the only target ever probed and every configured `track_ip` would report `skipped` without a packet sent to it.
+
 #### Status files
 
 Written to `$MWAN3TRACK_STATUS_DIR/<iface>/` (default `/var/run/mwan3track/<iface>/`):
@@ -861,7 +864,7 @@ Written to `$MWAN3TRACK_STATUS_DIR/<iface>/` (default `/var/run/mwan3track/<ifac
 | `TRACK_<ip>` | Per-IP probe result: `up`, `down`, or `skipped`. Always a status string, regardless of `check_quality`. |
 | `LATENCY_<ip>` | [check_quality=1 only] Latency in ms for this IP from the most recent probe round. |
 | `LOSS_<ip>` | [check_quality=1 only] Packet loss as a percentage for this IP from the most recent probe round. |
-| `GATEWAY` | Gateway IP written by `mwan3_update_peer_track_ip()` when `track_gateway=1`. Read by `mwan3_load_track_ips()` and prepended to the probe list. |
+| `GATEWAY` | Gateway IP written by `mwan3_update_peer_track_ip()` when `track_gateway=1`, taken from the point-to-point peer address or, failing that, the interface's default-route next hop. Read by `mwan3_load_track_ips()` and appended to the probe list, after the configured `track_ip` values. |
 
 #### check_quality
 
@@ -1206,7 +1209,7 @@ A set is pre-created at most once per render. Kernel queries inside an open batc
 | `mwan3_get_iface_hotplug_state iface` | Reads state from status file (defaults to `offline`). |
 | `mwan3_flush_conntrack iface action` | Two-path conntrack flush. First, iterates the `flush_conntrack` UCI list for this interface: for each configured action that matches the current hotplug action, writes `f` to `$CONNTRACK_FILE` to flush the entire global conntrack table. Second, on `ifdown` and `disconnected`, uses `mwan3ct flush --mark MARK/MMX_MASK` to selectively delete only the conntrack entries for this interface's fwmark. Both paths run; the global flush path runs first. |
 | `mwan3_flush_marked_conntrack` | Flushes all conntrack entries that have any `MMX_MASK` bit set, iterating the full mwan3 id-space (IDs 1..`MWAN3_INTERFACE_MAX` plus default/blackhole/unreachable marks). Called from `reload_service` so that live flows re-enter the classification chains and are re-evaluated against new rules rather than staying pinned to a previously saved ct mark. |
-| `mwan3_update_peer_track_ip iface` | If `track_gateway` is enabled, queries `ifstatus` for the point-to-point peer address and writes it to `$MWAN3TRACK_STATUS_DIR/<iface>/GATEWAY`. |
+| `mwan3_update_peer_track_ip iface` | If `track_gateway` is enabled, queries `ifstatus` for the point-to-point peer address, falling back to the interface's default-route next hop when the interface reports none, and writes the result to `$MWAN3TRACK_STATUS_DIR/<iface>/GATEWAY`. |
 | `mwan3_track_clean iface` | Removes track status directory for the interface. |
 | `mwan3_dnsmasq_hup` | Sends SIGHUP to running dnsmasq instances via `ubus call service signal '{"name":"dnsmasq","signal":1}'`. Called once from `start_service` after sets are created so dnsmasq resolves domain entries into nft sets. No longer uses mwan3evtd (which was removed ). |
 | `mwan3_flush_stale_conntrack` | Flushes conntrack entries with no mwan3 mark (`0x0/MMX_MASK`) after mwan3 restart. New connections arriving during the brief startup window before iface_in chains exist get ct mark=0; this clears them so they re-establish correctly. Called from `start_service`. |
@@ -1464,12 +1467,12 @@ The `connected` action fires on two distinct events: link-layer negotiation comp
 
 When `option track_gateway '1'` is set on a `config interface` section, mwan3 automatically discovers the point-to-point peer/gateway IP and adds it to the tracking list at runtime. This is useful for PPPoE and other point-to-point links where the next-hop gateway IP changes on each connection and is not known in advance. Without this option, users must manually configure static `track_ip` addresses (typically public DNS servers) that may not test the actual link peer.
 
-`mwan3_update_peer_track_ip()` queries `ifstatus` for the interface's `ptpaddress` field (the point-to-point peer IP). If found, the gateway IP is written to `$MWAN3TRACK_STATUS_DIR/<iface>/GATEWAY`. `mwan3track` reads this file and prepends the gateway IP to the front of the probe list, ensuring it is always probed first on every round regardless of the `reliability` threshold; static `track_ip` entries follow after the gateway. On interface bounce, the hotplug `ifup` action calls `mwan3_update_peer_track_ip()` again, overwriting the state file with the new peer IP.
+`mwan3_update_peer_track_ip()` queries `ifstatus` for the interface's `ptpaddress` field (the point-to-point peer IP). A DHCPv6 interface reports no `ptpaddress` even when it runs over a point-to-point link, which is the normal shape of an IPv6 WAN on PPPoE, so when the field is absent the function falls back to the next hop of the interface's own default route via `network_get_gateway6` (or `network_get_gateway` for IPv4). That next hop is the same peer, so the fallback widens the option to interfaces netifd does not describe as point-to-point without changing what it means. If either lookup yields an address, it is written to `$MWAN3TRACK_STATUS_DIR/<iface>/GATEWAY`. `mwan3track` reads this file and prepends the gateway IP to the front of the probe list, ensuring it is always probed first on every round regardless of the `reliability` threshold; static `track_ip` entries follow after the gateway. On interface bounce, the hotplug `ifup` action calls `mwan3_update_peer_track_ip()` again, overwriting the state file with the new peer IP.
 
-The gateway IP is stored as ephemeral state rather than committed to UCI, preventing stale IP accumulation across reboots or gateway changes. An interface definition may specify only `track_gateway` and omit static tracking IPs entirely. The option is silently ignored if no next-hop peer address is found (e.g., on Ethernet WAN interfaces).
+The gateway IP is stored as ephemeral state rather than committed to UCI, preventing stale IP accumulation across reboots or gateway changes. An interface definition may specify only `track_gateway` and omit static tracking IPs entirely. The option is silently ignored only when neither lookup yields an address.
 
-> [!WARNING]
-> **IPv4 only in practice.** For IPv6 point-to-point links, the peer is typically a link-local address (e.g., `fe80::1`). Pinging link-local addresses requires interface scope specification (`ping6 fe80::1%pppoe-wan`), which mwan3track's probe mechanism does not handle. The option will be silently ignored if no peer address is found.
+> [!NOTE]
+> **IPv6 link-local peers are probed successfully.** For an IPv6 WAN the next hop is normally a link-local address such as `fe80::1`, which would ordinarily need an interface scope (`ping6 fe80::1%pppoe-wan`). mwan3track does not pass a scope, but it does not need to: every probe runs under the `libwrap_mwan3_sockopt.so` wrapper, which sets `SO_BINDTODEVICE` on the probe socket, and that binding supplies the scope the address needs. Probing a link-local peer has a second benefit - it is on-link, so it is unaffected by a third party redirecting the default route into its own table.
 
 **UCI Configuration:**
 
