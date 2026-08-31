@@ -697,9 +697,156 @@ mwan3_set_general_nft()
 	mwan3_nft_batch_commit
 }
 
+# Delete every rule in mwan3_postrouting carrying the given comment tag.
+# Loops because both an IPv4 and an IPv6 interface may share a section name.
+
+mwan3_del_postrouting_tag()
+{
+	local handle
+	while handle=$($NFT -a list chain inet mwan3 mwan3_postrouting 2>/dev/null | \
+			sed -n "s/.*comment \"$1\".*# handle \([0-9]*\)/\1/p" | head -n1); \
+	      [ -n "$handle" ]; do
+		mwan3_nft_exec delete rule inet mwan3 mwan3_postrouting handle "$handle"
+	done
+}
+
+# Install the per-interface IPv6 source rewriting rules in mwan3_postrouting.
+# Split out of mwan3_create_iface_nft() because an address or a delegated
+# prefix can change while the interface stays up -- a DHCPv6-PD renewal that
+# hands back a different prefix is the common case. netifd reports that as an
+# ifupdate hotplug event, and only these two rules need rebuilding for it: the
+# interface chain, its ip rules and its routes are unaffected by an address
+# change. Without that path the rule keeps translating to an address or prefix
+# the upstream no longer routes, and every rerouted packet is silently dropped.
+
+mwan3_set_iface_srcnat_nft()
+{
+	local id family iface_mark device src_ip snat6 netmap6 pfx6 installed wanted
+
+	device="$2"
+	config_get family "$1" family ipv4
+	[ "$family" = "ipv6" ] && [ $NO_IPV6 -ne 0 ] && return 1
+	mwan3_get_iface_id id "$1"
+	[ -n "$id" ] || return 1
+	iface_mark=$(mwan3_id2mask id MMX_MASK)
+
+	# IPv6 opt-in SNAT for router-originated traffic rerouted by mwan3_output.
+	# fw4 does not masquerade IPv6 by default, so packets whose saddr was
+	# bound to WAN-A's prefix but rerouted onto WAN-B would egress with the
+	# wrong source and be dropped upstream by BCP38/uRPF. Enable per-interface
+	# via the 'snat6' UCI option (default OFF — RFC 6724 source-address
+	# selection and SADR routing can solve the same problem without
+	# translation, and NAT66 is harmful in PA/ULA designs).
+	# snat6 values:
+	#   unset / 0 : no v6 SNAT (default)
+	#   1         : SNAT to the interface's primary GUA via mwan3_get_src_ip
+	#   <addr>    : SNAT to the literal v6 address (fixed source pin)
+	#
+	# IPv6 opt-in prefix translation (NETMAP) for FORWARDED traffic. Scope is
+	# complementary to snat6: snat6 matches 'fib saddr type local', i.e.
+	# router-originated packets, and leaves forwarded LAN traffic untouched.
+	# A LAN host holding WAN-A's prefix that mwan3 reroutes onto WAN-B still
+	# egresses with the wrong source and is dropped by BCP38/uRPF.
+	# 'snat ip6 prefix to' rewrites only the network part and carries the host
+	# bits over verbatim, so host identity survives -- unlike snat6, which
+	# collapses every host onto a single address.
+	# Default OFF: this is NAT66 and carries the usual caveats, it exists as a
+	# fallback for deployments that cannot renumber the LAN when a WAN fails.
+	# netmap6 values:
+	#   unset / 0 : no prefix translation (default)
+	#   1         : NETMAP to the interface's delegated prefix
+	#   <prefix>  : NETMAP to the literal prefix (e.g. 2001:db8:1::/64)
+
+	src_ip=""
+	pfx6=""
+
+	if [ "$family" = "ipv6" ]; then
+		config_get snat6 "$1" snat6 ""
+		case "$snat6" in
+			""|"0")
+				: # disabled — no rule
+				;;
+			"1")
+				mwan3_get_src_ip src_ip "$1"
+				;;
+			*)
+				src_ip="$snat6"
+				;;
+		esac
+		[ "$src_ip" = "::" ] && src_ip=""
+
+		config_get netmap6 "$1" netmap6 ""
+		case "$netmap6" in
+			""|"0")
+				: # disabled -- no rule
+				;;
+			"1")
+				mwan3_get_prefix6 pfx6 "$1"
+				;;
+			*)
+				pfx6="$netmap6"
+				;;
+		esac
+	fi
+
+	# An ifupdate fires on every DHCPv6-PD lease renewal, including one that
+	# returns the same prefix with only refreshed lifetimes. Rewriting the
+	# rules then would open a window in which a packet escapes untranslated,
+	# and would make the caller flush conntrack for nothing, so compare what is
+	# already installed and do nothing when it still matches. nft renders the
+	# rule back as "snat ip6 to <addr>" rather than the "snat to <addr>" that
+	# was written, so the address pattern tolerates the family keyword being
+	# present or absent; getting that wrong would silently defeat the whole
+	# comparison and flush conntrack on every renewal. Returning 1 tells
+	# the caller no flush is needed. Inside a batch the preamble has already
+	# dropped the chain contents, so there is nothing to compare against and
+	# the rules must always be written.
+
+	if [ "$MWAN3_BATCH_DEPTH" -eq 0 ]; then
+		installed=$($NFT list chain inet mwan3 mwan3_postrouting 2>/dev/null | \
+			sed -n -e "s/.*oifname \"\([^\"]*\)\".*snat \(ip6 \)\{0,1\}to \([^ ]*\) comment \"mwan3_snat_$1\".*/snat=\1|\3/p" \
+			       -e "s/.*oifname \"\([^\"]*\)\".*snat ip6 prefix to \([^ ]*\) comment \"mwan3_netmap_$1\".*/netmap=\1|\2/p" \
+			| tr '\n' ' ')
+		wanted=""
+		[ -n "$src_ip" ] && wanted="${wanted}snat=$device|$src_ip "
+		[ -n "$pfx6" ] && wanted="${wanted}netmap=$device|$pfx6 "
+		[ "$installed" = "$wanted" ] && return 1
+
+		# Stale rules from a prior incarnation of this interface are removed
+		# first; comment-tagged for unambiguous identification across reloads.
+
+		mwan3_del_postrouting_tag "mwan3_snat_$1"
+		mwan3_del_postrouting_tag "mwan3_netmap_$1"
+	fi
+
+	if [ -n "$src_ip" ]; then
+		mwan3_nft_exec add rule inet mwan3 mwan3_postrouting \
+			oifname "\"$device\"" meta nfproto ipv6 \
+			meta mark \& "$MMX_MASK" == "$iface_mark" \
+			fib saddr type local ip6 saddr != "$src_ip" \
+			snat to "$src_ip" comment "\"mwan3_snat_$1\""
+	fi
+
+	if [ -n "$pfx6" ]; then
+
+		# The translated prefix length decides how many leading bits are
+		# replaced; the remainder is carried over verbatim. Log it so a
+		# length mismatch between WANs is visible when it misbehaves.
+
+		LOG notice "netmap6 on '$1': translating source prefix to $pfx6"
+		mwan3_nft_exec add rule inet mwan3 mwan3_postrouting \
+			oifname "\"$device\"" meta nfproto ipv6 \
+			meta mark \& "$MMX_MASK" == "$iface_mark" \
+			fib saddr type != local ip6 saddr != "$pfx6" \
+			snat ip6 prefix to "$pfx6" comment "\"mwan3_netmap_$1\""
+	fi
+
+	return 0
+}
+
 mwan3_create_iface_nft()
 {
-	local id family iface_mark device src_ip handle snat6
+	local id family iface_mark device
 
 	iface_mark=""
 	config_get family "$1" family ipv4
@@ -714,52 +861,7 @@ mwan3_create_iface_nft()
 	device="$2"
 	iface_mark=$(mwan3_id2mask id MMX_MASK)
 
-	# IPv6 opt-in SNAT for router-originated traffic rerouted by mwan3_output.
-	# fw4 does not masquerade IPv6 by default, so packets whose saddr was
-	# bound to WAN-A's prefix but rerouted onto WAN-B would egress with the
-	# wrong source and be dropped upstream by BCP38/uRPF. Enable per-interface
-	# via the 'snat6' UCI option (default OFF — RFC 6724 source-address
-	# selection and SADR routing can solve the same problem without
-	# translation, and NAT66 is harmful in PA/ULA designs).
-	# snat6 values:
-	#   unset / 0 : no v6 SNAT (default)
-	#   1         : SNAT to the interface's primary GUA via mwan3_get_src_ip
-	#   <addr>    : SNAT to the literal v6 address (NPTv6-style fixed pin)
-	#
-	# Stale rules from a prior incarnation of this interface are removed first;
-	# comment-tagged for unambiguous identification across reloads.
-	# Inside a batch the preamble already flushed mwan3_postrouting entirely.
-
-	if [ "$MWAN3_BATCH_DEPTH" -eq 0 ]; then
-		while handle=$($NFT -a list chain inet mwan3 mwan3_postrouting 2>/dev/null | \
-				sed -n "s/.*comment \"mwan3_snat_$1\".*# handle \([0-9]*\)/\1/p" | head -n1); \
-		      [ -n "$handle" ]; do
-			mwan3_nft_exec delete rule inet mwan3 mwan3_postrouting handle "$handle"
-		done
-	fi
-
-	if [ "$family" = "ipv6" ]; then
-		config_get snat6 "$1" snat6 ""
-		src_ip=""
-		case "$snat6" in
-			""|"0")
-				: # disabled — no rule
-				;;
-			"1")
-				mwan3_get_src_ip src_ip "$1"
-				;;
-			*)
-				src_ip="$snat6"
-				;;
-		esac
-		if [ -n "$src_ip" ] && [ "$src_ip" != "::" ]; then
-			mwan3_nft_exec add rule inet mwan3 mwan3_postrouting \
-				oifname "\"$device\"" meta nfproto ipv6 \
-				meta mark \& "$MMX_MASK" == "$iface_mark" \
-				fib saddr type local ip6 saddr != "$src_ip" \
-				snat to "$src_ip" comment "\"mwan3_snat_$1\""
-		fi
-	fi
+	mwan3_set_iface_srcnat_nft "$1" "$device"
 
 	# Add chain (idempotent) then flush. Inside a batch the preamble has already
 	# queued a delete for this chain, but add+flush is safe: the kernel sees the
@@ -876,11 +978,8 @@ mwan3_delete_iface_nft()
 	# Remove the per-iface postrouting SNAT rule (loop in case both v4/v6
 	# rules exist for the same interface name).
 
-	while handle=$($NFT -a list chain inet mwan3 mwan3_postrouting 2>/dev/null | \
-			sed -n "s/.*comment \"mwan3_snat_$1\".*# handle \([0-9]*\)/\1/p" | head -n1); \
-	      [ -n "$handle" ]; do
-		mwan3_nft_exec delete rule inet mwan3 mwan3_postrouting handle "$handle"
-	done
+	mwan3_del_postrouting_tag "mwan3_snat_$1"
+	mwan3_del_postrouting_tag "mwan3_netmap_$1"
 
 	# Delete the interface chain
 
@@ -2259,15 +2358,27 @@ mwan3_flush_conntrack()
 	# the new policy rather than waiting for a TCP retransmit timeout. More
 	# targeted than the UCI flush_conntrack mechanism which flushes everything.
 
-	if { [ "$action" = "ifdown" ] || [ "$action" = "disconnected" ]; } && [ -e "$CONNTRACK_FILE" ]; then
-		local iface_id iface_mark
-		mwan3_get_iface_id iface_id "$interface"
-		if [ -n "$iface_id" ]; then
-			iface_mark=$(mwan3_id2mask "$iface_id" "$MMX_MASK")
-			mwan3ct flush --mark "${iface_mark}/${MMX_MASK}" 2>/dev/null
-			LOG info "Selectively flushed conntrack entries for interface '$interface' (mark ${iface_mark}/${MMX_MASK})"
-		fi
+	if { [ "$action" = "ifdown" ] || [ "$action" = "disconnected" ]; }; then
+		mwan3_flush_iface_marked_conntrack "$interface" "$action"
 	fi
+}
+
+# Flush only the conntrack entries carrying one interface's mark. Split out of
+# mwan3_flush_conntrack() because the ifupdate path needs the same operation for
+# a different reason: a flow's NAT binding is held in conntrack, so after the
+# snat6 or netmap6 rule is rebuilt with a new address the established flows
+# would keep being translated to the old one.
+
+mwan3_flush_iface_marked_conntrack()
+{
+	local iface_id iface_mark
+
+	[ -e "$CONNTRACK_FILE" ] || return 0
+	mwan3_get_iface_id iface_id "$1"
+	[ -n "$iface_id" ] || return 0
+	iface_mark=$(mwan3_id2mask "$iface_id" "$MMX_MASK")
+	mwan3ct flush --mark "${iface_mark}/${MMX_MASK}" 2>/dev/null
+	LOG info "Selectively flushed conntrack entries for interface '$1' (mark ${iface_mark}/${MMX_MASK}) on action '$2'"
 }
 
 mwan3_track_clean()
