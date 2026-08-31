@@ -9,11 +9,19 @@ initscript=/etc/init.d/mwan3
 
 
 SCRIPTNAME="mwan3-hotplug"
-[ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifdown" ] || [ "$ACTION" = "connected" ] || [ "$ACTION" = "disconnected" ] || exit 1
+[ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifdown" ] || [ "$ACTION" = "connected" ] || [ "$ACTION" = "disconnected" ] || [ "$ACTION" = "ifupdate" ] || exit 1
+
+# An ifupdate fires for any interface data change, most of which mwan3 does not
+# care about. Only an address or delegated-prefix change matters here, because
+# the snat6 and netmap6 rules pin a literal address or prefix at install time.
+
+if [ "$ACTION" = "ifupdate" ]; then
+	[ "$IFUPDATE_ADDRESSES" = "1" ] || [ "$IFUPDATE_PREFIXES" = "1" ] || exit 0
+fi
 [ -n "$INTERFACE" ] || exit 2
 [ "$FIRSTCONNECT" = "1" ] || [ "$MWAN3_SHUTDOWN" = "1" ] && exit 0
 
-if { [ "$ACTION" = "ifup" ] || [ "$ACTION" = "connected" ] ; } && [ -z "$DEVICE" ]; then
+if { [ "$ACTION" = "ifup" ] || [ "$ACTION" = "connected" ] || [ "$ACTION" = "ifupdate" ] ; } && [ -z "$DEVICE" ]; then
 	LOG notice "$ACTION called on $INTERFACE with no device set"
 	exit 3
 fi
@@ -110,6 +118,26 @@ case "$ACTION" in
 		mwan3_set_policies_nft
 		mwan3_delete_iface_map_entries $INTERFACE
 		mwan3_nft_batch_commit
+		;;
+	ifupdate)
+		# A DHCPv6-PD renewal can hand back a different delegated prefix, and a
+		# GUA can be replaced, without the interface ever going down. snat6 and
+		# netmap6 both pin the address or prefix into their postrouting rule at
+		# install time, so the rule would keep translating to something the
+		# upstream no longer routes and every rerouted packet would be dropped
+		# silently. Rebuild just those two rules: the interface chain, its ip
+		# rules and its routes do not depend on the address.
+
+		# A flow's NAT binding lives in conntrack, so established flows would
+		# keep being translated to the old address after the rule is replaced.
+		# mwan3_set_iface_srcnat_nft returns 0 only when it actually rewrote a
+		# rule, so a lease renewal that returns the same prefix - the common
+		# case, and one that fires this event on every renewal - leaves
+		# established flows alone.
+
+		if mwan3_set_iface_srcnat_nft $INTERFACE $DEVICE; then
+			mwan3_flush_iface_marked_conntrack $INTERFACE $ACTION
+		fi
 		;;
 	ifdown)
 		# Drop the member from the policy before tearing down its routing, so the

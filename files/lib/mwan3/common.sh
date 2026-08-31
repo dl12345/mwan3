@@ -376,6 +376,23 @@ mwan3_get_src_ip()
 	export "$1=$_src_ip"
 }
 
+# Return the interface's delegated IPv6 prefix intact (e.g. 2001:db8:1::/60).
+# mwan3_get_src_ip() also consults network_get_prefix6() but immediately
+# reduces the prefix to a single address; prefix translation needs the
+# prefix itself, so keep it whole here.
+
+mwan3_get_prefix6()
+{
+	local _prefix interface true_iface
+	interface=$2
+	mwan3_get_true_iface true_iface $interface
+
+	unset "$1"
+	network_get_prefix6 _prefix "$true_iface"
+	[ -n "$_prefix" ] || LOG warn "no delegated IPv6 prefix found for interface '$true_iface'"
+	export "$1=$_prefix"
+}
+
 readfile() {
 	[ -f "$2" ] || return 1
 

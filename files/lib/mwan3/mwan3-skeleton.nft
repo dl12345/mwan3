@@ -86,13 +86,19 @@ table inet mwan3 {
 	chain mwan3_dynamic {
 	}
 
-	# IPv6 SNAT for router-originated traffic rerouted by mwan3_output. fw4 does
-	# not masquerade IPv6 by default, so packets rerouted from WAN-A onto WAN-B
-	# would egress with WAN-A's source prefix and be dropped upstream. Opt-in
-	# per interface via the 'snat6' UCI option. Per-iface rules are added
-	# dynamically by mwan3.sh and only fire when (oif == this WAN) AND
-	# (mark == this WAN's mark) AND (saddr is local) AND (saddr != this WAN's
-	# IP). Runs at srcnat - 1 so it fires before fw4's srcnat hook.
+	# IPv6 source rewriting for traffic mwan3 has rerouted onto a different WAN.
+	# fw4 does not masquerade IPv6 by default, so packets rerouted from WAN-A
+	# onto WAN-B would egress with WAN-A's source prefix and be dropped upstream.
+	# Two opt-in per-interface UCI options add rules here, with complementary
+	# scope decided by 'fib saddr type':
+	#   snat6   - router-originated traffic (saddr is local). Rewrites to a
+	#             single address.
+	#   netmap6 - forwarded LAN traffic (saddr is not local). Rewrites only the
+	#             prefix and carries the host bits over verbatim (NETMAP).
+	# Per-iface rules are added dynamically by mwan3.sh and only fire when
+	# (oif == this WAN) AND (mark == this WAN's mark) AND the saddr scope
+	# matches AND (saddr is not already in the target range). Runs at
+	# srcnat - 1 so it fires before fw4's srcnat hook.
 	chain mwan3_postrouting {
 		type nat hook postrouting priority srcnat - 1; policy accept;
 	}

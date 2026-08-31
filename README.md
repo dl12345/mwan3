@@ -312,7 +312,7 @@ mwan3 operates in its own standalone nftables table, `table inet mwan3`. This ta
 | `mwan3_dynamic_v6` | set (ipv6_addr, interval, auto-merge) | IPv6 CIDRs from UCI `globals.bypass_network` |
 | `mwan3_prerouting` | chain (filter, prerouting, mangle+1) | Entry point for forwarded/incoming traffic |
 | `mwan3_output` | chain (route, output, mangle+1) | Entry point for locally-originated traffic |
-| `mwan3_postrouting` | chain (nat, postrouting, srcnat-1) | Opt-in IPv6 SNAT for router-originated rerouted traffic - see [§4](#router-originated-traffic-and-source-address-rewriting) |
+| `mwan3_postrouting` | chain (nat, postrouting, srcnat-1) | Opt-in IPv6 source rewriting: SNAT for router-originated rerouted traffic and NETMAP prefix translation for forwarded traffic - see [§4](#router-originated-traffic-and-source-address-rewriting) |
 | `mwan3_ifaces_in` | chain (regular) | Dispatches to per-interface chains |
 | `mwan3_rules` | chain (regular) | User-defined classification rules |
 | `mwan3_connected` | chain (regular) | Marks traffic to connected networks as default |
@@ -453,9 +453,43 @@ oifname "<dev>" meta nfproto ipv6
 
 The `fib saddr type local` guard limits the rule to router-originated traffic. Stale rules are cleaned up by tag (`mwan3_snat_<iface>`) in `mwan3_create_iface_nft()` and `mwan3_delete_iface_nft()`. The literal-address form is not validated against the egress interface - some deployments deliberately pin a source from a delegated prefix not directly configured on the device.
 
-`snat6` only addresses the router-originated rerouted case. It does not extend mwan3's IPv6 capability to forwarded LAN traffic, SADR integration, or NPTv6 prefix translation.
+`snat6` only addresses the router-originated rerouted case. Forwarded LAN traffic is covered separately by `netmap6` (below); SADR integration remains out of scope.
 
 The LuCI control for `snat6` is described in [Section 15.1.2](#1512-interface).
+
+### Forwarded Traffic and Prefix Translation
+
+`snat6` carries a `fib saddr type local` guard, so it never touches forwarded traffic. That leaves a second, distinct failure: a LAN host has autoconfigured an address out of WAN-A's delegated prefix, mwan3 reroutes its traffic onto WAN-B, and the packet egresses WAN-B carrying a WAN-A source prefix. BCP38 or uRPF filtering upstream drops it. Nothing in the router-originated path applies here - the source address was chosen by the host, not by the router.
+
+The correct fix is renumbering: withdraw WAN-A's prefix, advertise WAN-B's, and let RFC 6724 source address selection do its job. Deployments that cannot do that - no control over prefix advertisement, hosts that ignore short preferred lifetimes, or a failover window too short to renumber across - have no in-tree fallback. `netmap6` is that fallback.
+
+The `netmap6` option accepts three values:
+
+| Value | Meaning |
+|---|---|
+| unset / `0` | No prefix translation (default) |
+| `1` | Translate to the interface's delegated prefix, looked up via `mwan3_get_prefix6` |
+| `<v6 prefix>` | Translate to the literal prefix, e.g. `2001:db8:1::/60` |
+
+When `netmap6` is set, mwan3 installs a rule in the `mwan3_postrouting` base chain:
+
+```
+oifname "<dev>" meta nfproto ipv6
+    meta mark & MMX_MASK == <iface_mark>
+    fib saddr type != local
+    ip6 saddr != <prefix>
+    snat ip6 prefix to <prefix>
+```
+
+`snat ip6 prefix to` maps `NF_NAT_RANGE_NETMAP`: only the leading prefix-length bits are replaced and the remaining bits are carried over verbatim, so each LAN host keeps its interface identifier and remains individually addressable. This is the difference from `snat6`, which collapses every host behind a single address.
+
+The `fib saddr type != local` guard makes the two options exactly complementary: with both set, router-originated packets take the `snat6` rule and forwarded packets take the `netmap6` rule. Matching on `meta mark` rather than `oifname` alone also means directly connected destinations are skipped automatically - mwan3 marks those with `MMX_DEFAULT` via the bypass chains, so they never match an interface mark and are never translated.
+
+If `netmap6` is `1` and no delegated prefix is available (PPPoE not up, no PD yet), `mwan3_get_prefix6` logs a warning, no rule is installed, and the rest of mwan3 starts normally. Stale rules are cleaned up by tag (`mwan3_netmap_<iface>`) in `mwan3_create_iface_nft()` and `mwan3_delete_iface_nft()`, the same mechanism `snat6` uses.
+
+Two caveats worth stating plainly. First, this is NAT66 and inherits its costs: address-embedding protocols, referrals, and anything that authenticates the IPv6 header will misbehave, and the translated prefix changes when the egress changes, breaking sessions. It is off by default and should stay off wherever renumbering is possible - RFC 7157 Section 7.1 describes exactly this "last resort" positioning. Second, `snat ip6 prefix to` is **not** NPTv6: Linux has no RFC 6296 implementation. NETMAP is stateful (it goes through conntrack) and is not checksum-neutral. The one place it compares favourably is prefix length - RFC 6296 Section 3.5 has to modify the interface identifier for prefixes longer than /48, which covers the /56 and /60 delegations typical of residential PD, while NETMAP leaves every bit below the prefix untouched.
+
+The LuCI control for `netmap6` is described in [Section 15.1.2](#1512-interface).
 
 ---
 
@@ -629,7 +663,7 @@ The hook chains:
 
 - `mwan3_prerouting` - type `filter` at priority `mangle + 1`
 - `mwan3_output` - type `route` at priority `mangle + 1` (`type route` is required so mark mutations trigger a routing re-lookup for locally-originated traffic)
-- `mwan3_postrouting` - type `nat` at priority `srcnat - 1`. Opt-in IPv6 SNAT chain. See [§4](#router-originated-traffic-and-source-address-rewriting).
+- `mwan3_postrouting` - type `nat` at priority `srcnat - 1`. Opt-in IPv6 source rewriting chain, carrying both the `snat6` and `netmap6` rules. See [§4](#router-originated-traffic-and-source-address-rewriting).
 
 ### 6.2 `lib/mwan3/common.sh`
 
@@ -653,7 +687,7 @@ Shared helper library sourced by all mwan3 shell scripts. Provides:
 - **`mwan3_init()`**: Loads config, computes mask constants (`MMX_DEFAULT`, `MMX_BLACKHOLE`, `MMX_UNREACHABLE`, `MMX_MASK_COMPLEMENT`)
 - **`mwan3_id2mask()`**: Bit-spreading function that maps interface IDs onto the mask
 - **`mwan3_count_one_bits()`**: Counts set bits in a value
-- **Utility functions**: `LOG()`, `readfile()`, `mwan3_get_src_ip()`, `mwan3_get_true_iface()`, `mwan3_get_mwan3track_status()`, `get_uptime()`, `get_online_time()`
+- **Utility functions**: `LOG()`, `readfile()`, `mwan3_get_src_ip()`, `mwan3_get_prefix6()`, `mwan3_get_true_iface()`, `mwan3_get_mwan3track_status()`, `get_uptime()`, `get_online_time()`
 
 > [!NOTE]
 > **Shell scoping note:** Functions like `mwan3_id2mask` and `mwan3_count_one_bits` receive *variable names* as arguments (e.g., `mwan3_id2mask mmdefault MMX_MASK`) and use arithmetic expansion `$(($1))` to resolve them. This works in busybox ash (OpenWrt's default shell) because it uses dynamic scoping - local variables from the caller are visible in called functions.
@@ -1039,6 +1073,7 @@ The binary has no dependencies beyond libc (`inet_pton`, `strtol`, and standard 
 | `mwan3_count_one_bits var` | Counts 1-bits in the value named by `var` (indirect evaluation). Uses `n&(n-1)` trick. |
 | `mwan3_get_true_iface out_var iface` | Resolves virtual interface names (appends _4 or _6 suffix if that interface exists in netifd). |
 | `mwan3_get_src_ip out_var iface` | Gets the source IP for an interface, with fallbacks for IPv6-PD prefixes. |
+| `mwan3_get_prefix6 out_var iface` | Returns the interface's delegated IPv6 prefix intact, e.g. `2001:db8:1::/60`. `mwan3_get_src_ip()` also consults `network_get_prefix6()` but immediately reduces the prefix to a single address; prefix translation needs the prefix itself. Logs a warning and returns empty when no prefix has been delegated. |
 | `readfile var path` | Reads entire file into variable. Returns 1 if file doesn't exist. |
 | `mwan3_get_mwan3track_status out_var iface` | Returns tracker status: `disabled`, `down`, `paused`, or `active`. |
 | `get_uptime [out_var]` | Returns system uptime in seconds (integer). |
@@ -1104,9 +1139,10 @@ See [§2 Connmark Operations](#connmark-operations) for the rationale and the ke
 |---|---|
 | `mwan3_update_iface_to_table` | Populates `mwan3_iface_tbl`: a space-separated string of `name=id` pairs for all configured interfaces, where `id` is the sequential table number. Called lazily (on first use) by `mwan3_get_iface_id()`. Also called explicitly during `start_service()` to prime the cache before interface chains are created. |
 | `mwan3_get_iface_id out_var iface` | Looks up `mwan3_iface_tbl` for the given interface name and writes its table ID into the named output variable. Calls `mwan3_update_iface_to_table()` on first use if the cache is empty. |
-| `mwan3_create_iface_nft iface device` | Creates (or flushes) `mwan3_iface_in_<iface>` chain. Adds rules matching on `iifname` and address family: source in connected/custom/dynamic → MMX_DEFAULT; otherwise → interface mark. Adds jump from `mwan3_ifaces_in` if not already present. Also installs a per-interface `mwan3_postrouting` SNAT rule for IPv6 interfaces when the `snat6` UCI option is set. Stale `mwan3_snat_<iface>`-tagged rules from a prior incarnation are removed first. See [§4](#router-originated-traffic-and-source-address-rewriting). |
+| `mwan3_create_iface_nft iface device` | Creates (or flushes) `mwan3_iface_in_<iface>` chain. Adds rules matching on `iifname` and address family: source in connected/custom/dynamic → MMX_DEFAULT; otherwise → interface mark. Adds jump from `mwan3_ifaces_in` if not already present. For IPv6 interfaces it also installs per-interface `mwan3_postrouting` rules: a SNAT rule when `snat6` is set and a NETMAP prefix translation rule when `netmap6` is set. Stale `mwan3_snat_<iface>`- and `mwan3_netmap_<iface>`-tagged rules from a prior incarnation are removed first. See [§4](#router-originated-traffic-and-source-address-rewriting) and [§4](#forwarded-traffic-and-prefix-translation). |
+| `mwan3_del_postrouting_tag tag` | Deletes every rule in `mwan3_postrouting` carrying the given comment tag, looking each handle up in turn. Loops because an IPv4 and an IPv6 interface may share a section name. Used for both the `mwan3_snat_<iface>` and `mwan3_netmap_<iface>` tags from `mwan3_create_iface_nft()` and `mwan3_delete_iface_nft()`. |
 | `mwan3_rebuild_iface_nft iface` | Rebuilds a single interface's nft chain if the interface is enabled, the correct family is available, and the interface is currently up (verified via ubus). Used during `reload_service` to rebuild all interface chains within the atomic batch. Calls `mwan3_create_iface_nft()` after resolving the L3 device from netifd. |
-| `mwan3_delete_iface_nft iface` | Removes the jump rule from `mwan3_ifaces_in` (by handle lookup), removes any `mwan3_snat_<iface>`-tagged rules from `mwan3_postrouting` (comment-tag match), then flushes and deletes the interface chain. |
+| `mwan3_delete_iface_nft iface` | Removes the jump rule from `mwan3_ifaces_in` (by handle lookup), removes any `mwan3_snat_<iface>`- and `mwan3_netmap_<iface>`-tagged rules from `mwan3_postrouting` via `mwan3_del_postrouting_tag()`, then flushes and deletes the interface chain. |
 | `mwan3_delete_iface_map_entries iface` | Iterates all `mwan3_sticky_v[46]_*` sets in the `inet` family, finds sets whose name ends with `_<id>` (this interface's id), and pushes a flush for each into the caller's open nft batch, so the flushes commit in the same transaction as the policy rebuild. The set enumeration reads committed kernel state and so stays outside the batch. Sets are flushed rather than deleted because rule chains may still reference the set name. Must be called within an open nft batch. |
 | `mwan3_create_iface_rules iface device` | Adds `ip rule` entries: pref `id+MWAN3_IIF_RULE_BASE` (iif lookup) and pref `id+MWAN3_FWMARK_RULE_BASE` (fwmark lookup). For an IPv4 interface it also delegates to `mwan3-manage-rules.uc add-src` for the source lookup rules at pref `id+MWAN3_UNREACHABLE_RULE_BASE+MWAN3_INTERFACE_MAX+1`, one per global-scope IPv4 address on the device. The per-WAN unreachable backstop at `id+MWAN3_UNREACHABLE_RULE_BASE` is managed separately by `mwan3_set_member_backstops()` and is not installed here. |
 | `mwan3_rebuild_iface_rules iface` | Rebuilds a single interface's ip rules and routing table if the interface is enabled, its family is available, and it is currently up with an L3 device (verified via ubus). Called from `reload_service` via `config_foreach`, after the nft batch has committed, because ip rules and routes are kernel state that nftables does not own. Calls `mwan3_create_iface_rules()`, which deletes the interface's existing rules before adding them, then flushes and repopulates the routing table via `mwan3_delete_iface_route()` and `mwan3_create_iface_route()`. Unlike `mwan3_rebuild_iface_nft()` it does not consult the hotplug state file, so an interface that is up at netifd but tracked down keeps its routing in place. |
@@ -1896,6 +1932,8 @@ The Interface tab (`interface.js`) presents a `GridSection` where each row repre
 **Track gateway (`track_gateway`):** A checkbox shown only for IPv4 interfaces. When enabled, mwan3 automatically uses the interface's network gateway as the tracking target (see [Section 10.3](#automatic-gateway-tracking-track_gateway)).
 
 **IPv6 SNAT (`snat6`):** A text field shown only for IPv6 interfaces. Accepts empty/`0` (disabled), `1` (SNAT to the interface's primary global address), or a literal IPv6 address for fixed-source pinning (see [Section 4](#router-originated-traffic-and-source-address-rewriting)).
+
+**IPv6 prefix translation (`netmap6`):** A text field shown only for IPv6 interfaces. Accepts empty/`0` (disabled), `1` (translate to the interface's delegated prefix), or a literal IPv6 prefix such as `2001:db8:1::/60`. Applies to forwarded LAN traffic only and preserves each host's interface identifier (see [Section 4](#forwarded-traffic-and-prefix-translation)).
 
 **Conntrack flushing (`flush_conntrack`):** Controls whether the global conntrack table is flushed on interface state changes. Per-interface conntrack entries are flushed automatically on ifdown regardless of this setting.
 
