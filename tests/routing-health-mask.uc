@@ -42,12 +42,23 @@ function verify(name, mask, maxmark, bases) {
 		unreachable_rule_base: '' + b.unreach
 	};
 	const rules = [];
+	const parsed_mask = int(mask, 0) || 0x3F00;
+	function encoded(id) {
+		let value = 0, bit = 0;
+		for (let pos = 0; pos < 32; pos++)
+			if ((parsed_mask >> pos) & 1) {
+				if ((id >> bit) & 1) value |= 1 << pos;
+				bit++;
+			}
+		return value;
+	}
 	for (let i = 0; i < length(interfaces); i++) {
 		const family = interfaces[i].family == 'ipv6' ? 10 : 2;
-		for (let base in [b.iif, b.fwmark, b.unreach])
-			push(rules, { family: family, priority: base + i + 1 });
+		push(rules, { family: family, priority: b.iif + i + 1, action: 1, table: i + 1, iif: 'fixture' });
+		push(rules, { family: family, priority: b.fwmark + i + 1, action: 1, table: i + 1, fwmark: encoded(i + 1), fwmask: parsed_mask });
+		push(rules, { family: family, priority: b.unreach + i + 1, action: 7, fwmark: encoded(i + 1), fwmask: parsed_mask });
 		if (family == 2)
-			push(rules, { family: family, priority: src_base + i + 1 });
+			push(rules, { family: family, priority: src_base + i + 1, action: 1, table: i + 1, src: '192.0.2.' + (i + 1) + '/32' });
 	}
 	for (let family in [2, 10]) {
 		push(rules, { family: family, priority: b.fwmark + maxmark - 2 });
@@ -62,7 +73,7 @@ function verify(name, mask, maxmark, bases) {
 			foreach: (config, section, cb) => { for (let iface in interfaces) cb(iface); }
 		}),
 		() => rules,
-		id => [{ family: id == 4 ? 10 : 2, dst: 'default', oif: 'fixture' }],
+		id => [{ family: id == 4 ? 10 : 2, oif: 'fixture', type: 1 }],
 		() => 'online',
 		() => ['/fixture/STATUS']
 	);

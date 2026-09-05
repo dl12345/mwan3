@@ -204,11 +204,30 @@ function get_nftset_elements(setname, max_count) {
 
 function get_ip_rules() {
 	const rules = [];
-	for (let family in [2, 10]) {
-		const result = rtnl.request(rtnl.const.RTM_GETRULE, rtnl.const.NLM_F_DUMP,
-			{ family: family }) ?? [];
-		for (let r in result)
-			push(rules, r);
+	for (let version in [4, 6]) {
+		if (version == 6 && !length(glob('/proc/sys/net/ipv6') || [])) continue;
+		// ip-full is already a dependency. Unlike older rtnl bindings, its
+		// JSON dump retains iif/oif selectors; -N keeps table/action IDs numeric.
+		const pipe = popen(sprintf('ip -N -j -%d rule show', version), 'r');
+		if (!pipe) die('Unable to read IP rules');
+		const raw = pipe.read('all');
+		pipe.close();
+		const result = json(raw);
+		if (type(result) != 'array') die('Invalid IP rule dump');
+		for (let r in result) {
+			const prefix = (addr, len) => !addr || addr == 'all' || len == 0 || addr == '0.0.0.0/0' || addr == '::/0' ? null :
+				index(addr, '/') >= 0 ? addr : addr + '/' + (len ?? (version == 4 ? 32 : 128));
+			push(rules, {
+				family: version == 4 ? 2 : 10, priority: r.priority,
+				table: r.table == null ? null : int(r.table),
+				action: r.table != null ? 1 : int(r.action),
+				src: prefix(r.src, r.srclen), dst: prefix(r.dst, r.dstlen),
+				iif: r.iif, oif: r.oif, inverted: r.not || false,
+				restricted: !!(r.tos || r.ipproto || r.sport || r.dport || r.uidrange || r.l3mdev || r.suppress_prefixlength != null || r.suppress_ifgroup != null),
+				fwmark: r.fwmark == null ? null : int(r.fwmark, 0),
+				fwmask: r.fwmark == null ? null : int(r.fwmask ?? '0xffffffff', 0)
+			});
+		}
 	}
 	return rules;
 }
@@ -216,8 +235,10 @@ function get_ip_rules() {
 function get_table_routes(table_id) {
 	const routes = [];
 	for (let family in [2, 10]) {
+		if (family == 10 && !length(glob('/proc/sys/net/ipv6') || [])) continue;
 		const result = rtnl.request(rtnl.const.RTM_GETROUTE, rtnl.const.NLM_F_DUMP,
-			{ family: family }) ?? [];
+			{ family: family });
+		if (result == null) die('Unable to read routing tables');
 		for (let r in result)
 			if (r.table == table_id)
 				push(routes, r);
@@ -275,23 +296,40 @@ function routing_health() {
 	const iface_order = [];
 	const iface_index = {};
 	const iface_family = {};
+	const iface_enabled = {};
 	uci.foreach('mwan3', 'interface', intf => {
 		push(iface_order, intf['.name']);
 		iface_index[intf['.name']] = length(iface_order);
 		iface_family[intf['.name']] = intf['family'] || 'ipv4';
+		iface_enabled[intf['.name']] = intf.enabled;
 	});
 
 	// Fetch all ip rules and index by priority for O(1) lookup
 
 	const all_rules = get_ip_rules();
 	const rule_by_priority = {};
-	const v4_rule_by_priority = {};
 	for (let rule in all_rules) {
 		if (rule?.priority != null) {
-			rule_by_priority[rule.priority] = rule;
-			if (rule.family == 2)
-				v4_rule_by_priority[rule.priority] = rule;
+			const key = rule.family + ':' + rule.priority;
+			rule_by_priority[key] ??= [];
+			push(rule_by_priority[key], rule);
 		}
+	}
+	function at(family, priority, predicate) {
+		return filter(rule_by_priority[family + ':' + priority] || [], r => !r.inverted && !r.restricted && predicate(r));
+	}
+	function mark(id) {
+		let value = 0, bit = 0;
+		for (let pos = 0; pos < 32; pos++)
+			if ((mmx_mask >> pos) & 1) {
+				if ((id >> bit) & 1) value |= 1 << pos;
+				bit++;
+			}
+		return value;
+	}
+	function marked(r, id) {
+		return r.fwmark == mark(id) && r.fwmask == mmx_mask &&
+			r.src == null && r.dst == null && r.iif == null && r.oif == null;
 	}
 
 	// Pre-build the set of priorities that correspond to current UCI interfaces
@@ -299,13 +337,23 @@ function routing_health() {
 	const valid_priorities = {};
 	for (let ifname in iface_order) {
 		const id = iface_index[ifname];
-		valid_priorities[IIF_BASE     + id] = true;
-		valid_priorities[FWMARK_BASE  + id] = true;
-		valid_priorities[UNREACH_BASE + id] = true;
-		valid_priorities[UNREACH_BASE + iface_max + 1 + id] = true;
+		const family = iface_family[ifname] == 'ipv6' ? 10 : 2;
+		for (let base in [IIF_BASE, FWMARK_BASE, UNREACH_BASE])
+			valid_priorities[family + ':' + (base + id)] = true;
+		if (family == 2) valid_priorities['2:' + (SRC_BASE + id)] = true;
 	}
-	valid_priorities[FWMARK_BASE + mmdefault - 2] = true;
-	valid_priorities[FWMARK_BASE + mmdefault - 1] = true;
+	const global_rules = [];
+	for (let family in [2, 10]) {
+		if (!length(filter(all_rules, r => r.family == family)) &&
+		    !length(filter(iface_order, n => iface_family[n] == (family == 2 ? 'ipv4' : 'ipv6')))) continue;
+		for (let kind in ['blackhole', 'unreachable']) {
+			const id = mmdefault - (kind == 'blackhole' ? 2 : 1);
+			const priority = FWMARK_BASE + id;
+			valid_priorities[family + ':' + priority] = true;
+			push(global_rules, { family: family == 2 ? 'ipv4' : 'ipv6', kind: kind, priority: priority,
+				present: length(at(family, priority, r => r.action == (kind == 'blackhole' ? 6 : 7) && marked(r, id))) > 0 });
+		}
+	}
 
 	// Per-interface health report
 
@@ -315,28 +363,31 @@ function routing_health() {
 		const iif_pri       = IIF_BASE    + id;
 		const fwmark_pri    = FWMARK_BASE + id;
 		const unreach_pri   = UNREACH_BASE + id;
-		const iif_rule      = rule_by_priority[iif_pri];
-		const fwmark_rule   = rule_by_priority[fwmark_pri];
-		const unreach_rule  = rule_by_priority[unreach_pri];
+		const family       = iface_family[ifname] == 'ipv6' ? 10 : 2;
+		const iif_rule      = at(family, iif_pri, r => r.action == 1 && r.table == id && r.iif != null && r.oif == null && r.src == null && r.dst == null && r.fwmark == null);
+		const fwmark_rule   = at(family, fwmark_pri, r => r.action == 1 && r.table == id && marked(r, id));
+		const unreach_rule  = at(family, unreach_pri, r => r.action == 7 && marked(r, id));
 		const table_routes  = get_table_routes(id);
 		const default_routes = filter(table_routes, r =>
-			r?.dst == null || r?.dst == '0.0.0.0/0' || r?.dst == '::/0'
+			r.family == family && (r.type == null || r.type == 1) &&
+			(r?.dst == null || r?.dst == '0.0.0.0/0' || r?.dst == '::/0')
 		);
-		const status = get_str(ifname, 'STATUS') || 'unknown';
+		const status = iface_enabled[ifname] == '0' ? 'disabled' : get_str(ifname, 'STATUS') || 'unknown';
 
 		result[ifname] = {
 			index: id,
+			family: iface_family[ifname],
 			status: status,
 			iif_rule: {
-				present:  iif_rule != null,
+				present:  length(iif_rule) > 0,
 				priority: iif_pri,
 			},
 			fwmark_rule: {
-				present:  fwmark_rule != null,
+				present:  length(fwmark_rule) > 0,
 				priority: fwmark_pri,
 			},
 			unreach_rule: {
-				present:  unreach_rule != null,
+				present:  length(unreach_rule) > 0,
 				priority: unreach_pri,
 			},
 			table: {
@@ -357,11 +408,18 @@ function routing_health() {
 		// band exists for this interface, not that every address is covered.
 
 		if (iface_family[ifname] == 'ipv4') {
+			const sources = at(2, SRC_BASE + id, r => r.action == 1 && r.table == id && r.src != null && r.dst == null && r.fwmark == null && r.iif == null && r.oif == null);
 			result[ifname].src_rule = {
-				present:  v4_rule_by_priority[SRC_BASE + id] != null,
+				present:  length(sources) > 0,
 				priority: SRC_BASE + id,
+				addresses: map(sources, r => r.src),
 			};
 		}
+		// Report existing destination/device selectors without inventing an
+		// expected priority band. In particular oif may be installed by a
+		// downstream build or another routing service, not stock mwan3.
+		result[ifname].additional_rules = filter(all_rules, r =>
+			r.family == family && r.action == 1 && r.table == id && (r.oif != null || r.dst != null));
 	}
 
 	// Stale rules: priorities in mwan3 ranges but not matching any current UCI interface
@@ -381,8 +439,11 @@ function routing_health() {
 		const in_fwmark_range  = (p > FWMARK_BASE  && p <= FWMARK_BASE  + mmdefault);
 		const in_unreach_range = (p > UNREACH_BASE && p <= UNREACH_BASE + iface_max);
 		const in_src_range     = (p > UNREACH_BASE + iface_max + 1 && p <= UNREACH_BASE + 2 * iface_max + 1);
-		if ((in_iif_range || in_fwmark_range || in_unreach_range || in_src_range) && !valid_priorities[p])
-			push(stale, { priority: p });
+		// A different mark namespace is not a mwan3 orphan. Unmarked rules
+		// are only candidates, not proof of ownership; retain their family.
+		if (rule.fwmark != null && rule.fwmask != mmx_mask) continue;
+		if ((in_iif_range || in_fwmark_range || in_unreach_range || in_src_range) && !valid_priorities[rule.family + ':' + p])
+			push(stale, { priority: p, family: rule.family == 10 ? 'ipv6' : 'ipv4' });
 	}
 
 	const mwan3_active = length(glob('/var/run/mwan3track/*/STATUS') || []) > 0;
@@ -390,6 +451,7 @@ function routing_health() {
 	return {
 		interfaces:  result,
 		stale_rules: stale,
+		global_rules: global_rules,
 		mwan3_active: mwan3_active,
 		rule_bases: { iif: IIF_BASE, fwmark: FWMARK_BASE, unreach: UNREACH_BASE, src: SRC_BASE },
 	};
