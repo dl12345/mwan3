@@ -251,7 +251,8 @@ function nslookup_resolve(host, type) {
 
 function routing_health() {
 	const uci = cursor();
-	const mmx_mask = int(uci.get('mwan3', 'globals', 'mmx_mask')) || 0x3F00;
+	// UCI normally stores masks with a 0x prefix; int() defaults to decimal.
+	const mmx_mask = int(uci.get('mwan3', 'globals', 'mmx_mask'), 0) || 0x3F00;
 	let bitcnt = 0;
 	for (let m = mmx_mask; m; m >>= 1) bitcnt += m & 1;
 	const mmdefault = (1 << bitcnt) - 1;
