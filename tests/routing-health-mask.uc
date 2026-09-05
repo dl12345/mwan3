@@ -15,6 +15,7 @@ const end = index(source, '\nfunction get_connected_ips(');
 assert(start >= 0 && end > start, 'Cannot locate routing_health()');
 const run = loadstring(
 	'return function(cursor, get_ip_rules, get_table_routes, get_str, glob) {\n' +
+	'const ubus = {call: () => ({interface:map(["wan_a","wan_b","wan_c","wan_a6"], n=>({interface:n,l3_device:"fixture"}))})}; const rtnl = {const:{},request:()=>[]};\n' +
 	substr(source, start, end - start) + '\nreturn routing_health();\n};',
 	{ raw_mode: true }
 )();

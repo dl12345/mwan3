@@ -6,6 +6,7 @@ const source = readfile(ARGV[0] || 'files/usr/share/rpcd/ucode/mwan3');
 const start = index(source, 'function routing_health() {');
 const end = index(source, '\nfunction get_connected_ips(');
 const run = loadstring('return function(cursor, get_ip_rules, get_table_routes, get_str, glob) {\n' +
+	'const ubus = {call: () => ({interface: [{interface:"v4",l3_device:"eth1"},{interface:"v6",l3_device:"eth2"}]})}; const rtnl = {const:{},request:()=>[{dev:"eth1",scope:0,local:"192.0.2.1/24"}]};\n' +
 	substr(source, start, end - start) + '\nreturn routing_health();\n};', {raw_mode: true})();
 let checks = 0;
 function check(ok, name) { assert(ok, name); checks++; printf('PASS %s\n', name); }
@@ -26,7 +27,7 @@ function report(rules, routes, enabled) {
 			fn({'.name': 'v4', family: 'ipv4'});
 			fn({'.name': 'v6', family: 'ipv6', enabled: enabled});
 		}
-	}), () => rules, () => routes || [], () => 'online', () => ['/fixture']);
+	}), () => rules, () => map(routes || [], r => ({oif:r.family == 10 ? 'eth2' : 'eth1', ...r})), () => 'online', () => ['/fixture']);
 }
 const valid = [
 	{family: 2, priority: 1001, action: 1, table: 1, iif: 'eth1'},
@@ -53,6 +54,11 @@ for (let kind in ['iif_rule', 'fwmark_rule', 'unreach_rule']) {
 check(!report(map(valid, x => x.priority == 2002 ? {...x, table: 9} : x)).interfaces.v6.fwmark_rule.present, 'wrong lookup table');
 check(!report(map(valid, x => x.priority == 2002 ? {...x, fwmask: 0xff} : x)).interfaces.v6.fwmark_rule.present, 'wrong fwmark namespace');
 check(!report(map(valid, x => x.priority == 1002 ? {...x, iif: null, oif: 'eth2'} : x)).interfaces.v6.iif_rule.present, 'oif cannot masquerade as iif');
+check(!report(map(valid, x => x.priority == 1002 ? {...x, iif: 'wrong-device'} : x)).interfaces.v6.iif_rule.present, 'iif must match actual device');
+check(!report(valid, [{family:10,type:1,oif:'wrong-device'}]).interfaces.v6.table.has_default, 'default must belong to actual device');
+check(!report(filter(valid, x => x.priority != 3062)).interfaces.v4.src_rule.complete, 'missing current source address fails coverage');
+check(report(valid).interfaces.v4.src_rule.expected, 'online interface with global IPv4 expects source rules');
+check(!report(map(valid, x => x.priority == 3062 ? {...x,src:'192.0.2.99/32'} : x)).interfaces.v4.src_rule.complete, 'stale source cannot cover current WAN address');
 check(!report(map(valid, x => x.priority == 3062 ? {...x, src: null} : x)).interfaces.v4.src_rule.present, 'source selector required');
 check(!report(map(valid, x => x.priority == 3062 ? {...x, inverted: true} : x)).interfaces.v4.src_rule.present, 'inverted source is not a match');
 r = report(valid, [{family: 2, type: 1, dst: '0.0.0.0/0'}]);
@@ -65,6 +71,7 @@ r = report([...valid, {family: 10, priority: 2502, action: 1, table: 2, oif: 'et
 	{family: 10, priority: 900, action: 1, table: 2, dst: '2001:db8::/32'}]);
 check(length(r.interfaces.v6.additional_rules) == 2 && length(r.interfaces.v4.additional_rules) == 0, 'observed oif/destination rules stay in their family and table');
 check(length(report(valid).interfaces.v6.additional_rules) == 0, 'no invented oif/destination rule');
+check(length(report([...valid,{family:10,priority:900,action:1,table:2,src:'2001:db8::/64'}]).interfaces.v6.additional_rules) == 1, 'observed IPv6 source is listed without inventing a mandatory band');
 r = report([...valid, {family: 10, priority: 1001, action: 1, table: 1, iif: 'old'}]);
 check(length(r.stale_rules) == 1 && r.stale_rules[0].family == 'ipv6', 'other-family orphan is not hidden by IPv4 priority');
 r = report([...valid, {family: 10, priority: 1001, action: 1, table: 354, fwmark: 354, fwmask: 0xffffffff}]);

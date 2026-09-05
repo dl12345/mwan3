@@ -110,22 +110,23 @@ function count_nftset_elements(setname) {
 	return 0;
 }
 
-function get_nftset_members(setname) {
+function read_nftset(setname) {
 	if (!match(setname, /^[a-zA-Z0-9_-]+$/))
-		return [];
+		die('Invalid IP set name');
 	const nft = popen(sprintf('nft -j list set inet mwan3 %s 2>/dev/null', setname), 'r');
 	if (!nft)
-		return [];
+		die('Unable to read IP set');
 	const raw = nft.read('all');
-	nft.close();
-	if (!raw || length(raw) == 0)
-		return [];
-	let data;
-	try {
-		data = json(raw);
-	} catch(e) {
-		return [];
-	}
+	const status = nft.close();
+	if (status || !raw) die('Unable to read IP set');
+	const data = json(raw);
+	if (type(data?.nftables) != 'array' || !length(filter(data.nftables, x => x.set?.name == setname)))
+		die('Invalid IP set response');
+	return data;
+}
+
+function get_nftset_members(setname) {
+	const data = read_nftset(setname);
 	const members = [];
 	if (data?.nftables) {
 		for (let item in data.nftables) {
@@ -146,21 +147,7 @@ function get_nftset_members(setname) {
 }
 
 function get_nftset_elements(setname, max_count) {
-	if (!match(setname, /^[a-zA-Z0-9_-]+$/))
-		return { elements: [], truncated: false };
-	const nft = popen(sprintf('nft -j list set inet mwan3 %s 2>/dev/null', setname), 'r');
-	if (!nft)
-		return { elements: [], truncated: false };
-	const raw = nft.read('all');
-	nft.close();
-	if (!raw || length(raw) == 0)
-		return { elements: [], truncated: false };
-	let data;
-	try {
-		data = json(raw);
-	} catch(e) {
-		return { elements: [], truncated: false };
-	}
+	const data = read_nftset(setname);
 	const elements = [];
 	let truncated = false;
 	let done = false;
@@ -211,7 +198,7 @@ function get_ip_rules() {
 		const pipe = popen(sprintf('ip -N -j -%d rule show', version), 'r');
 		if (!pipe) die('Unable to read IP rules');
 		const raw = pipe.read('all');
-		pipe.close();
+		if (pipe.close()) die('Unable to read IP rules');
 		const result = json(raw);
 		if (type(result) != 'array') die('Invalid IP rule dump');
 		for (let r in result) {
@@ -272,6 +259,10 @@ function nslookup_resolve(host, type) {
 
 function routing_health() {
 	const uci = cursor();
+	const network = ubus.call('network.interface', 'dump', {})?.interface;
+	if (type(network) != 'array') die('Unable to read interface devices');
+	const addresses = rtnl.request(rtnl.const.RTM_GETADDR, rtnl.const.NLM_F_DUMP, {family: 2});
+	if (addresses == null) die('Unable to read interface addresses');
 	// UCI normally stores masks with a 0x prefix; int() defaults to decimal.
 	const mmx_mask = int(uci.get('mwan3', 'globals', 'mmx_mask'), 0) || 0x3F00;
 	let bitcnt = 0;
@@ -364,12 +355,14 @@ function routing_health() {
 		const fwmark_pri    = FWMARK_BASE + id;
 		const unreach_pri   = UNREACH_BASE + id;
 		const family       = iface_family[ifname] == 'ipv6' ? 10 : 2;
-		const iif_rule      = at(family, iif_pri, r => r.action == 1 && r.table == id && r.iif != null && r.oif == null && r.src == null && r.dst == null && r.fwmark == null);
+		const net = filter(network, n => n.interface == ifname)[0];
+		const device = net?.l3_device;
+		const iif_rule      = at(family, iif_pri, r => r.action == 1 && r.table == id && device != null && r.iif == device && r.oif == null && r.src == null && r.dst == null && r.fwmark == null);
 		const fwmark_rule   = at(family, fwmark_pri, r => r.action == 1 && r.table == id && marked(r, id));
 		const unreach_rule  = at(family, unreach_pri, r => r.action == 7 && marked(r, id));
 		const table_routes  = get_table_routes(id);
 		const default_routes = filter(table_routes, r =>
-			r.family == family && (r.type == null || r.type == 1) &&
+			r.family == family && (r.type == null || r.type == 1) && device != null && r.oif == device &&
 			(r?.dst == null || r?.dst == '0.0.0.0/0' || r?.dst == '::/0')
 		);
 		const status = iface_enabled[ifname] == '0' ? 'disabled' : get_str(ifname, 'STATUS') || 'unknown';
@@ -377,9 +370,10 @@ function routing_health() {
 		result[ifname] = {
 			index: id,
 			family: iface_family[ifname],
+			device: device,
 			status: status,
 			iif_rule: {
-				present:  length(iif_rule) > 0,
+				present:  device == null ? null : length(iif_rule) > 0,
 				priority: iif_pri,
 			},
 			fwmark_rule: {
@@ -392,7 +386,7 @@ function routing_health() {
 			},
 			table: {
 				id:           id,
-				has_default:  length(default_routes) > 0,
+				has_default:  device == null ? null : length(default_routes) > 0,
 				default_routes: map(default_routes, r => ({
 					dst: r.dst ?? 'default',
 					gateway: r.gateway,
@@ -409,17 +403,23 @@ function routing_health() {
 
 		if (iface_family[ifname] == 'ipv4') {
 			const sources = at(2, SRC_BASE + id, r => r.action == 1 && r.table == id && r.src != null && r.dst == null && r.fwmark == null && r.iif == null && r.oif == null);
+			const expected_addresses = map(filter(addresses, a => a.dev == device && a.scope == 0 && (a.local || a.address)), a => split(a.local || a.address, '/')[0] + '/32');
+			const missing = filter(expected_addresses, a => !length(filter(sources, r => r.src == a)));
 			result[ifname].src_rule = {
 				present:  length(sources) > 0,
 				priority: SRC_BASE + id,
 				addresses: map(sources, r => r.src),
+				expected: status == 'online' && device != null && length(expected_addresses) > 0 ? true : null,
+				complete: device == null ? null : length(missing) == 0,
+				missing_addresses: missing,
+				expected_addresses: expected_addresses,
 			};
 		}
 		// Report existing destination/device selectors without inventing an
 		// expected priority band. In particular oif may be installed by a
 		// downstream build or another routing service, not stock mwan3.
 		result[ifname].additional_rules = filter(all_rules, r =>
-			r.family == family && r.action == 1 && r.table == id && (r.oif != null || r.dst != null));
+			r.family == family && r.action == 1 && r.table == id && (r.oif != null || r.dst != null || (family == 10 && r.src != null)));
 	}
 
 	// Stale rules: priorities in mwan3 ranges but not matching any current UCI interface
